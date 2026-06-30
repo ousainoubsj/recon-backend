@@ -1,0 +1,93 @@
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  admin
+  analyst
+  viewer
+}
+
+enum ReconRowStatus {
+  matched
+  mismatched
+  unmatched_a
+  unmatched_b
+  duplicate
+}
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  email        String   @unique @db.VarChar(255)
+  passwordHash String   @map("password_hash") @db.VarChar(255)
+  role         Role     @default(analyst)
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  reports   Report[]
+  auditLogs AuditLog[]
+
+  @@map("users")
+}
+
+model Report {
+  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String    @map("user_id") @db.Uuid
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileAName         String    @map("file_a_name") @db.VarChar(255)
+  fileBName         String    @map("file_b_name") @db.VarChar(255)
+  runDate           DateTime  @default(now()) @map("run_date")
+  totalRows         Int       @map("total_rows")
+  matchedCount      Int       @default(0) @map("matched_count")
+  unmatchedCount    Int       @default(0) @map("unmatched_count")
+  mismatchedCount   Int       @default(0) @map("mismatched_count")
+  duplicateCount    Int       @default(0) @map("duplicate_count")
+  amountTolerance   Decimal   @default(0) @map("amount_tolerance") @db.Decimal(10, 4)
+  dateToleranceDays Int?      @map("date_tolerance_days")
+  config            Json?
+
+  rows ReportRow[]
+
+  @@index([userId], map: "idx_reports_user_id")
+  @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
+  @@map("reports")
+}
+
+model ReportRow {
+  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId   String         @map("report_id") @db.Uuid
+  report     Report         @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  ref        String         @db.VarChar(500)
+  status     ReconRowStatus
+  amountA    Decimal?       @map("amount_a") @db.Decimal(18, 4)
+  amountB    Decimal?       @map("amount_b") @db.Decimal(18, 4)
+  amountDiff Decimal?       @map("amount_diff") @db.Decimal(18, 4)
+  dateA      DateTime?      @map("date_a") @db.Date
+  dateB      DateTime?      @map("date_b") @db.Date
+  rawA       Json?          @map("raw_a")
+  rawB       Json?          @map("raw_b")
+
+  @@index([reportId, status], map: "idx_rows_report_status")
+  @@index([reportId, ref], map: "idx_rows_ref")
+  @@map("report_rows")
+}
+
+model AuditLog {
+  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId     String   @map("user_id") @db.Uuid
+  user       User     @relation(fields: [userId], references: [id])
+  action     String   @db.VarChar(100)
+  entityType String?  @map("entity_type") @db.VarChar(50)
+  entityId   String?  @map("entity_id") @db.Uuid
+  ts         DateTime @default(now())
+  metadata   Json?
+
+  @@index([userId, ts(sort: Desc)], map: "idx_audit_user_ts")
+  @@map("audit_logs")
+}
