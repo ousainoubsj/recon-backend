@@ -5,10 +5,11 @@ Tracks implementation status against `doc/backend-implementation-spec.md`. Updat
 ## 1. Auth — Better Auth (spec §4.3)
 
 - [x] Email/password enabled — `auth.js`
-- [x] `role` registered via `additionalFields` (default `analyst`)
-- [x] Session config: 7d expiry, 1d updateAge, cookie cache (5 min)
+- [x] ~~`role` registered via `additionalFields` (default `analyst`)~~ — **superseded**: role moved off `User` entirely, now per-org on `Member.role` (see §12.1/§12.2)
+- [x] Session config: 7d expiry, 1d updateAge, cookie cache **disabled** (was 5 min — see §12.1, a stale cache was masking a real bug)
 - [x] `trustedOrigins` set from `FRONTEND_URL`
 - [x] Mounted under `/api/auth` via `toNodeHandler()` — `routes/auth.js`
+- [x] Google/Apple social sign-in wired (§12.4) — **code done, untested**: `.env` still has blank client id/secret for both
 
 ## 2. Middleware stack (spec §4.2)
 
@@ -31,26 +32,29 @@ Tracks implementation status against `doc/backend-implementation-spec.md`. Updat
 ## 4. Report persistence (spec §4.5)
 
 - [x] `saveReport` — single `$transaction`, `Report.create` + `ReportRow.createMany` — `services/reportService.js`
-- [x] `listReports`, `getReport`, `deleteReport` implemented
+- [x] `listReports`, `getReport`, `deleteReport` implemented — **now organization-scoped, not user-scoped** (§12.1); `deleteReport` additionally lets `admin` delete any report in the org, others only their own (§12.2)
+- [x] Auto audit-logged: `report.create`/`report.delete` in the service, `report.export`/`report.email` in the controller (§12.3)
 - [ ] `amountDiff` computed in application code, not a DB generated column (spec §5.1 calls for `STORED` generated column — current schema uses a plain nullable `Decimal`) — confirm this deviation is intentional
 
 ## 5. Database — Prisma schema (spec §5)
 
-- [x] `User` / `Report` / `ReportRow` / `AuditLog` models match spec fields
-- [x] Indexes: `reports(user_id)`, `reports(run_date DESC)`, `report_rows(report_id, status)`, `report_rows(report_id, ref)`, `audit_logs(user_id, ts DESC)`
+- [x] `User` / `Report` / `ReportRow` / `AuditLog` models — **fields have changed since spec §5.1**: `User.password_hash`/`role` removed (§12.1); `Report`/`AuditLog` gained `organization_id` (`AuditLog`'s is nullable + `SetNull`, not cascading — a bug found and fixed, §12.1); six new tables (`organization`, `member`, `invitation`, `session`, `account`, `verification`) exist that spec §5.1 never mentioned
+- [x] Indexes: `reports(user_id)`, `reports(run_date DESC)`, `report_rows(report_id, status)`, `report_rows(report_id, ref)`, `audit_logs(user_id, ts DESC)`, plus new `reports(organization_id)`, `audit_logs(organization_id)`
 - [ ] `amount_diff` as a `STORED` generated column (currently app-computed — see above)
 - [ ] Confirm `updated_at` `BEFORE UPDATE` trigger (`set_updated_at()`) exists in a migration, not just assumed
 
 ## 6. API routes (spec §6)
 
 - [x] `POST /auth/sign-up/email`, `/sign-in/email`, `/sign-out`, `GET /auth/get-session`
-- [x] `POST /files/presign`
-- [x] `GET /reports` (list)
-- [x] `GET /reports/:id`
-- [x] `POST /reports`
-- [x] `DELETE /reports/:id`
-- [x] `POST /reports/:id/export` — server-side XLSX via `xlsx` lib
-- [x] `POST /reports/:id/email` — via Resend
+- [x] `POST /files/presign` — now RBAC-gated (`file:upload`, blocks `viewer`), §12.2
+- [x] `GET /reports` (list) — RBAC-gated (`report:read`)
+- [x] `GET /reports/:id` — RBAC-gated (`report:read`)
+- [x] `POST /reports` — RBAC-gated (`report:create`, blocks `viewer`)
+- [x] `DELETE /reports/:id` — RBAC-gated (`report:delete`, blocks `viewer`; ownership-vs-admin split inside the service)
+- [x] `POST /reports/:id/export` — server-side XLSX via `xlsx` lib, RBAC-gated (`report:export`)
+- [x] `POST /reports/:id/email` — via Resend, HTML template (§12.5), RBAC-gated (`report:email`)
+- [x] `GET`/`POST /audit-logs` — new, §12.3
+- [x] Better Auth org-management endpoints (`/auth/organization/*`) — auto-mounted, not hand-written; RBAC enforced via custom `ac`/`roles`, §12.2
 
 ## 7. Error handling (spec §7)
 
@@ -60,8 +64,10 @@ Tracks implementation status against `doc/backend-implementation-spec.md`. Updat
 
 ## 8. Environment & config (spec §8)
 
-- [x] `.env` present with all required vars (PORT, DATABASE_URL, BETTER_AUTH_SECRET/URL, FRONTEND_URL, R2_*, RESEND_API_KEY, EMAIL_FROM)
+- [x] `.env` present with all required vars (PORT, DATABASE_URL, BETTER_AUTH_SECRET/URL, FRONTEND_URL, R2_*, RESEND_API_KEY, EMAIL_FROM), plus new `GOOGLE_CLIENT_ID`/`SECRET`, `APPLE_CLIENT_ID`/`SECRET` (§12.4) — **all four still blank placeholders**
 - [ ] `.env.example` — **missing**, should be committed as the canonical template (never commit real secrets)
+- [ ] Real Resend API key — **still placeholder** (`re_`); email HTML rendering verified directly, actual delivery never confirmed (§12.5)
+- [ ] Real Cloudflare R2 credentials — **still placeholder**; presign is unit-tested but never verified against a real bucket
 
 ## 9. Testing (spec §9)
 
@@ -73,6 +79,7 @@ Tracks implementation status against `doc/backend-implementation-spec.md`. Updat
 - [x] File upload presign route tests — allowed type + under limit → 200, over 50 MB → 413, disallowed content type → 422 (mocks `getSignedUrl` from `@aws-sdk/s3-request-presigner` since real R2 endpoint config in `.env` is a placeholder and presigning resolves the endpoint eagerly) — `tests/routes/files.routes.test.js`
 - [x] Export/email route tests — XLSX export returns workbook + correct headers, 404 when report missing; email sends via a mocked `Resend` client and returns 202, invalid recipient → 422, 404 when report missing — `tests/routes/reports.export-email.routes.test.js`
 - [ ] True DB integration tests against a real/disposable Postgres (index performance on 100k rows, actual transaction behavior) — **deliberately not done**; current tests mock Prisma entirely. Revisit if a disposable test DB (Docker or a separate Neon branch) gets set up.
+- [x] §12 additions (organizationService, permissions, signupHookService, sessionHookService, orgAuditHookService, auditLogService, emailService, authorize middleware, auditLogs routes, emailTemplate utils) — 16 suites / ~100 tests total, all still mocked-Prisma; see §12.6
 
 ## 10. Deployment — DigitalOcean (spec §10)
 
@@ -84,6 +91,41 @@ Tracks implementation status against `doc/backend-implementation-spec.md`. Updat
 
 - [ ] Node engine not pinned in `package.json` (spec baseline is Node 20 LTS; repo runs Node 24 — decide whether to pin `engines.node`)
 
+## 12. Multi-tenancy, RBAC, Audit Logging, Social Sign-in, Email (post-spec — see spec doc §13 for full detail)
+
+Not part of the original PDF spec; built at product request after §1–11 above were already done.
+
+### 12.1 Multi-tenancy
+- [x] Better Auth `organization` plugin — org/member/invitation schema generated via `@better-auth/cli`, not hand-written
+- [x] Auto org-creation on signup (`services/signupHookService.js`), skipped when a pending invitation exists for that email
+- [x] Bug found + fixed live: `activeOrganizationId` permanently `null` due to an unawaited hook race — fixed via self-healing `hooks.before` (`services/sessionHookService.js`) + disabling `cookieCache`
+- [x] Bug found + fixed live: `AuditLog.organizationId` cascade-deleted the entire audit trail on org deletion — changed to nullable + `SetNull`
+- [x] Reports scoped by `organizationId`, resolved server-side from session — never trusts client-supplied org IDs (IDOR-safe)
+
+### 12.2 RBAC
+- [x] Three custom roles (`admin`/`analyst`/`viewer`) defined once in `services/permissions.js`, consumed by both `middleware/authorize.js` (our routes) and `auth.js`'s custom `ac`/`roles` (Better Auth's org endpoints)
+- [x] Every report/file/audit-log route gated by `requirePermission(resource, action)`
+- [x] `creatorRole: 'admin'` gives the org founder real delete rights (deliberately avoids Better Auth's weaker built-in `admin` role, which lacks `organization:delete`)
+
+### 12.3 Audit logging
+- [x] `GET`/`POST /api/audit-logs` (admin-only read, admin/analyst create)
+- [x] Auto-logged: `report.create`/`.delete`/`.export`/`.email`, and all 7 org-management actions (invite/remove/role-update member, accept/cancel invitation, update/delete org) — path→action map confirmed live against the running server, not guessed from docs
+- [x] Best-effort (`logAuditSafely`) — a logging failure never blocks the real action
+- [ ] Nothing else is logged (sign-in/out, file uploads); no retention policy
+
+### 12.4 Social sign-in
+- [x] `socialProviders.google`/`.apple` wired in `auth.js`
+- [ ] **Untested** — `.env` has blank client id/secret for both; no real OAuth client registered in Google Cloud Console or Apple Developer portal; Apple additionally needs a self-generated, periodically-expiring JWT client secret (operational task)
+
+### 12.5 Email
+- [x] HTML templates (`templates/*.html`) + render/escape/text-fallback utils (`utils/emailTemplate.js`), matching the pattern in the sibling `Datafin HRMS` backend, scaled to this repo's 2 email types
+- [x] Bug found + fixed, present in the HRMS original too: Resend reports failures via `result.error`, not by throwing — confirmed live with the placeholder API key; original code (both repos) only checked `result.id` and would silently "succeed" on failure
+- [ ] Real delivery unverified — `RESEND_API_KEY` still a placeholder; only direct template-rendering was verified (bypassing the network)
+
+### 12.6 Testing
+- [x] 16 Jest suites, ~100 tests (up from 10 suites / 56 tests before this work) — all still mocked-Prisma/mocked-Better-Auth/mocked-AWS/mocked-Resend, no real network or DB calls in any test
+- [x] Every bug/behavior listed in 12.1–12.5 above was confirmed by exercising the real dev Postgres DB directly (signup → invite → accept → role-update → remove → org update/delete, each checked), then cleaned up — not inferred from source reading alone
+
 ---
 
-**Snapshot (updated 2026-07-01):** 13/15 spec areas fully implemented, 1 partial (`.env.example`), 1 missing (deployment config). Route/unit test coverage (mocked Prisma/AWS/Resend) now covers auth wiring, file presign, and reports CRUD + export/email; true DB integration tests and deployment config remain open. See individual unchecked items above for specifics.
+**Snapshot (updated 2026-07-01):** Sections 1–11 (original PDF spec): 13/15 areas fully implemented, 1 partial (`.env.example`), 1 missing (deployment config — still true, unchanged). Section 12 (post-spec, this session): multi-tenancy, RBAC, audit logging, and HTML email are built and verified against the real dev DB; social sign-in is code-complete but untested (needs real OAuth credentials); real Resend/R2 delivery is unverified (placeholder credentials). See individual unchecked items above for specifics.
