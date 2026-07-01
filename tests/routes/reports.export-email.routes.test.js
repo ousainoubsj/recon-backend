@@ -89,7 +89,7 @@ describe('POST /api/reports/:id/export', () => {
 describe('POST /api/reports/:id/email', () => {
   it('emails the report summary and returns 202', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
-    mockSend.mockResolvedValue({ id: 'email-1' });
+    mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
     const res = await request(app)
       .post('/api/reports/r1/email')
