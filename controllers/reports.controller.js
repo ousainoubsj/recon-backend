@@ -1,10 +1,9 @@
 import * as XLSX from 'xlsx';
-import { Resend } from 'resend';
 import * as reportService from '../services/reportService.js';
+import { sendReportEmail } from '../services/emailService.js';
+import { logAuditSafely } from '../services/auditLogService.js';
 
 const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', 'duplicate'];
-
-const resend = new Resend(process.env.RESEND_API_KEY);
 
 export const listReports = async (req, res) => {
   const reports = await reportService.listReports(req.session.user.id);
@@ -38,15 +37,23 @@ export const exportReport = async (req, res) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="reconciliation_report_${report.id}.xlsx"`);
   res.send(buffer);
+
+  await logAuditSafely(req.session.user.id, {
+    action: 'report.export',
+    entityType: 'report',
+    entityId: report.id,
+  });
 };
 
 export const emailReport = async (req, res) => {
   const report = await reportService.getReport(req.session.user.id, req.params.id);
-  await resend.emails.send({
-    from: process.env.EMAIL_FROM,
-    to: req.body.to,
-    subject: `Reconciliation report — ${report.fileAName} vs ${report.fileBName}`,
-    text: `Matched: ${report.matchedCount}/${report.totalRows} (run ${report.runDate.toISOString()})`,
-  });
+  await sendReportEmail(report, req.body.to);
   res.status(202).json({ sent: true });
+
+  await logAuditSafely(req.session.user.id, {
+    action: 'report.email',
+    entityType: 'report',
+    entityId: report.id,
+    metadata: { to: req.body.to },
+  });
 };

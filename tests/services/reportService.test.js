@@ -12,9 +12,17 @@ const mockPrisma = {
     findFirst: jest.fn(),
     deleteMany: jest.fn(),
   },
+  member: {
+    findFirst: jest.fn(),
+  },
 };
 
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
+
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({
+  logAuditSafely: mockLogAuditSafely,
+}));
 
 const { saveReport, listReports, getReport, deleteReport } = await import(
   '../../services/reportService.js'
@@ -22,6 +30,7 @@ const { saveReport, listReports, getReport, deleteReport } = await import(
 const { NotFoundError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
+const ORG_ID = 'org-1';
 
 const dto = {
   fileAName: 'a.csv',
@@ -47,6 +56,7 @@ const dto = {
 beforeEach(() => {
   jest.clearAllMocks();
   mockPrisma.$transaction.mockImplementation(async (fn) => fn(mockTx));
+  mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
 });
 
 describe('saveReport', () => {
@@ -61,6 +71,7 @@ describe('saveReport', () => {
     expect(mockTx.report.create).toHaveBeenCalledWith({
       data: {
         userId: USER_ID,
+        organizationId: ORG_ID,
         fileAName: 'a.csv',
         fileBName: 'b.csv',
         totalRows: 2,
@@ -94,11 +105,17 @@ describe('saveReport', () => {
         }),
       ],
     });
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.create',
+      entityType: 'report',
+      entityId: 'report-1',
+    });
   });
 });
 
 describe('listReports', () => {
-  it("queries only the user's reports, newest first", async () => {
+  it("queries all reports in the user's organization, newest first", async () => {
     const reports = [{ id: 'r1' }, { id: 'r2' }];
     mockPrisma.report.findMany.mockResolvedValue(reports);
 
@@ -106,14 +123,14 @@ describe('listReports', () => {
 
     expect(result).toBe(reports);
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
-      where: { userId: USER_ID },
+      where: { organizationId: ORG_ID },
       orderBy: { runDate: 'desc' },
     });
   });
 });
 
 describe('getReport', () => {
-  it('returns the report with rows when found and owned by the user', async () => {
+  it('returns the report with rows when found within the org', async () => {
     const report = { id: 'r1', rows: [] };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
@@ -121,12 +138,12 @@ describe('getReport', () => {
 
     expect(result).toBe(report);
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
-      where: { id: 'r1', userId: USER_ID },
+      where: { id: 'r1', organizationId: ORG_ID },
       include: { rows: true },
     });
   });
 
-  it('throws NotFoundError when the report does not exist or is not owned by the user', async () => {
+  it('throws NotFoundError when the report does not exist or is not in the org', async () => {
     mockPrisma.report.findFirst.mockResolvedValue(null);
 
     await expect(getReport(USER_ID, 'missing')).rejects.toBeInstanceOf(NotFoundError);
@@ -134,18 +151,35 @@ describe('getReport', () => {
 });
 
 describe('deleteReport', () => {
-  it('resolves when a row was deleted', async () => {
+  it('scopes deletion to the report creator when the role is not admin', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
 
     await expect(deleteReport(USER_ID, 'r1')).resolves.toBeUndefined();
     expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
-      where: { id: 'r1', userId: USER_ID },
+      where: { id: 'r1', organizationId: ORG_ID, userId: USER_ID },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.delete',
+      entityType: 'report',
+      entityId: 'r1',
     });
   });
 
-  it('throws NotFoundError when nothing matched (not found or not owned)', async () => {
+  it('lets an admin delete any report in the org, not just their own', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin' });
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+
+    await expect(deleteReport(USER_ID, 'r1')).resolves.toBeUndefined();
+    expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
+      where: { id: 'r1', organizationId: ORG_ID },
+    });
+  });
+
+  it('throws NotFoundError when nothing matched (not found, not in org, or not owned) and does not log', async () => {
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 0 });
 
     await expect(deleteReport(USER_ID, 'missing')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });

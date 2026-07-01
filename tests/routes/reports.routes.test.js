@@ -11,6 +11,11 @@ jest.unstable_mockModule('../../middleware/authenticate.js', () => ({
   },
 }));
 
+const mockGetUserMembership = jest.fn();
+jest.unstable_mockModule('../../services/organizationService.js', () => ({
+  getUserMembership: mockGetUserMembership,
+}));
+
 const mockReportService = {
   listReports: jest.fn(),
   saveReport: jest.fn(),
@@ -19,6 +24,10 @@ const mockReportService = {
 };
 
 jest.unstable_mockModule('../../services/reportService.js', () => mockReportService);
+
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({
+  logAuditSafely: jest.fn().mockResolvedValue(undefined),
+}));
 
 const { reportsRouter } = await import('../../routes/reports.js');
 const { errorHandler } = await import('../../middleware/errorHandler.js');
@@ -47,7 +56,10 @@ const validDto = {
   config: { amountTolerance: 0.01 },
 };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+});
 
 describe('GET /api/reports', () => {
   it("returns the caller's reports", async () => {
@@ -92,6 +104,16 @@ describe('POST /api/reports', () => {
     expect(res.status).toBe(422);
     expect(res.body.errors.some((e) => /non-negative/.test(e.message))).toBe(true);
   });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).post('/api/reports').send(validDto);
+
+    expect(res.status).toBe(403);
+    expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
+    expect(mockReportService.saveReport).not.toHaveBeenCalled();
+  });
 });
 
 describe('GET /api/reports/:id', () => {
@@ -130,5 +152,15 @@ describe('DELETE /api/reports/:id', () => {
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
+  });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).delete('/api/reports/r1');
+
+    expect(res.status).toBe(403);
+    expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
+    expect(mockReportService.deleteReport).not.toHaveBeenCalled();
   });
 });

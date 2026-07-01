@@ -1,5 +1,7 @@
 import { prisma } from '../db/index.js';
 import { NotFoundError } from '../errors.js';
+import { getUserMembership } from './organizationService.js';
+import { logAuditSafely } from './auditLogService.js';
 
 /**
  * @param {string} userId
@@ -7,11 +9,14 @@ import { NotFoundError } from '../errors.js';
  * @returns {Promise<string>} the new report's id
  */
 export async function saveReport(userId, dto) {
+  const { organizationId } = await getUserMembership(userId);
+
   const report = await prisma.$transaction(async (tx) => {
     // 1. Insert summary row
     const report = await tx.report.create({
       data: {
         userId,
+        organizationId,
         fileAName: dto.fileAName,
         fileBName: dto.fileBName,
         totalRows: dto.summary.total,
@@ -46,26 +51,37 @@ export async function saveReport(userId, dto) {
     return report;
   });
 
+  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id });
+
   return report.id;
 }
 
 export async function listReports(userId) {
+  const { organizationId } = await getUserMembership(userId);
   return prisma.report.findMany({
-    where: { userId },
+    where: { organizationId },
     orderBy: { runDate: 'desc' },
   });
 }
 
 export async function getReport(userId, reportId) {
+  const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
-    where: { id: reportId, userId },
+    where: { id: reportId, organizationId },
     include: { rows: true },
   });
   if (!report) throw new NotFoundError();
   return report;
 }
 
+// Org admins can delete any report in the org; everyone else may only
+// delete a report they created themselves.
 export async function deleteReport(userId, reportId) {
-  const { count } = await prisma.report.deleteMany({ where: { id: reportId, userId } });
+  const { organizationId, role } = await getUserMembership(userId);
+  const { count } = await prisma.report.deleteMany({
+    where: { id: reportId, organizationId, ...(role === 'admin' ? {} : { userId }) },
+  });
   if (count === 0) throw new NotFoundError();
+
+  await logAuditSafely(userId, { action: 'report.delete', entityType: 'report', entityId: reportId });
 }

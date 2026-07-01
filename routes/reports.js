@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/authenticate.js';
+import { requirePermission } from '../middleware/authorize.js';
 import { validate } from '../middleware/validate.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import * as reportsController from '../controllers/reports.controller.js';
@@ -42,26 +43,48 @@ const saveReportSchema = z.object({
   }),
 });
 
-reportsRouter.get('/', authenticate, catchAsync(reportsController.listReports));
+reportsRouter.get(
+  '/',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.listReports),
+);
 
 reportsRouter.post(
   '/',
   authenticate,
+  catchAsync(requirePermission('report', 'create')),
   validate(saveReportSchema),
   catchAsync(reportsController.saveReport),
 );
 
-reportsRouter.get('/:id', authenticate, catchAsync(reportsController.getReport));
+reportsRouter.get(
+  '/:id',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getReport),
+);
 
-reportsRouter.delete('/:id', authenticate, catchAsync(reportsController.deleteReport));
+reportsRouter.delete(
+  '/:id',
+  authenticate,
+  catchAsync(requirePermission('report', 'delete')),
+  catchAsync(reportsController.deleteReport),
+);
 
-reportsRouter.post('/:id/export', authenticate, catchAsync(reportsController.exportReport));
+reportsRouter.post(
+  '/:id/export',
+  authenticate,
+  catchAsync(requirePermission('report', 'export')),
+  catchAsync(reportsController.exportReport),
+);
 
 const emailSchema = z.object({ to: z.string().email() });
 
 reportsRouter.post(
   '/:id/email',
   authenticate,
+  catchAsync(requirePermission('report', 'email')),
   validate(emailSchema),
   catchAsync(reportsController.emailReport),
 );

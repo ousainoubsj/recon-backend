@@ -11,6 +11,11 @@ jest.unstable_mockModule('../../middleware/authenticate.js', () => ({
   },
 }));
 
+const mockGetUserMembership = jest.fn();
+jest.unstable_mockModule('../../services/organizationService.js', () => ({
+  getUserMembership: mockGetUserMembership,
+}));
+
 const mockGetSignedUrl = jest.fn();
 jest.unstable_mockModule('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: mockGetSignedUrl,
@@ -24,7 +29,10 @@ app.use(express.json());
 app.use('/api/files', filesRouter);
 app.use(errorHandler);
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+});
 
 describe('POST /api/files/presign', () => {
   it('issues a presigned URL for an allowed content type under the size limit', async () => {
@@ -61,6 +69,18 @@ describe('POST /api/files/presign', () => {
 
     expect(res.status).toBe(422);
     expect(res.body.type).toBe('https://recon.app/errors/validation-error');
+    expect(mockGetSignedUrl).not.toHaveBeenCalled();
+  });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app)
+      .post('/api/files/presign')
+      .send({ filename: 'transactions.csv', contentType: 'text/csv', size: 1024 });
+
+    expect(res.status).toBe(403);
+    expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
   });
 });

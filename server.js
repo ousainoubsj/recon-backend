@@ -6,6 +6,7 @@ import pinoHttp from 'pino-http';
 import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
 import { reportsRouter } from './routes/reports.js';
+import { auditLogsRouter } from './routes/auditLogs.js';
 import { authRateLimiter, apiRateLimiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -24,5 +25,6 @@ app.use(express.json());
 app.use('/api', apiRateLimiter);
 app.use('/api/files', filesRouter);
 app.use('/api/reports', reportsRouter);
+app.use('/api/audit-logs', auditLogsRouter);
 
 app.use(errorHandler);

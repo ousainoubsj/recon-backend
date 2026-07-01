@@ -1,4 +1,3 @@
-
 generator client {
   provider = "prisma-client"
   output   = "../generated/prisma"
@@ -6,12 +5,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-}
-
-enum Role {
-  admin
-  analyst
-  viewer
 }
 
 enum ReconRowStatus {
@@ -23,38 +16,47 @@ enum ReconRowStatus {
 }
 
 model User {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  email        String   @unique @db.VarChar(255)
-  passwordHash String   @map("password_hash") @db.VarChar(255)
-  role         Role     @default(analyst)
-  createdAt    DateTime @default(now()) @map("created_at")
-  updatedAt    DateTime @updatedAt @map("updated_at")
+  id        String   @id
+  email     String   @unique @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
 
   reports   Report[]
   auditLogs AuditLog[]
+
+  name          String
+  emailVerified Boolean      @default(false)
+  image         String?
+  sessions      Session[]
+  accounts      Account[]
+  members       Member[]
+  invitations   Invitation[]
 
   @@map("users")
 }
 
 model Report {
-  id                String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId            String    @map("user_id") @db.Uuid
-  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  fileAName         String    @map("file_a_name") @db.VarChar(255)
-  fileBName         String    @map("file_b_name") @db.VarChar(255)
-  runDate           DateTime  @default(now()) @map("run_date")
-  totalRows         Int       @map("total_rows")
-  matchedCount      Int       @default(0) @map("matched_count")
-  unmatchedCount    Int       @default(0) @map("unmatched_count")
-  mismatchedCount   Int       @default(0) @map("mismatched_count")
-  duplicateCount    Int       @default(0) @map("duplicate_count")
-  amountTolerance   Decimal   @default(0) @map("amount_tolerance") @db.Decimal(10, 4)
-  dateToleranceDays Int?      @map("date_tolerance_days")
+  id                String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String       @map("user_id")
+  user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId    String       @map("organization_id")
+  organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  fileAName         String       @map("file_a_name") @db.VarChar(255)
+  fileBName         String       @map("file_b_name") @db.VarChar(255)
+  runDate           DateTime     @default(now()) @map("run_date")
+  totalRows         Int          @map("total_rows")
+  matchedCount      Int          @default(0) @map("matched_count")
+  unmatchedCount    Int          @default(0) @map("unmatched_count")
+  mismatchedCount   Int          @default(0) @map("mismatched_count")
+  duplicateCount    Int          @default(0) @map("duplicate_count")
+  amountTolerance   Decimal      @default(0) @map("amount_tolerance") @db.Decimal(10, 4)
+  dateToleranceDays Int?         @map("date_tolerance_days")
   config            Json?
 
   rows ReportRow[]
 
   @@index([userId], map: "idx_reports_user_id")
+  @@index([organizationId], map: "idx_reports_organization_id")
   @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
   @@map("reports")
 }
@@ -79,15 +81,118 @@ model ReportRow {
 }
 
 model AuditLog {
-  id         String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId     String   @map("user_id") @db.Uuid
-  user       User     @relation(fields: [userId], references: [id])
-  action     String   @db.VarChar(100)
-  entityType String?  @map("entity_type") @db.VarChar(50)
-  entityId   String?  @map("entity_id") @db.Uuid
-  ts         DateTime @default(now())
-  metadata   Json?
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String        @map("user_id")
+  user           User          @relation(fields: [userId], references: [id])
+  // Nullable + SetNull (unlike Report's cascading organizationId): an audit
+  // trail must survive the deletion of the thing it's auditing, including
+  // the org.delete entry itself — cascading here would silently destroy the
+  // very history that action needs to be recorded in.
+  organizationId String?       @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  action         String        @db.VarChar(100)
+  entityType     String?       @map("entity_type") @db.VarChar(50)
+  entityId       String?       @map("entity_id") @db.Uuid
+  ts             DateTime      @default(now())
+  metadata       Json?
 
   @@index([userId, ts(sort: Desc)], map: "idx_audit_user_ts")
+  @@index([organizationId], map: "idx_audit_organization_id")
   @@map("audit_logs")
+}
+
+model Session {
+  id                   String   @id
+  expiresAt            DateTime
+  token                String
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+  ipAddress            String?
+  userAgent            String?
+  userId               String
+  user                 User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  activeOrganizationId String?
+
+  @@unique([token])
+  @@index([userId])
+  @@map("session")
+}
+
+model Account {
+  id                    String    @id
+  accountId             String
+  providerId            String
+  userId                String
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime?
+  refreshTokenExpiresAt DateTime?
+  scope                 String?
+  password              String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  @@index([userId])
+  @@map("account")
+}
+
+model Verification {
+  id         String   @id
+  identifier String
+  value      String
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([identifier])
+  @@map("verification")
+}
+
+model Organization {
+  id          String       @id
+  name        String
+  slug        String
+  logo        String?
+  createdAt   DateTime
+  metadata    String?
+  members     Member[]
+  invitations Invitation[]
+  reports     Report[]
+  auditLogs   AuditLog[]
+
+  @@unique([slug])
+  @@map("organization")
+}
+
+model Member {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role           String       @default("member")
+  createdAt      DateTime
+
+  @@index([organizationId])
+  @@index([userId])
+  @@map("member")
+}
+
+model Invitation {
+  id             String       @id
+  organizationId String
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  email          String
+  role           String?
+  status         String       @default("pending")
+  expiresAt      DateTime
+  createdAt      DateTime     @default(now())
+  inviterId      String
+  user           User         @relation(fields: [inviterId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@index([email])
+  @@map("invitation")
 }

@@ -11,8 +11,18 @@ jest.unstable_mockModule('../../middleware/authenticate.js', () => ({
   },
 }));
 
+const mockGetUserMembership = jest.fn();
+jest.unstable_mockModule('../../services/organizationService.js', () => ({
+  getUserMembership: mockGetUserMembership,
+}));
+
 const mockReportService = { getReport: jest.fn() };
 jest.unstable_mockModule('../../services/reportService.js', () => mockReportService);
+
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({
+  logAuditSafely: mockLogAuditSafely,
+}));
 
 const mockSend = jest.fn();
 class MockResend {
@@ -44,7 +54,10 @@ const sampleReport = {
   ],
 };
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+});
 
 describe('POST /api/reports/:id/export', () => {
   it('returns an XLSX workbook for the report', async () => {
@@ -56,6 +69,11 @@ describe('POST /api/reports/:id/export', () => {
     expect(res.headers['content-type']).toContain('spreadsheetml.sheet');
     expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.xlsx');
     expect(Number(res.headers['content-length'])).toBeGreaterThan(0);
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.export',
+      entityType: 'report',
+      entityId: 'r1',
+    });
   });
 
   it('returns a 404 RFC 7807 error when the report is not found', async () => {
@@ -82,6 +100,12 @@ describe('POST /api/reports/:id/email', () => {
     expect(mockSend).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'analyst@example.com', from: process.env.EMAIL_FROM }),
     );
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.email',
+      entityType: 'report',
+      entityId: 'r1',
+      metadata: { to: 'analyst@example.com' },
+    });
   });
 
   it('rejects an invalid recipient address with a 422 and never calls Resend', async () => {
