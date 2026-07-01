@@ -13,23 +13,28 @@ The backend handles **auth, file relay, and report persistence only**. It does *
 
 Out of scope for the backend (handled in `recon-frontend`): file parsing, the matching engine, CSV/XLSX export generation for the client-side flow.
 
-## 2. Repo Structure (target layout per spec)
+## 2. Repo Structure (current, as implemented)
 
 ```
 recon-backend/
-├── src/
-│   ├── routes/        # auth.ts, files.ts, reports.ts
-│   ├── middleware/     # authenticate.ts, validate.ts, rateLimit.ts
-│   ├── db/             # Prisma client
-│   ├── services/       # reportService.ts
-│   ├── types/          # shared TS interfaces — mirrored manually in frontend
-│   ├── auth.ts          # Better Auth config
-│   └── app.ts
-├── prisma/              # schema.prisma, migrations/
+├── controllers/         # files.controller.js, reports.controller.js
+├── routes/               # auth.js, files.js, reports.js
+├── middleware/           # authenticate.js, validate.js, rateLimit.js
+├── db/                   # index.js — Prisma client
+├── services/             # reportService.js
+├── types/                # file.js, recon.js — shared shapes, mirrored manually in frontend
+├── utils/                # catchAsync.js
+├── generated/prisma/     # generated Prisma client (models/, internal/, client.ts, enums.ts, ...)
+├── prisma/               # schema.prisma, migrations/
+├── auth.js               # Better Auth config
+├── app.js                # Express app assembly
+├── server.js             # server entrypoint (listens, starts app)
+├── errors.js             # error classes / RFC 7807 handler
+├── prisma.config.js      # Prisma 7 config (driver adapters)
 └── package.json
 ```
 
-> Note: the spec's reference layout nests app code under `src/`. The current repo keeps these at the project root (`routes/`, `middleware/`, `db/`, `controllers/`, `services/`, `types/`, `auth.js`, `app.js`) and uses plain JS instead of TS — functionally equivalent, just flattened.
+> Note: the spec's reference layout nests app code under `src/` (`src/routes/`, `src/middleware/`, etc.) and uses TypeScript. The current repo keeps these at the project root and uses plain JS instead of TS — functionally equivalent, just flattened. It also splits routing into thin `routes/` handlers plus `controllers/` for request logic, and adds `server.js` as a separate entrypoint from `app.js`, neither of which appear in the spec's reference layout.
 
 ## 3. Data Contracts the Backend Must Persist/Relay
 
