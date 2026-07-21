@@ -11,6 +11,7 @@ export const reportsRouter = Router();
 const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', 'duplicate'];
 
 const saveReportSchema = z.object({
+  name: z.string().max(255).optional(),
   fileAName: z.string(),
   fileBName: z.string(),
   summary: z.object({
@@ -56,6 +57,62 @@ reportsRouter.post(
   catchAsync(requirePermission('report', 'create')),
   validate(saveReportSchema),
   catchAsync(reportsController.saveReport),
+);
+
+// Draft fields are all optional — a draft can be saved at any point in the
+// reconcile flow, from just a name up to everything but the final match run.
+const draftSchema = z.object({
+  name: z.string().max(255).optional(),
+  fileAName: z.string().optional(),
+  fileBName: z.string().optional(),
+  progress: z.number().min(0).max(100).optional(),
+  config: z.record(z.unknown()).optional(),
+});
+
+// Registered before /:id so Express doesn't match these as a report id.
+reportsRouter.get(
+  '/summary',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getReportsSummary),
+);
+
+reportsRouter.get(
+  '/trend',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getReportsTrend),
+);
+
+reportsRouter.get(
+  '/drafts',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.listDrafts),
+);
+
+reportsRouter.post(
+  '/draft',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(draftSchema),
+  catchAsync(reportsController.saveDraft),
+);
+
+reportsRouter.patch(
+  '/draft/:id',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(draftSchema),
+  catchAsync(reportsController.updateDraft),
+);
+
+reportsRouter.post(
+  '/draft/:id/complete',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(saveReportSchema),
+  catchAsync(reportsController.completeDraft),
 );
 
 reportsRouter.get(

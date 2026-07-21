@@ -15,14 +15,24 @@ enum ReconRowStatus {
   duplicate
 }
 
+enum ReportStatus {
+  draft
+  completed
+  // Nothing sets this yet — no code path produces a failed run until the
+  // actual matching engine exists. Included now for parity with History's
+  // "Failed" quick filter so it isn't blocked on a future migration.
+  failed
+}
+
 model User {
   id        String   @id
   email     String   @unique @db.VarChar(255)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  reports   Report[]
-  auditLogs AuditLog[]
+  reports       Report[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
 
   name          String
   emailVerified Boolean      @default(false)
@@ -41,14 +51,22 @@ model Report {
   user              User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   organizationId    String       @map("organization_id")
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  fileAName         String       @map("file_a_name") @db.VarChar(255)
-  fileBName         String       @map("file_b_name") @db.VarChar(255)
+  status            ReportStatus @default(completed)
+  // Nullable: a draft can exist before any file has been chosen yet.
+  fileAName         String?      @map("file_a_name") @db.VarChar(255)
+  fileBName         String?      @map("file_b_name") @db.VarChar(255)
+  name              String?      @db.VarChar(255)
+  // 0-100; 100 for a completed/failed run, whatever the client reports for
+  // an in-progress draft (see services/reportService.js's saveDraft).
+  progress          Int          @default(100)
   runDate           DateTime     @default(now()) @map("run_date")
-  totalRows         Int          @map("total_rows")
+  updatedAt         DateTime     @updatedAt @map("updated_at")
+  totalRows         Int          @default(0) @map("total_rows")
   matchedCount      Int          @default(0) @map("matched_count")
   unmatchedCount    Int          @default(0) @map("unmatched_count")
   mismatchedCount   Int          @default(0) @map("mismatched_count")
   duplicateCount    Int          @default(0) @map("duplicate_count")
+  totalBreakValue   Decimal      @default(0) @map("total_break_value") @db.Decimal(18, 4)
   amountTolerance   Decimal      @default(0) @map("amount_tolerance") @db.Decimal(10, 4)
   dateToleranceDays Int?         @map("date_tolerance_days")
   config            Json?
@@ -58,6 +76,7 @@ model Report {
   @@index([userId], map: "idx_reports_user_id")
   @@index([organizationId], map: "idx_reports_organization_id")
   @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
+  @@index([userId, status], map: "idx_reports_user_status")
   @@map("reports")
 }
 
@@ -99,6 +118,23 @@ model AuditLog {
   @@index([userId, ts(sort: Desc)], map: "idx_audit_user_ts")
   @@index([organizationId], map: "idx_audit_organization_id")
   @@map("audit_logs")
+}
+
+model Notification {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String       @map("user_id")
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  type           String       @db.VarChar(100)
+  message        String
+  entityType     String?      @map("entity_type") @db.VarChar(50)
+  entityId       String?      @map("entity_id") @db.Uuid
+  read           Boolean      @default(false)
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([userId, read, createdAt(sort: Desc)], map: "idx_notifications_user_unread")
+  @@map("notifications")
 }
 
 model Session {
@@ -157,10 +193,11 @@ model Organization {
   logo        String?
   createdAt   DateTime
   metadata    String?
-  members     Member[]
-  invitations Invitation[]
-  reports     Report[]
-  auditLogs   AuditLog[]
+  members       Member[]
+  invitations   Invitation[]
+  reports       Report[]
+  auditLogs     AuditLog[]
+  notifications Notification[]
 
   @@unique([slug])
   @@map("organization")

@@ -2,17 +2,50 @@ import * as XLSX from 'xlsx';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
 import { logAuditSafely } from '../services/auditLogService.js';
+import { parsePositiveInt } from '../utils/queryParams.js';
 
 const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', 'duplicate'];
 
 export const listReports = async (req, res) => {
-  const reports = await reportService.listReports(req.session.user.id);
+  const limit = parsePositiveInt(req.query.limit, 100);
+  const reports = await reportService.listReports(req.session.user.id, { limit });
   res.json(reports);
+};
+
+export const getReportsSummary = async (req, res) => {
+  const summary = await reportService.getReportsSummary(req.session.user.id);
+  res.json(summary);
+};
+
+export const getReportsTrend = async (req, res) => {
+  const months = parsePositiveInt(req.query.months, 12);
+  const trend = await reportService.getReportsTrend(req.session.user.id, months ? { months } : undefined);
+  res.json(trend);
 };
 
 export const saveReport = async (req, res) => {
   const id = await reportService.saveReport(req.session.user.id, req.body);
   res.status(201).json({ id });
+};
+
+export const saveDraft = async (req, res) => {
+  const draft = await reportService.saveDraft(req.session.user.id, req.body);
+  res.status(201).json(draft);
+};
+
+export const updateDraft = async (req, res) => {
+  const draft = await reportService.updateDraft(req.session.user.id, req.params.id, req.body);
+  res.json(draft);
+};
+
+export const listDrafts = async (req, res) => {
+  const drafts = await reportService.listDrafts(req.session.user.id);
+  res.json(drafts);
+};
+
+export const completeDraft = async (req, res) => {
+  const id = await reportService.completeDraft(req.session.user.id, req.params.id, req.body);
+  res.status(200).json({ id });
 };
 
 export const getReport = async (req, res) => {

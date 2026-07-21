@@ -21,6 +21,11 @@ jest.unstable_mockModule('@aws-sdk/s3-request-presigner', () => ({
   getSignedUrl: mockGetSignedUrl,
 }));
 
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({
+  logAuditSafely: mockLogAuditSafely,
+}));
+
 const { filesRouter } = await import('../../routes/files.js');
 const { errorHandler } = await import('../../middleware/errorHandler.js');
 
@@ -50,6 +55,11 @@ describe('POST /api/files/presign', () => {
       expect.anything(),
       { expiresIn: 300 },
     );
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'file.upload_initiated',
+      entityType: 'file',
+      metadata: { filename: 'transactions.csv', contentType: 'text/csv' },
+    });
   });
 
   it('rejects a file over 50 MB with a 413 RFC 7807 error', async () => {
@@ -60,6 +70,7 @@ describe('POST /api/files/presign', () => {
     expect(res.status).toBe(413);
     expect(res.body.type).toBe('https://recon.app/errors/file-too-large');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 
   it('rejects a disallowed content type with a 422 RFC 7807 error', async () => {
@@ -70,6 +81,7 @@ describe('POST /api/files/presign', () => {
     expect(res.status).toBe(422);
     expect(res.body.type).toBe('https://recon.app/errors/validation-error');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 
   it('rejects a viewer with a 403 RFC 7807 error', async () => {
@@ -82,5 +94,6 @@ describe('POST /api/files/presign', () => {
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });

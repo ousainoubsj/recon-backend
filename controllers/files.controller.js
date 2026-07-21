@@ -1,6 +1,7 @@
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { FileTooLargeError, ValidationError } from '../errors.js';
+import { logAuditSafely } from '../services/auditLogService.js';
 
 const r2 = new S3Client({
   region: 'auto',
@@ -39,4 +40,12 @@ export const createPresignedUpload = async (req, res) => {
   );
 
   res.json({ url: presignedUrl, key });
+
+  // Only confirms the presign was issued, not that the browser's direct-to-R2
+  // PUT actually succeeded afterward — the backend never learns that, by design.
+  await logAuditSafely(req.session.user.id, {
+    action: 'file.upload_initiated',
+    entityType: 'file',
+    metadata: { filename, contentType },
+  });
 };

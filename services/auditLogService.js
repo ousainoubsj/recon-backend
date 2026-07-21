@@ -19,11 +19,12 @@ export async function createAuditLog(userId, entry) {
   });
 }
 
-export async function listAuditLogs(userId) {
+export async function listAuditLogs(userId, { limit } = {}) {
   const { organizationId } = await getUserMembership(userId);
   return prisma.auditLog.findMany({
     where: { organizationId },
     orderBy: { ts: 'desc' },
+    ...(limit ? { take: limit } : {}),
   });
 }
 

@@ -1,7 +1,9 @@
 import * as auditLogService from '../services/auditLogService.js';
+import { parsePositiveInt } from '../utils/queryParams.js';
 
 export const listAuditLogs = async (req, res) => {
-  const logs = await auditLogService.listAuditLogs(req.session.user.id);
+  const limit = parsePositiveInt(req.query.limit, 200);
+  const logs = await auditLogService.listAuditLogs(req.session.user.id, { limit });
   res.json(logs);
 };
 

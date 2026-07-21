@@ -7,6 +7,8 @@ import { authRouter } from './routes/auth.js';
 import { filesRouter } from './routes/files.js';
 import { reportsRouter } from './routes/reports.js';
 import { auditLogsRouter } from './routes/auditLogs.js';
+import { notificationsRouter } from './routes/notifications.js';
+import { searchRouter } from './routes/search.js';
 import { authRateLimiter, apiRateLimiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -26,5 +28,7 @@ app.use('/api', apiRateLimiter);
 app.use('/api/files', filesRouter);
 app.use('/api/reports', reportsRouter);
 app.use('/api/audit-logs', auditLogsRouter);
+app.use('/api/notifications', notificationsRouter);
+app.use('/api/search', searchRouter);
 
 app.use(errorHandler);

@@ -43,7 +43,15 @@ describe('GET /api/audit-logs', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: 'log-1' }]);
-    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID);
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, { limit: undefined });
+  });
+
+  it('passes a valid ?limit= through', async () => {
+    mockAuditLogService.listAuditLogs.mockResolvedValue([]);
+
+    await request(app).get('/api/audit-logs?limit=20');
+
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, { limit: 20 });
   });
 
   it('rejects an analyst with a 403 (read is admin-only)', async () => {

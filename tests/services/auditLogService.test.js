@@ -62,7 +62,7 @@ describe('createAuditLog', () => {
 });
 
 describe('listAuditLogs', () => {
-  it('lists entries scoped to the organization, newest first', async () => {
+  it('lists entries scoped to the organization, newest first, unbounded by default', async () => {
     const logs = [{ id: 'log-1' }, { id: 'log-2' }];
     mockPrisma.auditLog.findMany.mockResolvedValue(logs);
 
@@ -72,6 +72,18 @@ describe('listAuditLogs', () => {
     expect(mockPrisma.auditLog.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID },
       orderBy: { ts: 'desc' },
+    });
+  });
+
+  it('passes take through when a limit is given', async () => {
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+
+    await listAuditLogs(USER_ID, { limit: 50 });
+
+    expect(mockPrisma.auditLog.findMany).toHaveBeenCalledWith({
+      where: { organizationId: ORG_ID },
+      orderBy: { ts: 'desc' },
+      take: 50,
     });
   });
 });

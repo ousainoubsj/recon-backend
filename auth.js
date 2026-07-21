@@ -9,6 +9,7 @@ import { handleUserCreated } from './services/signupHookService.js';
 import { repairActiveOrganization } from './services/sessionHookService.js';
 import { auditOrgAction } from './services/orgAuditHookService.js';
 import { logAuditSafely } from './services/auditLogService.js';
+import { createNotification } from './services/notificationService.js';
 import { sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } from './services/emailService.js';
 
 // Statement lists every resource:action our access-control roles can grant.
@@ -80,7 +81,7 @@ export const auth = betterAuth({
       await repairActiveOrganization(session?.session ?? null, { prisma });
     }),
     after: createAuthMiddleware((ctx) =>
-      auditOrgAction(ctx, { getSession: auth.api.getSession, logAuditSafely }),
+      auditOrgAction(ctx, { getSession: auth.api.getSession, logAuditSafely, createNotification, prisma }),
     ),
   },
   plugins: [
