@@ -1,7 +1,7 @@
 import { betterAuth } from 'better-auth';
 import { createAuthMiddleware } from 'better-auth/api';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
-import { organization } from 'better-auth/plugins';
+import { organization, emailOTP } from 'better-auth/plugins';
 import { createAccessControl } from 'better-auth/plugins/access';
 import { prisma } from './db/index.js';
 import { ROLE_PERMISSIONS } from './services/permissions.js';
@@ -9,7 +9,7 @@ import { handleUserCreated } from './services/signupHookService.js';
 import { repairActiveOrganization } from './services/sessionHookService.js';
 import { auditOrgAction } from './services/orgAuditHookService.js';
 import { logAuditSafely } from './services/auditLogService.js';
-import { sendOrgInvitationEmail } from './services/emailService.js';
+import { sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } from './services/emailService.js';
 
 // Statement lists every resource:action our access-control roles can grant.
 // Includes Better Auth's own org-management resources (organization, member,
@@ -30,7 +30,14 @@ const roles = Object.fromEntries(
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
-  emailAndPassword: { enabled: true },
+  emailAndPassword: {
+    enabled: true,
+    // Blocks /sign-in/email until the user completes the OTP step below.
+    // Social sign-in is unaffected: Google/Apple mark emailVerified from the
+    // provider's own claim, not via this flag (see oauth2/link-account.mjs).
+    requireEmailVerification: true,
+    sendResetPassword: async ({ user, url }) => sendPasswordResetEmail(user, url),
+  },
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID,
@@ -83,6 +90,16 @@ export const auth = betterAuth({
       creatorRole: 'admin',
       organizationLimit: 1, // each user belongs to exactly one organization
       sendInvitationEmail: sendOrgInvitationEmail,
+    }),
+    emailOTP({
+      // Redirects Better Auth's built-in "send verification on signup"
+      // (triggered by requireEmailVerification above) to our OTP sender,
+      // instead of the classic link-based verification email.
+      overrideDefaultEmailVerification: true,
+      // /email-otp/verify-email returns a session token on success — needed
+      // since requireEmailVerification made sign-up skip auto-sign-in.
+      autoSignInAfterVerification: true,
+      sendVerificationOTP: async ({ email, otp, type }) => sendOtpEmail({ email, otp, type }),
     }),
   ],
 });
