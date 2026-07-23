@@ -24,6 +24,18 @@ jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
 }));
 
+const mockResolveSections = jest.fn();
+jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
+  resolveSections: mockResolveSections,
+}));
+
+const mockRecordExport = jest.fn().mockResolvedValue(undefined);
+const mockListExports = jest.fn();
+jest.unstable_mockModule('../../services/reportExportService.js', () => ({
+  recordExport: mockRecordExport,
+  listExports: mockListExports,
+}));
+
 const mockSend = jest.fn();
 class MockResend {
   constructor() {
@@ -41,29 +53,44 @@ app.use(express.json());
 app.use('/api/reports', reportsRouter);
 app.use(errorHandler);
 
+const ALL_SECTIONS = {
+  summary: true,
+  matchStatistics: true,
+  breakAnalysis: true,
+  unmatchedDetails: true,
+  chartsAndGraphs: true,
+};
+
 const sampleReport = {
   id: 'r1',
+  organizationId: 'org-1',
+  name: 'June Bank Reconciliation',
   fileAName: 'a.csv',
   fileBName: 'b.csv',
   matchedCount: 8,
+  mismatchedCount: 1,
+  unmatchedCount: 1,
+  duplicateCount: 0,
+  totalBreakValue: 50,
   totalRows: 10,
   runDate: new Date('2026-01-01T00:00:00Z'),
   rows: [
-    { ref: 'REF1', status: 'matched', amountA: 100, amountB: 100 },
-    { ref: 'REF2', status: 'unmatched_a', amountA: 50, amountB: null },
+    { ref: 'REF1', status: 'matched', amountA: 100, amountB: 100, amountDiff: 0 },
+    { ref: 'REF2', status: 'unmatched_a', amountA: 50, amountB: null, amountDiff: null },
   ],
 };
 
 beforeEach(() => {
   jest.clearAllMocks();
   mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+  mockResolveSections.mockResolvedValue(ALL_SECTIONS);
 });
 
 describe('POST /api/reports/:id/export', () => {
-  it('returns an XLSX workbook for the report', async () => {
+  it('returns an XLSX workbook by default and records the export', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
-    const res = await request(app).post('/api/reports/r1/export');
+    const res = await request(app).post('/api/reports/r1/export').send({});
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('spreadsheetml.sheet');
@@ -73,16 +100,70 @@ describe('POST /api/reports/:id/export', () => {
       action: 'report.export',
       entityType: 'report',
       entityId: 'r1',
+      metadata: { format: 'xlsx', templateId: null },
     });
+    expect(mockRecordExport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: 'r1',
+        userId: USER_ID,
+        organizationId: 'org-1',
+        format: 'xlsx',
+        fileSizeBytes: expect.any(Number),
+      }),
+    );
+  });
+
+  it('returns a real PDF when format is "pdf"', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+
+    const res = await request(app).post('/api/reports/r1/export').send({ format: 'pdf' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.pdf');
+    expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+    expect(mockRecordExport).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }));
+  });
+
+  it('passes templateId and sections overrides through to resolveSections', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+
+    await request(app)
+      .post('/api/reports/r1/export')
+      .send({ templateId: '123e4567-e89b-12d3-a456-426614174000', sections: { summary: false } });
+
+    expect(mockResolveSections).toHaveBeenCalledWith({
+      organizationId: 'org-1',
+      templateId: '123e4567-e89b-12d3-a456-426614174000',
+      overrideSections: { summary: false },
+    });
+  });
+
+  it('rejects an invalid format with a 422', async () => {
+    const res = await request(app).post('/api/reports/r1/export').send({ format: 'csv' });
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.getReport).not.toHaveBeenCalled();
   });
 
   it('returns a 404 RFC 7807 error when the report is not found', async () => {
     mockReportService.getReport.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).post('/api/reports/missing/export');
+    const res = await request(app).post('/api/reports/missing/export').send({});
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
+  });
+
+  it('returns a 404 when the template does not exist or is not visible to the org', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+    mockResolveSections.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app)
+      .post('/api/reports/r1/export')
+      .send({ templateId: '123e4567-e89b-12d3-a456-426614174000' });
+
+    expect(res.status).toBe(404);
   });
 });
 

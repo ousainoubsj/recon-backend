@@ -31,6 +31,16 @@ const mockReportService = {
 
 jest.unstable_mockModule('../../services/reportService.js', () => mockReportService);
 
+const mockReportExportService = {
+  recordExport: jest.fn().mockResolvedValue(undefined),
+  listExports: jest.fn(),
+};
+jest.unstable_mockModule('../../services/reportExportService.js', () => mockReportExportService);
+
+jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
+  resolveSections: jest.fn(),
+}));
+
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: jest.fn().mockResolvedValue(undefined),
 }));
@@ -133,6 +143,26 @@ describe('GET /api/reports/trend', () => {
     await request(app).get('/api/reports/trend?months=3');
 
     expect(mockReportService.getReportsTrend).toHaveBeenCalledWith(USER_ID, { months: 3 });
+  });
+});
+
+describe('GET /api/reports/exports', () => {
+  it("returns the org's export history, unbounded by default", async () => {
+    mockReportExportService.listExports.mockResolvedValue([{ id: 'exp-1' }]);
+
+    const res = await request(app).get('/api/reports/exports');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([{ id: 'exp-1' }]);
+    expect(mockReportExportService.listExports).toHaveBeenCalledWith(USER_ID, { limit: undefined });
+  });
+
+  it('passes a valid ?limit= through', async () => {
+    mockReportExportService.listExports.mockResolvedValue([]);
+
+    await request(app).get('/api/reports/exports?limit=10');
+
+    expect(mockReportExportService.listExports).toHaveBeenCalledWith(USER_ID, { limit: 10 });
   });
 });
 

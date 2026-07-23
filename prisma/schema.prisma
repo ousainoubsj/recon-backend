@@ -24,6 +24,11 @@ enum ReportStatus {
   failed
 }
 
+enum ExportFormat {
+  xlsx
+  pdf
+}
+
 model User {
   id        String   @id
   email     String   @unique @db.VarChar(255)
@@ -33,6 +38,7 @@ model User {
   reports       Report[]
   auditLogs     AuditLog[]
   notifications Notification[]
+  reportExports ReportExport[]
 
   name          String
   emailVerified Boolean      @default(false)
@@ -71,7 +77,8 @@ model Report {
   dateToleranceDays Int?         @map("date_tolerance_days")
   config            Json?
 
-  rows ReportRow[]
+  rows    ReportRow[]
+  exports ReportExport[]
 
   @@index([userId], map: "idx_reports_user_id")
   @@index([organizationId], map: "idx_reports_organization_id")
@@ -137,6 +144,45 @@ model Notification {
   @@map("notifications")
 }
 
+model ReportTemplate {
+  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  // NULL = a system-wide template visible to every org (seeded via migration);
+  // non-null = an org's own custom template.
+  organizationId String?       @map("organization_id")
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name           String        @db.VarChar(100)
+  description    String?
+  // {summary, matchStatistics, breakAnalysis, unmatchedDetails, chartsAndGraphs}
+  sections       Json
+  isSystem       Boolean       @default(false) @map("is_system")
+  createdAt      DateTime      @default(now()) @map("created_at")
+
+  exports ReportExport[]
+
+  @@index([organizationId])
+  @@map("report_templates")
+}
+
+model ReportExport {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId       String          @map("report_id") @db.Uuid
+  report         Report          @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  userId         String          @map("user_id")
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String          @map("organization_id")
+  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  // Nullable + SetNull: an export's history should survive the template
+  // it was generated from later being deleted.
+  templateId     String?         @map("template_id") @db.Uuid
+  template       ReportTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  format         ExportFormat
+  fileSizeBytes  Int             @map("file_size_bytes")
+  createdAt      DateTime        @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt(sort: Desc)], map: "idx_report_exports_org_created")
+  @@map("report_exports")
+}
+
 model Session {
   id                   String   @id
   expiresAt            DateTime
@@ -193,11 +239,13 @@ model Organization {
   logo        String?
   createdAt   DateTime
   metadata    String?
-  members       Member[]
-  invitations   Invitation[]
-  reports       Report[]
-  auditLogs     AuditLog[]
-  notifications Notification[]
+  members         Member[]
+  invitations     Invitation[]
+  reports         Report[]
+  auditLogs       AuditLog[]
+  notifications   Notification[]
+  reportTemplates ReportTemplate[]
+  reportExports   ReportExport[]
 
   @@unique([slug])
   @@map("organization")

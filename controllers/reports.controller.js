@@ -1,10 +1,11 @@
-import * as XLSX from 'xlsx';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
 import { logAuditSafely } from '../services/auditLogService.js';
+import { resolveSections } from '../services/reportTemplateService.js';
+import { recordExport, listExports as listReportExports } from '../services/reportExportService.js';
+import { buildXlsxReport } from '../utils/xlsxReport.js';
+import { buildPdfReport } from '../utils/pdfReport.js';
 import { parsePositiveInt } from '../utils/queryParams.js';
-
-const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', 'duplicate'];
 
 export const listReports = async (req, res) => {
   const limit = parsePositiveInt(req.query.limit, 100);
@@ -58,24 +59,48 @@ export const deleteReport = async (req, res) => {
   res.status(204).end();
 };
 
+const CONTENT_TYPE_BY_FORMAT = {
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pdf: 'application/pdf',
+};
+
 export const exportReport = async (req, res) => {
   const report = await reportService.getReport(req.session.user.id, req.params.id);
-  const wb = XLSX.utils.book_new();
-  for (const status of RECON_STATUSES) {
-    const filtered = report.rows.filter((r) => r.status === status);
-    const ws = XLSX.utils.json_to_sheet(filtered);
-    XLSX.utils.book_append_sheet(wb, ws, status);
-  }
-  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="reconciliation_report_${report.id}.xlsx"`);
+  const { format = 'xlsx', templateId, sections: overrideSections } = req.body ?? {};
+
+  const sections = await resolveSections({
+    organizationId: report.organizationId,
+    templateId,
+    overrideSections,
+  });
+
+  const buffer = format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+
+  res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[format]);
+  res.setHeader('Content-Disposition', `attachment; filename="reconciliation_report_${report.id}.${format}"`);
   res.send(buffer);
 
   await logAuditSafely(req.session.user.id, {
     action: 'report.export',
     entityType: 'report',
     entityId: report.id,
+    metadata: { format, templateId: templateId ?? null },
   });
+
+  await recordExport({
+    reportId: report.id,
+    userId: req.session.user.id,
+    organizationId: report.organizationId,
+    templateId,
+    format,
+    fileSizeBytes: buffer.length,
+  });
+};
+
+export const listExports = async (req, res) => {
+  const limit = parsePositiveInt(req.query.limit, 100);
+  const exports = await listReportExports(req.session.user.id, { limit });
+  res.json(exports);
 };
 
 export const emailReport = async (req, res) => {

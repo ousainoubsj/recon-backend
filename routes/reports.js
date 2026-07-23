@@ -91,6 +91,13 @@ reportsRouter.get(
   catchAsync(reportsController.listDrafts),
 );
 
+reportsRouter.get(
+  '/exports',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.listExports),
+);
+
 reportsRouter.post(
   '/draft',
   authenticate,
@@ -129,10 +136,27 @@ reportsRouter.delete(
   catchAsync(reportsController.deleteReport),
 );
 
+const sectionsSchema = z
+  .object({
+    summary: z.boolean(),
+    matchStatistics: z.boolean(),
+    breakAnalysis: z.boolean(),
+    unmatchedDetails: z.boolean(),
+    chartsAndGraphs: z.boolean(),
+  })
+  .partial();
+
+const exportSchema = z.object({
+  format: z.enum(['xlsx', 'pdf']).default('xlsx'),
+  templateId: z.string().uuid().optional(),
+  sections: sectionsSchema.optional(),
+});
+
 reportsRouter.post(
   '/:id/export',
   authenticate,
   catchAsync(requirePermission('report', 'export')),
+  validate(exportSchema),
   catchAsync(reportsController.exportReport),
 );
 
