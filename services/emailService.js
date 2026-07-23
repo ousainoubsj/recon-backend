@@ -14,16 +14,26 @@ function isResendConfigured() {
   return Boolean(key) && key !== 're_xxx';
 }
 
-async function sendEmail({ to, subject, html, text }) {
+async function sendEmail({ to, subject, html, text, attachments }) {
   if (!isResendConfigured()) {
     console.warn(`[email:dev-fallback] RESEND_API_KEY not configured — logging email instead of sending.`);
     console.warn(`[email:dev-fallback] To: ${to}\nSubject: ${subject}\n${text}`);
+    if (attachments?.length) {
+      console.warn(`[email:dev-fallback] Would have attached: ${attachments.map((a) => a.filename).join(', ')}`);
+    }
     return { success: true, messageId: 'dev-fallback' };
   }
 
   // The Resend SDK reports failures via `result.error`, not by throwing —
   // an unchecked `result.data.id` would silently report success on failure.
-  const result = await resend.emails.send({ from: process.env.EMAIL_FROM, to, subject, html, text });
+  const result = await resend.emails.send({
+    from: process.env.EMAIL_FROM,
+    to,
+    subject,
+    html,
+    text,
+    ...(attachments?.length ? { attachments } : {}),
+  });
   if (result.error) {
     console.error(`Error sending email to ${to}`, result.error);
     throw new Error(result.error.message ?? 'Failed to send email');
@@ -49,6 +59,33 @@ export async function sendReportEmail(report, to) {
     subject: `Reconciliation report — ${report.fileAName} vs ${report.fileBName}`,
     html,
     text: htmlToText(html),
+  });
+}
+
+/**
+ * Fired by services/scheduledReportRunner.js after generating a scheduled
+ * export — same template as sendReportEmail, but attaches the generated
+ * file and can go to multiple recipients at once.
+ * @param {object} report
+ * @param {Buffer} buffer
+ * @param {'xlsx'|'pdf'} format
+ * @param {string[]} recipients
+ */
+export async function sendScheduledReportEmail(report, buffer, format, recipients) {
+  const html = await renderEmailTemplate('email-report', {
+    fileAName: escapeHtmlForEmail(report.fileAName ?? ''),
+    fileBName: escapeHtmlForEmail(report.fileBName ?? ''),
+    matchedCount: report.matchedCount,
+    totalRows: report.totalRows,
+    runDateFormatted: escapeHtmlForEmail(formatDate(report.runDate)),
+  });
+
+  await sendEmail({
+    to: recipients,
+    subject: `Scheduled reconciliation report — ${report.fileAName ?? ''} vs ${report.fileBName ?? ''}`,
+    html,
+    text: htmlToText(html),
+    attachments: [{ filename: `reconciliation_report_${report.id}.${format}`, content: buffer }],
   });
 }
 

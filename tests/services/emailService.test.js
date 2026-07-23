@@ -8,9 +8,8 @@ class MockResend {
 }
 jest.unstable_mockModule('resend', () => ({ Resend: MockResend }));
 
-const { sendReportEmail, sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } = await import(
-  '../../services/emailService.js'
-);
+const { sendReportEmail, sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail, sendScheduledReportEmail } =
+  await import('../../services/emailService.js');
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -123,6 +122,46 @@ describe('sendOtpEmail', () => {
     mockSend.mockResolvedValue({ data: null, error: { message: 'boom' } });
 
     await expect(sendOtpEmail({ email: 'user@example.com', otp: '123456' })).rejects.toThrow('boom');
+  });
+});
+
+describe('sendScheduledReportEmail', () => {
+  const buffer = Buffer.from('xlsx-bytes');
+
+  it('sends the report email with the generated file attached, to every recipient', async () => {
+    mockSend.mockResolvedValue({ data: { id: 'email-6' }, error: null });
+
+    await sendScheduledReportEmail({ ...report, id: 'r1' }, buffer, 'xlsx', ['a@example.com', 'b@example.com']);
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: ['a@example.com', 'b@example.com'],
+        subject: 'Scheduled reconciliation report — a.csv vs b.csv',
+        attachments: [{ filename: 'reconciliation_report_r1.xlsx', content: buffer }],
+      }),
+    );
+  });
+
+  it('throws when Resend reports an error', async () => {
+    mockSend.mockResolvedValue({ data: null, error: { message: 'boom' } });
+
+    await expect(sendScheduledReportEmail({ ...report, id: 'r1' }, buffer, 'xlsx', ['a@example.com'])).rejects.toThrow(
+      'boom',
+    );
+  });
+
+  it('logs (rather than dumps binary content) in the dev fallback path', async () => {
+    const originalKey = process.env.RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await sendScheduledReportEmail({ ...report, id: 'r1' }, buffer, 'xlsx', ['a@example.com']);
+
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('reconciliation_report_r1.xlsx'));
+
+    process.env.RESEND_API_KEY = originalKey;
+    warnSpy.mockRestore();
   });
 });
 

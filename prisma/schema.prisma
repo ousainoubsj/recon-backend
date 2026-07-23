@@ -29,16 +29,33 @@ enum ExportFormat {
   pdf
 }
 
+enum ScheduleCadence {
+  daily
+  weekly
+  monthly
+}
+
+enum ReportExportSource {
+  manual
+  scheduled
+}
+
+enum ReportExportStatus {
+  success
+  failed
+}
+
 model User {
   id        String   @id
   email     String   @unique @db.VarChar(255)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  reports       Report[]
-  auditLogs     AuditLog[]
-  notifications Notification[]
-  reportExports ReportExport[]
+  reports          Report[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  reportExports    ReportExport[]
+  scheduledReports ScheduledReport[]
 
   name          String
   emailVerified Boolean      @default(false)
@@ -77,8 +94,9 @@ model Report {
   dateToleranceDays Int?         @map("date_tolerance_days")
   config            Json?
 
-  rows    ReportRow[]
-  exports ReportExport[]
+  rows      ReportRow[]
+  exports   ReportExport[]
+  schedules ScheduledReport[]
 
   @@index([userId], map: "idx_reports_user_id")
   @@index([organizationId], map: "idx_reports_organization_id")
@@ -157,30 +175,70 @@ model ReportTemplate {
   isSystem       Boolean       @default(false) @map("is_system")
   createdAt      DateTime      @default(now()) @map("created_at")
 
-  exports ReportExport[]
+  exports   ReportExport[]
+  schedules ScheduledReport[]
 
   @@index([organizationId])
   @@map("report_templates")
 }
 
 model ReportExport {
-  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  reportId       String          @map("report_id") @db.Uuid
-  report         Report          @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  userId         String          @map("user_id")
-  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  organizationId String          @map("organization_id")
-  organization   Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId       String             @map("report_id") @db.Uuid
+  report         Report             @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  userId         String             @map("user_id")
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String             @map("organization_id")
+  organization   Organization       @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   // Nullable + SetNull: an export's history should survive the template
   // it was generated from later being deleted.
-  templateId     String?         @map("template_id") @db.Uuid
-  template       ReportTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  templateId     String?            @map("template_id") @db.Uuid
+  template       ReportTemplate?    @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  // Nullable + SetNull: an export's history should survive the schedule
+  // that triggered it later being deleted.
+  scheduleId     String?            @map("schedule_id") @db.Uuid
+  schedule       ScheduledReport?   @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+  source         ReportExportSource @default(manual)
   format         ExportFormat
-  fileSizeBytes  Int             @map("file_size_bytes")
-  createdAt      DateTime        @default(now()) @map("created_at")
+  status         ReportExportStatus @default(success)
+  errorMessage   String?            @map("error_message")
+  // Null when status is 'failed' — no file was ever produced.
+  fileSizeBytes  Int?               @map("file_size_bytes")
+  createdAt      DateTime           @default(now()) @map("created_at")
 
   @@index([organizationId, createdAt(sort: Desc)], map: "idx_report_exports_org_created")
+  @@index([source])
   @@map("report_exports")
+}
+
+model ScheduledReport {
+  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId        String          @map("report_id") @db.Uuid
+  report          Report          @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  organizationId  String          @map("organization_id")
+  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId          String          @map("user_id")
+  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  cadence         ScheduleCadence
+  format          ExportFormat    @default(xlsx)
+  templateId      String?         @map("template_id") @db.Uuid
+  template        ReportTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
+  // Same shape as a one-off export's section overrides.
+  sections        Json?
+  // Nullable array of email strings — a schedule with none is valid: it
+  // just keeps a fresh tracked export on file periodically without
+  // emailing anyone.
+  recipientEmails Json?           @map("recipient_emails")
+  isActive        Boolean         @default(true) @map("is_active")
+  nextRunAt       DateTime        @map("next_run_at")
+  lastRunAt       DateTime?       @map("last_run_at")
+  createdAt       DateTime        @default(now()) @map("created_at")
+
+  exports ReportExport[]
+
+  @@index([nextRunAt, isActive], map: "idx_scheduled_reports_due")
+  @@index([organizationId])
+  @@map("scheduled_reports")
 }
 
 model Session {
@@ -233,19 +291,20 @@ model Verification {
 }
 
 model Organization {
-  id          String       @id
-  name        String
-  slug        String
-  logo        String?
-  createdAt   DateTime
-  metadata    String?
-  members         Member[]
-  invitations     Invitation[]
-  reports         Report[]
-  auditLogs       AuditLog[]
-  notifications   Notification[]
-  reportTemplates ReportTemplate[]
-  reportExports   ReportExport[]
+  id               String            @id
+  name             String
+  slug             String
+  logo             String?
+  createdAt        DateTime
+  metadata         String?
+  members          Member[]
+  invitations      Invitation[]
+  reports          Report[]
+  auditLogs        AuditLog[]
+  notifications    Notification[]
+  reportTemplates  ReportTemplate[]
+  reportExports    ReportExport[]
+  scheduledReports ScheduledReport[]
 
   @@unique([slug])
   @@map("organization")

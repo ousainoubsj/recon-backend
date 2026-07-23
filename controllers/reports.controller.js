@@ -3,6 +3,7 @@ import { sendReportEmail } from '../services/emailService.js';
 import { logAuditSafely } from '../services/auditLogService.js';
 import { resolveSections } from '../services/reportTemplateService.js';
 import { recordExport, listExports as listReportExports } from '../services/reportExportService.js';
+import * as scheduledReportService from '../services/scheduledReportService.js';
 import { buildXlsxReport } from '../utils/xlsxReport.js';
 import { buildPdfReport } from '../utils/pdfReport.js';
 import { parsePositiveInt } from '../utils/queryParams.js';
@@ -74,7 +75,22 @@ export const exportReport = async (req, res) => {
     overrideSections,
   });
 
-  const buffer = format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+  let buffer;
+  try {
+    buffer = format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+  } catch (err) {
+    await recordExport({
+      reportId: report.id,
+      userId: req.session.user.id,
+      organizationId: report.organizationId,
+      templateId,
+      format,
+      source: 'manual',
+      status: 'failed',
+      errorMessage: err.message,
+    });
+    throw err;
+  }
 
   res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[format]);
   res.setHeader('Content-Disposition', `attachment; filename="reconciliation_report_${report.id}.${format}"`);
@@ -93,6 +109,8 @@ export const exportReport = async (req, res) => {
     organizationId: report.organizationId,
     templateId,
     format,
+    source: 'manual',
+    status: 'success',
     fileSizeBytes: buffer.length,
   });
 };
@@ -101,6 +119,26 @@ export const listExports = async (req, res) => {
   const limit = parsePositiveInt(req.query.limit, 100);
   const exports = await listReportExports(req.session.user.id, { limit });
   res.json(exports);
+};
+
+export const createSchedule = async (req, res) => {
+  const schedule = await scheduledReportService.createSchedule(req.session.user.id, req.params.id, req.body);
+  res.status(201).json(schedule);
+};
+
+export const listSchedules = async (req, res) => {
+  const schedules = await scheduledReportService.listSchedules(req.session.user.id);
+  res.json(schedules);
+};
+
+export const updateSchedule = async (req, res) => {
+  const schedule = await scheduledReportService.updateSchedule(req.session.user.id, req.params.id, req.body);
+  res.json(schedule);
+};
+
+export const deleteSchedule = async (req, res) => {
+  await scheduledReportService.deleteSchedule(req.session.user.id, req.params.id);
+  res.status(204).end();
 };
 
 export const emailReport = async (req, res) => {

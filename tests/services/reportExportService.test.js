@@ -36,20 +36,62 @@ describe('recordExport', () => {
         userId: USER_ID,
         organizationId: ORG_ID,
         templateId: 't1',
+        scheduleId: null,
+        source: 'manual',
         format: 'pdf',
+        status: 'success',
+        errorMessage: null,
         fileSizeBytes: 1234,
       },
     });
   });
 
-  it('defaults a missing templateId to null', async () => {
+  it('defaults a missing templateId and scheduleId to null, source to manual, and status to success', async () => {
     mockPrisma.reportExport.create.mockResolvedValue({ id: 'exp-1' });
 
     await recordExport({ reportId: 'r1', userId: USER_ID, organizationId: ORG_ID, format: 'xlsx', fileSizeBytes: 10 });
 
     expect(mockPrisma.reportExport.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ templateId: null }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({
+          templateId: null,
+          scheduleId: null,
+          source: 'manual',
+          status: 'success',
+          errorMessage: null,
+        }),
+      }),
     );
+  });
+
+  it('persists a scheduled, failed export with its error message and no file size', async () => {
+    mockPrisma.reportExport.create.mockResolvedValue({ id: 'exp-1' });
+
+    await recordExport({
+      reportId: 'r1',
+      userId: USER_ID,
+      organizationId: ORG_ID,
+      scheduleId: 's1',
+      source: 'scheduled',
+      format: 'xlsx',
+      status: 'failed',
+      errorMessage: 'build blew up',
+    });
+
+    expect(mockPrisma.reportExport.create).toHaveBeenCalledWith({
+      data: {
+        reportId: 'r1',
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        templateId: null,
+        scheduleId: 's1',
+        source: 'scheduled',
+        format: 'xlsx',
+        status: 'failed',
+        errorMessage: 'build blew up',
+        fileSizeBytes: null,
+      },
+    });
   });
 
   it('is best-effort — swallows and logs the error instead of throwing', async () => {

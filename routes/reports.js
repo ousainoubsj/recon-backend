@@ -59,6 +59,16 @@ reportsRouter.post(
   catchAsync(reportsController.saveReport),
 );
 
+const sectionsSchema = z
+  .object({
+    summary: z.boolean(),
+    matchStatistics: z.boolean(),
+    breakAnalysis: z.boolean(),
+    unmatchedDetails: z.boolean(),
+    chartsAndGraphs: z.boolean(),
+  })
+  .partial();
+
 // Draft fields are all optional — a draft can be saved at any point in the
 // reconcile flow, from just a name up to everything but the final match run.
 const draftSchema = z.object({
@@ -96,6 +106,13 @@ reportsRouter.get(
   authenticate,
   catchAsync(requirePermission('report', 'read')),
   catchAsync(reportsController.listExports),
+);
+
+reportsRouter.get(
+  '/schedules',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.listSchedules),
 );
 
 reportsRouter.post(
@@ -136,16 +153,6 @@ reportsRouter.delete(
   catchAsync(reportsController.deleteReport),
 );
 
-const sectionsSchema = z
-  .object({
-    summary: z.boolean(),
-    matchStatistics: z.boolean(),
-    breakAnalysis: z.boolean(),
-    unmatchedDetails: z.boolean(),
-    chartsAndGraphs: z.boolean(),
-  })
-  .partial();
-
 const exportSchema = z.object({
   format: z.enum(['xlsx', 'pdf']).default('xlsx'),
   templateId: z.string().uuid().optional(),
@@ -158,6 +165,39 @@ reportsRouter.post(
   catchAsync(requirePermission('report', 'export')),
   validate(exportSchema),
   catchAsync(reportsController.exportReport),
+);
+
+const createScheduleSchema = z.object({
+  cadence: z.enum(['daily', 'weekly', 'monthly']),
+  format: z.enum(['xlsx', 'pdf']).default('xlsx'),
+  templateId: z.string().uuid().optional(),
+  sections: sectionsSchema.optional(),
+  recipientEmails: z.array(z.string().email()).max(20).optional(),
+});
+
+const updateScheduleSchema = createScheduleSchema.partial().extend({ isActive: z.boolean().optional() });
+
+reportsRouter.post(
+  '/:id/schedule',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(createScheduleSchema),
+  catchAsync(reportsController.createSchedule),
+);
+
+reportsRouter.patch(
+  '/schedules/:id',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(updateScheduleSchema),
+  catchAsync(reportsController.updateSchedule),
+);
+
+reportsRouter.delete(
+  '/schedules/:id',
+  authenticate,
+  catchAsync(requirePermission('report', 'delete')),
+  catchAsync(reportsController.deleteSchedule),
 );
 
 const emailSchema = z.object({ to: z.string().email() });

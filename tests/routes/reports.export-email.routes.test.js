@@ -36,6 +36,13 @@ jest.unstable_mockModule('../../services/reportExportService.js', () => ({
   listExports: mockListExports,
 }));
 
+jest.unstable_mockModule('../../services/scheduledReportService.js', () => ({
+  createSchedule: jest.fn(),
+  listSchedules: jest.fn(),
+  updateSchedule: jest.fn(),
+  deleteSchedule: jest.fn(),
+}));
+
 const mockSend = jest.fn();
 class MockResend {
   constructor() {
@@ -108,6 +115,8 @@ describe('POST /api/reports/:id/export', () => {
         userId: USER_ID,
         organizationId: 'org-1',
         format: 'xlsx',
+        source: 'manual',
+        status: 'success',
         fileSizeBytes: expect.any(Number),
       }),
     );
@@ -122,7 +131,31 @@ describe('POST /api/reports/:id/export', () => {
     expect(res.headers['content-type']).toBe('application/pdf');
     expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.pdf');
     expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
-    expect(mockRecordExport).toHaveBeenCalledWith(expect.objectContaining({ format: 'pdf' }));
+    expect(mockRecordExport).toHaveBeenCalledWith(
+      expect.objectContaining({ format: 'pdf', source: 'manual', status: 'success' }),
+    );
+  });
+
+  it('records a failed export and still propagates a 500 when building the file throws', async () => {
+    // `rows` missing makes buildXlsxReport's internal `.filter(...)` throw a
+    // real TypeError — exercising the actual failure path instead of mocking it.
+    mockReportService.getReport.mockResolvedValue({ ...sampleReport, rows: undefined });
+
+    const res = await request(app).post('/api/reports/r1/export').send({});
+
+    expect(res.status).toBe(500);
+    expect(res.body.type).toBe('https://recon.app/errors/internal-error');
+    expect(mockRecordExport).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reportId: 'r1',
+        userId: USER_ID,
+        organizationId: 'org-1',
+        format: 'xlsx',
+        source: 'manual',
+        status: 'failed',
+        errorMessage: expect.any(String),
+      }),
+    );
   });
 
   it('passes templateId and sections overrides through to resolveSections', async () => {
