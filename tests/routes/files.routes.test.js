@@ -58,6 +58,8 @@ describe('POST /api/files/presign', () => {
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'file.upload_initiated',
       entityType: 'file',
+      status: 'info',
+      ip: expect.any(String),
       metadata: { filename: 'transactions.csv', contentType: 'text/csv' },
     });
   });
@@ -94,6 +96,9 @@ describe('POST /api/files/presign', () => {
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
-    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'file.upload.denied', status: 'failed' }),
+    );
   });
 });

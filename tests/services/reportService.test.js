@@ -142,6 +142,7 @@ describe('saveReport', () => {
       action: 'report.create',
       entityType: 'report',
       entityId: 'report-1',
+      ip: undefined,
     });
   });
 });
@@ -301,7 +302,7 @@ describe('deleteReport', () => {
     mockPrisma.report.findFirst.mockResolvedValue({ userId: USER_ID });
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
 
-    await expect(deleteReport(USER_ID, 'r1')).resolves.toBeUndefined();
+    await expect(deleteReport(USER_ID, 'r1', { ip: '10.0.0.1' })).resolves.toBeUndefined();
     expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID, userId: USER_ID },
     });
@@ -309,6 +310,8 @@ describe('deleteReport', () => {
       action: 'report.delete',
       entityType: 'report',
       entityId: 'r1',
+      status: 'success',
+      ip: '10.0.0.1',
     });
     expect(mockCreateNotification).not.toHaveBeenCalled();
   });
@@ -322,6 +325,10 @@ describe('deleteReport', () => {
     expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
     });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'report.delete', status: 'warning' }),
+    );
     expect(mockCreateNotification).toHaveBeenCalledWith(
       OTHER_USER_ID,
       expect.objectContaining({ type: 'report.deleted_by_admin', entityId: 'r1' }),
@@ -553,6 +560,7 @@ describe('completeDraft', () => {
       action: 'report.create',
       entityType: 'report',
       entityId: 'draft-1',
+      ip: undefined,
     });
   });
 
@@ -779,6 +787,8 @@ describe('bulkDeleteReports', () => {
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.bulk_delete',
       entityType: 'report',
+      status: 'success',
+      ip: undefined,
       metadata: { ids: ['r1', 'r2'], count: 2 },
     });
     expect(mockCreateNotification).not.toHaveBeenCalled();
@@ -798,6 +808,10 @@ describe('bulkDeleteReports', () => {
     expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
       where: { id: { in: ['r1', 'r2', 'r3'] }, organizationId: ORG_ID },
     });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'report.bulk_delete', status: 'warning' }),
+    );
     expect(mockCreateNotification).toHaveBeenCalledTimes(1);
     expect(mockCreateNotification).toHaveBeenCalledWith(
       OTHER_USER_ID,

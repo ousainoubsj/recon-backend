@@ -19,6 +19,10 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
 const mockAuditLogService = {
   listAuditLogs: jest.fn(),
   createAuditLog: jest.fn(),
+  logAuditSafely: jest.fn().mockResolvedValue(undefined),
+  getAuditLogStats: jest.fn(),
+  getTopActions: jest.fn(),
+  getTopUsers: jest.fn(),
 };
 jest.unstable_mockModule('../../services/auditLogService.js', () => mockAuditLogService);
 
@@ -43,7 +47,17 @@ describe('GET /api/audit-logs', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: 'log-1' }]);
-    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, { limit: undefined });
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, {
+      limit: undefined,
+      offset: undefined,
+      q: undefined,
+      action: undefined,
+      entityType: undefined,
+      actorUserId: undefined,
+      dateFrom: undefined,
+      dateTo: undefined,
+      status: undefined,
+    });
   });
 
   it('passes a valid ?limit= through', async () => {
@@ -51,7 +65,29 @@ describe('GET /api/audit-logs', () => {
 
     await request(app).get('/api/audit-logs?limit=20');
 
-    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, { limit: 20 });
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ limit: 20 }));
+  });
+
+  it('passes ?offset=, ?q=, ?action=, ?entityType=, ?userId=, ?dateFrom=, ?dateTo=, ?status= through', async () => {
+    mockAuditLogService.listAuditLogs.mockResolvedValue([]);
+
+    await request(app).get(
+      '/api/audit-logs?offset=10&q=delete&action=report.delete&entityType=report&userId=user-2&dateFrom=2026-06-01&dateTo=2026-06-30&status=failed',
+    );
+
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        offset: 10,
+        q: 'delete',
+        action: 'report.delete',
+        entityType: 'report',
+        actorUserId: 'user-2',
+        dateFrom: '2026-06-01',
+        dateTo: '2026-06-30',
+        status: 'failed',
+      }),
+    );
   });
 
   it('rejects an analyst with a 403 (read is admin-only)', async () => {
@@ -62,6 +98,10 @@ describe('GET /api/audit-logs', () => {
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockAuditLogService.listAuditLogs).not.toHaveBeenCalled();
+    expect(mockAuditLogService.logAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'auditLog.read.denied', status: 'failed' }),
+    );
   });
 
   it('rejects a viewer with a 403', async () => {
@@ -70,6 +110,53 @@ describe('GET /api/audit-logs', () => {
     const res = await request(app).get('/api/audit-logs');
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/audit-logs/stats', () => {
+  it("returns the org's audit stats for an admin", async () => {
+    const stats = { total: 100, uniqueUsers: 5, byStatus: { success: 80, info: 10, warning: 5, failed: 5 } };
+    mockAuditLogService.getAuditLogStats.mockResolvedValue(stats);
+
+    const res = await request(app).get('/api/audit-logs/stats');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(stats);
+    expect(mockAuditLogService.getAuditLogStats).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it('rejects a viewer with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).get('/api/audit-logs/stats');
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('GET /api/audit-logs/top-actions', () => {
+  it('returns the top actions for an admin', async () => {
+    const actions = [{ label: 'report.create', count: 10 }];
+    mockAuditLogService.getTopActions.mockResolvedValue(actions);
+
+    const res = await request(app).get('/api/audit-logs/top-actions');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(actions);
+    expect(mockAuditLogService.getTopActions).toHaveBeenCalledWith(USER_ID);
+  });
+});
+
+describe('GET /api/audit-logs/top-users', () => {
+  it('returns the top users for an admin', async () => {
+    const users = [{ name: 'Ousainou J.', count: 10 }];
+    mockAuditLogService.getTopUsers.mockResolvedValue(users);
+
+    const res = await request(app).get('/api/audit-logs/top-users');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(users);
+    expect(mockAuditLogService.getTopUsers).toHaveBeenCalledWith(USER_ID);
   });
 });
 

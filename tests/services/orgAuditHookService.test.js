@@ -1,12 +1,15 @@
 import { jest } from '@jest/globals';
 import { auditOrgAction } from '../../services/orgAuditHookService.js';
 
-function makeDeps({ session = { user: { id: 'user-1', name: 'User One' } }, member } = {}) {
+function makeDeps({ session = { user: { id: 'user-1', name: 'User One' } }, member, user } = {}) {
   return {
     getSession: jest.fn().mockResolvedValue(session),
     logAuditSafely: jest.fn().mockResolvedValue(undefined),
     createNotification: jest.fn().mockResolvedValue(undefined),
-    prisma: { member: { findUnique: jest.fn().mockResolvedValue(member) } },
+    prisma: {
+      member: { findUnique: jest.fn().mockResolvedValue(member) },
+      user: { findUnique: jest.fn().mockResolvedValue(user) },
+    },
   };
 }
 
@@ -26,22 +29,27 @@ describe('auditOrgAction', () => {
     expect(deps.logAuditSafely).toHaveBeenCalledWith('user-1', {
       action: 'organization.member.invite',
       entityType: 'organization',
+      status: 'success',
+      ip: null,
       metadata: ctx.body,
     });
   });
 
   it.each([
-    ['/organization/remove-member', 'organization.member.remove'],
-    ['/organization/update-member-role', 'organization.member.role_update'],
-    ['/organization/accept-invitation', 'organization.invitation.accept'],
-    ['/organization/cancel-invitation', 'organization.invitation.cancel'],
-    ['/organization/update', 'organization.update'],
-    ['/organization/delete', 'organization.delete'],
-  ])('maps %s to action %s', async (path, expectedAction) => {
+    ['/organization/remove-member', 'organization.member.remove', 'warning'],
+    ['/organization/update-member-role', 'organization.member.role_update', 'warning'],
+    ['/organization/accept-invitation', 'organization.invitation.accept', 'success'],
+    ['/organization/cancel-invitation', 'organization.invitation.cancel', 'success'],
+    ['/organization/update', 'organization.update', 'success'],
+    ['/organization/delete', 'organization.delete', 'warning'],
+  ])('maps %s to action %s with status %s', async (path, expectedAction, expectedStatus) => {
     const deps = makeDeps();
     await auditOrgAction({ path, body: {}, headers: {}, context: { returned: {} } }, deps);
 
-    expect(deps.logAuditSafely).toHaveBeenCalledWith('user-1', expect.objectContaining({ action: expectedAction }));
+    expect(deps.logAuditSafely).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ action: expectedAction, status: expectedStatus }),
+    );
   });
 
   it('does nothing for an unmapped path', async () => {
@@ -119,18 +127,65 @@ describe('auditOrgAction', () => {
       expect(deps.logAuditSafely).toHaveBeenCalledWith('user-1', {
         action: 'auth.login',
         entityType: null,
+        status: 'info',
+        ip: null,
         metadata: { method },
       });
     });
 
-    it('does not log a failed sign-in attempt', async () => {
+    it('does not log a failed sign-in attempt when the email is unknown', async () => {
+      const deps = makeDeps({ user: null });
+      await auditOrgAction(
+        {
+          path: '/sign-in/email',
+          body: { email: 'nobody@example.com' },
+          headers: {},
+          context: { returned: { name: 'APIError' } },
+        },
+        deps,
+      );
+
+      expect(deps.prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { email: 'nobody@example.com' },
+        select: { id: true },
+      });
+      expect(deps.logAuditSafely).not.toHaveBeenCalled();
+    });
+
+    it('does not look up a user or log anything when the failed body has no email (e.g. an OAuth callback)', async () => {
       const deps = makeDeps();
       await auditOrgAction(
         { path: '/sign-in/email', body: {}, headers: {}, context: { returned: { name: 'APIError' } } },
         deps,
       );
 
+      expect(deps.prisma.user.findUnique).not.toHaveBeenCalled();
       expect(deps.logAuditSafely).not.toHaveBeenCalled();
+    });
+
+    it('logs a failed login attempt against the resolved user when the email matches an existing account', async () => {
+      const deps = makeDeps({ user: { id: 'user-1' } });
+      await auditOrgAction(
+        {
+          path: '/sign-in/email',
+          body: { email: 'user1@example.com', password: 'wrong' },
+          headers: {},
+          context: { returned: { name: 'APIError' } },
+        },
+        deps,
+      );
+
+      expect(deps.prisma.user.findUnique).toHaveBeenCalledWith({
+        where: { email: 'user1@example.com' },
+        select: { id: true },
+      });
+      expect(deps.logAuditSafely).toHaveBeenCalledWith('user-1', {
+        action: 'auth.login_failed',
+        entityType: null,
+        status: 'failed',
+        ip: null,
+        metadata: { method: 'email' },
+      });
     });
   });
 

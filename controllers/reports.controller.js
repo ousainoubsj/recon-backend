@@ -52,7 +52,7 @@ export const getReportsTrend = async (req, res) => {
 };
 
 export const saveReport = async (req, res) => {
-  const id = await reportService.saveReport(req.session.user.id, req.body);
+  const id = await reportService.saveReport(req.session.user.id, req.body, { ip: req.ip });
   res.status(201).json({ id });
 };
 
@@ -72,7 +72,7 @@ export const listDrafts = async (req, res) => {
 };
 
 export const completeDraft = async (req, res) => {
-  const id = await reportService.completeDraft(req.session.user.id, req.params.id, req.body);
+  const id = await reportService.completeDraft(req.session.user.id, req.params.id, req.body, { ip: req.ip });
   res.status(200).json({ id });
 };
 
@@ -82,7 +82,7 @@ export const getReport = async (req, res) => {
 };
 
 export const deleteReport = async (req, res) => {
-  await reportService.deleteReport(req.session.user.id, req.params.id);
+  await reportService.deleteReport(req.session.user.id, req.params.id, { ip: req.ip });
   res.status(204).end();
 };
 
@@ -102,7 +102,7 @@ export const removeFavorite = async (req, res) => {
 };
 
 export const bulkDeleteReports = async (req, res) => {
-  const result = await reportService.bulkDeleteReports(req.session.user.id, req.body.ids);
+  const result = await reportService.bulkDeleteReports(req.session.user.id, req.body.ids, { ip: req.ip });
   res.json(result);
 };
 
@@ -153,6 +153,8 @@ export const bulkExportReports = async (req, res) => {
   await logAuditSafely(req.session.user.id, {
     action: 'report.bulk_export',
     entityType: 'report',
+    status: 'info',
+    ip: req.ip,
     metadata: { ids, format, templateId: templateId ?? null },
   });
 
@@ -210,6 +212,8 @@ export const exportReport = async (req, res) => {
     action: 'report.export',
     entityType: 'report',
     entityId: report.id,
+    status: 'info',
+    ip: req.ip,
     metadata: { format, templateId: templateId ?? null },
   });
 
@@ -261,6 +265,8 @@ export const emailReport = async (req, res) => {
     action: 'report.email',
     entityType: 'report',
     entityId: report.id,
+    status: 'info',
+    ip: req.ip,
     metadata: { to: req.body.to },
   });
 };

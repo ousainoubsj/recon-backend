@@ -82,7 +82,7 @@ function aggregatePeriod(reports) {
  * @param {import('../types/recon.js').SaveReportDto} dto
  * @returns {Promise<string>} the new report's id
  */
-export async function saveReport(userId, dto) {
+export async function saveReport(userId, dto, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
 
   const report = await prisma.$transaction(async (tx) => {
@@ -112,7 +112,7 @@ export async function saveReport(userId, dto) {
     return report;
   });
 
-  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id });
+  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id, ip });
 
   return report.id;
 }
@@ -430,7 +430,7 @@ export async function listDrafts(userId) {
 
 // Promotes a draft into a completed report: same shape as a fresh saveReport,
 // applied to the existing draft row instead of a new one.
-export async function completeDraft(userId, reportId, dto) {
+export async function completeDraft(userId, reportId, dto, { ip } = {}) {
   const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
   if (!draft) throw new NotFoundError();
 
@@ -460,14 +460,14 @@ export async function completeDraft(userId, reportId, dto) {
     return report;
   });
 
-  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id });
+  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id, ip });
 
   return report.id;
 }
 
 // Org admins can delete any report in the org; everyone else may only
 // delete a report they created themselves.
-export async function deleteReport(userId, reportId) {
+export async function deleteReport(userId, reportId, { ip } = {}) {
   const { organizationId, role } = await getUserMembership(userId);
 
   // Read first to know the original owner (needed for the notification
@@ -481,9 +481,16 @@ export async function deleteReport(userId, reportId) {
   });
   if (count === 0) throw new NotFoundError();
 
-  await logAuditSafely(userId, { action: 'report.delete', entityType: 'report', entityId: reportId });
+  const isAdminActingOnAnother = role === 'admin' && existing.userId !== userId;
+  await logAuditSafely(userId, {
+    action: 'report.delete',
+    entityType: 'report',
+    entityId: reportId,
+    status: isAdminActingOnAnother ? 'warning' : 'success',
+    ip,
+  });
 
-  if (role === 'admin' && existing.userId !== userId) {
+  if (isAdminActingOnAnother) {
     await createNotification(existing.userId, {
       type: 'report.deleted_by_admin',
       message: 'One of your reports was deleted by an organization admin.',
@@ -526,7 +533,7 @@ export async function removeFavorite(userId, reportId) {
 // Same admin-vs-owner scoping as deleteReport, applied to a set of ids at
 // once. Notifies each distinct non-caller owner once (with a count), not
 // once per deleted report.
-export async function bulkDeleteReports(userId, ids) {
+export async function bulkDeleteReports(userId, ids, { ip } = {}) {
   const { organizationId, role } = await getUserMembership(userId);
 
   const existing = await prisma.report.findMany({
@@ -538,19 +545,24 @@ export async function bulkDeleteReports(userId, ids) {
     where: { id: { in: ids }, organizationId, ...(role === 'admin' ? {} : { userId }) },
   });
 
-  await logAuditSafely(userId, {
-    action: 'report.bulk_delete',
-    entityType: 'report',
-    metadata: { ids, count },
-  });
-
+  const deletedCountByOwner = new Map();
   if (role === 'admin') {
-    const deletedCountByOwner = new Map();
     for (const report of existing) {
       if (report.userId !== userId) {
         deletedCountByOwner.set(report.userId, (deletedCountByOwner.get(report.userId) ?? 0) + 1);
       }
     }
+  }
+
+  await logAuditSafely(userId, {
+    action: 'report.bulk_delete',
+    entityType: 'report',
+    status: deletedCountByOwner.size > 0 ? 'warning' : 'success',
+    ip,
+    metadata: { ids, count },
+  });
+
+  if (role === 'admin') {
     for (const [ownerId, deletedCount] of deletedCountByOwner) {
       await createNotification(ownerId, {
         type: 'report.deleted_by_admin',

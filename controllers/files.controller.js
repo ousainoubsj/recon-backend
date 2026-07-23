@@ -46,6 +46,8 @@ export const createPresignedUpload = async (req, res) => {
   await logAuditSafely(req.session.user.id, {
     action: 'file.upload_initiated',
     entityType: 'file',
+    status: 'info',
+    ip: req.ip,
     metadata: { filename, contentType },
   });
 };

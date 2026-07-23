@@ -209,10 +209,11 @@ describe('POST /api/reports/bulk-delete', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ deletedCount: 2 });
-    expect(mockReportService.bulkDeleteReports).toHaveBeenCalledWith(USER_ID, [
-      '123e4567-e89b-12d3-a456-426614174000',
-      '223e4567-e89b-12d3-a456-426614174001',
-    ]);
+    expect(mockReportService.bulkDeleteReports).toHaveBeenCalledWith(
+      USER_ID,
+      ['123e4567-e89b-12d3-a456-426614174000', '223e4567-e89b-12d3-a456-426614174001'],
+      { ip: expect.any(String) },
+    );
   });
 
   it('rejects an empty ids array with a 422', async () => {
@@ -403,6 +404,7 @@ describe('POST /api/reports', () => {
     expect(mockReportService.saveReport).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ fileAName: 'a.csv', fileBName: 'b.csv' }),
+      { ip: expect.any(String) },
     );
   });
 
@@ -508,6 +510,7 @@ describe('POST /api/reports/draft/:id/complete', () => {
       USER_ID,
       'draft-1',
       expect.objectContaining({ fileAName: 'a.csv' }),
+      { ip: expect.any(String) },
     );
   });
 

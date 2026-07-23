@@ -23,6 +23,10 @@ const mockReportTemplateService = {
 };
 jest.unstable_mockModule('../../services/reportTemplateService.js', () => mockReportTemplateService);
 
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({
+  logAuditSafely: jest.fn().mockResolvedValue(undefined),
+}));
+
 const { reportTemplatesRouter } = await import('../../routes/reportTemplates.js');
 const { errorHandler } = await import('../../middleware/errorHandler.js');
 const { NotFoundError } = await import('../../errors.js');

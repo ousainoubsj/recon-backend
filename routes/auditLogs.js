@@ -22,6 +22,27 @@ auditLogsRouter.get(
   catchAsync(auditLogController.listAuditLogs),
 );
 
+auditLogsRouter.get(
+  '/stats',
+  authenticate,
+  catchAsync(requirePermission('auditLog', 'read')),
+  catchAsync(auditLogController.getAuditLogStats),
+);
+
+auditLogsRouter.get(
+  '/top-actions',
+  authenticate,
+  catchAsync(requirePermission('auditLog', 'read')),
+  catchAsync(auditLogController.getTopActions),
+);
+
+auditLogsRouter.get(
+  '/top-users',
+  authenticate,
+  catchAsync(requirePermission('auditLog', 'read')),
+  catchAsync(auditLogController.getTopUsers),
+);
+
 auditLogsRouter.post(
   '/',
   authenticate,

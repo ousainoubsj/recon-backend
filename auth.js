@@ -18,7 +18,7 @@ import { sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } from './
 // role definition can gate both.
 const statement = {
   organization: ['update', 'delete'],
-  member: ['create', 'update', 'delete'],
+  member: ['create', 'read', 'update', 'delete'],
   invitation: ['create', 'cancel'],
   report: ['create', 'read', 'delete', 'export', 'email'],
   file: ['upload'],

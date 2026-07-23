@@ -107,6 +107,8 @@ describe('POST /api/reports/:id/export', () => {
       action: 'report.export',
       entityType: 'report',
       entityId: 'r1',
+      status: 'info',
+      ip: expect.any(String),
       metadata: { format: 'xlsx', templateId: null },
     });
     expect(mockRecordExport).toHaveBeenCalledWith(
@@ -285,6 +287,8 @@ describe('POST /api/reports/:id/email', () => {
       action: 'report.email',
       entityType: 'report',
       entityId: 'r1',
+      status: 'info',
+      ip: expect.any(String),
       metadata: { to: 'analyst@example.com' },
     });
   });

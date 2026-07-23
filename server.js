@@ -10,6 +10,7 @@ import { reportTemplatesRouter } from './routes/reportTemplates.js';
 import { auditLogsRouter } from './routes/auditLogs.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { searchRouter } from './routes/search.js';
+import { teamRouter } from './routes/team.js';
 import { authRateLimiter, apiRateLimiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
 
@@ -32,5 +33,6 @@ app.use('/api/report-templates', reportTemplatesRouter);
 app.use('/api/audit-logs', auditLogsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
+app.use('/api/team', teamRouter);
 
 app.use(errorHandler);

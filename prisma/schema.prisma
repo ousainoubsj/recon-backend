@@ -45,6 +45,18 @@ enum ReportExportStatus {
   failed
 }
 
+enum AuditLogStatus {
+  success
+  info
+  warning
+  failed
+}
+
+enum MemberStatus {
+  active
+  inactive
+}
+
 enum ReportTag {
   bank
   supplier
@@ -135,23 +147,26 @@ model ReportRow {
 }
 
 model AuditLog {
-  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId         String        @map("user_id")
-  user           User          @relation(fields: [userId], references: [id])
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String         @map("user_id")
+  user           User           @relation(fields: [userId], references: [id])
   // Nullable + SetNull (unlike Report's cascading organizationId): an audit
   // trail must survive the deletion of the thing it's auditing, including
   // the org.delete entry itself — cascading here would silently destroy the
   // very history that action needs to be recorded in.
-  organizationId String?       @map("organization_id")
-  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
-  action         String        @db.VarChar(100)
-  entityType     String?       @map("entity_type") @db.VarChar(50)
-  entityId       String?       @map("entity_id") @db.Uuid
-  ts             DateTime      @default(now())
+  organizationId String?        @map("organization_id")
+  organization   Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  action         String         @db.VarChar(100)
+  entityType     String?        @map("entity_type") @db.VarChar(50)
+  entityId       String?        @map("entity_id") @db.Uuid
+  status         AuditLogStatus @default(success)
+  ip             String?        @map("ip_address")
+  ts             DateTime       @default(now())
   metadata       Json?
 
   @@index([userId, ts(sort: Desc)], map: "idx_audit_user_ts")
   @@index([organizationId], map: "idx_audit_organization_id")
+  @@index([organizationId, status], map: "idx_audit_organization_status")
   @@map("audit_logs")
 }
 
@@ -340,6 +355,11 @@ model Member {
   userId         String
   user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   role           String       @default("member")
+  // Not part of Better Auth's own org-plugin schema — set/read only by our
+  // own team endpoints, so no schema.member.additionalFields config needed.
+  status         MemberStatus @default(active)
+  department     String?      @db.VarChar(100)
+  lastActiveAt   DateTime?    @map("last_active_at")
   createdAt      DateTime
 
   @@index([organizationId])
