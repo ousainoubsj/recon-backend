@@ -115,6 +115,51 @@ reportsRouter.get(
   catchAsync(reportsController.listSchedules),
 );
 
+reportsRouter.get(
+  '/history-stats',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getHistoryStats),
+);
+
+reportsRouter.get(
+  '/match-rate-distribution',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getMatchRateDistribution),
+);
+
+reportsRouter.get(
+  '/top-file-pairs',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getTopFilePairs),
+);
+
+const bulkIdsSchema = z.object({ ids: z.array(z.string().uuid()).min(1).max(100) });
+
+reportsRouter.post(
+  '/bulk-delete',
+  authenticate,
+  catchAsync(requirePermission('report', 'delete')),
+  validate(bulkIdsSchema),
+  catchAsync(reportsController.bulkDeleteReports),
+);
+
+const bulkExportSchema = bulkIdsSchema.extend({
+  format: z.enum(['xlsx', 'pdf']).default('xlsx'),
+  templateId: z.string().uuid().optional(),
+  sections: sectionsSchema.optional(),
+});
+
+reportsRouter.post(
+  '/bulk-export',
+  authenticate,
+  catchAsync(requirePermission('report', 'export')),
+  validate(bulkExportSchema),
+  catchAsync(reportsController.bulkExportReports),
+);
+
 reportsRouter.post(
   '/draft',
   authenticate,
@@ -151,6 +196,30 @@ reportsRouter.delete(
   authenticate,
   catchAsync(requirePermission('report', 'delete')),
   catchAsync(reportsController.deleteReport),
+);
+
+const updateTagSchema = z.object({ tag: z.enum(['bank', 'supplier', 'year_end']).nullable() });
+
+reportsRouter.patch(
+  '/:id/tag',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(updateTagSchema),
+  catchAsync(reportsController.updateReportTag),
+);
+
+reportsRouter.put(
+  '/:id/favorite',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.addFavorite),
+);
+
+reportsRouter.delete(
+  '/:id/favorite',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.removeFavorite),
 );
 
 const exportSchema = z.object({

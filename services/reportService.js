@@ -18,6 +18,36 @@ function monthRange(monthsAgo) {
   return { start, end };
 }
 
+// Same idea as monthRange but for History's rolling-window stats (30 days),
+// which aren't calendar-aligned the way the dashboard's month-over-month
+// cards are. dayRange(0, 30) = the last 30 days; dayRange(30, 30) = the 30
+// days before that.
+const DAY_MS = 24 * 60 * 60 * 1000;
+function dayRange(daysAgo, windowDays = 30) {
+  const end = new Date(Date.now() - daysAgo * DAY_MS);
+  const start = new Date(end.getTime() - windowDays * DAY_MS);
+  return { start, end };
+}
+
+const VALID_TAGS = ['bank', 'supplier', 'year_end'];
+
+function getAllTimeCompletedReports(organizationId) {
+  return prisma.report.findMany({
+    where: { organizationId, status: 'completed' },
+    select: {
+      runDate: true,
+      totalRows: true,
+      matchedCount: true,
+      unmatchedCount: true,
+      mismatchedCount: true,
+      duplicateCount: true,
+      totalBreakValue: true,
+      fileAName: true,
+      fileBName: true,
+    },
+  });
+}
+
 // amountDiff is computed here rather than via a Postgres GENERATED column —
 // see the note at the top of prisma/schema.prisma. Shared by saveReport and
 // completeDraft since both bulk-insert rows the same way.
@@ -87,13 +117,43 @@ export async function saveReport(userId, dto) {
   return report.id;
 }
 
-export async function listReports(userId, { limit } = {}) {
+export async function listReports(
+  userId,
+  { limit, offset, q, dateFrom, dateTo, tag, favoritesOnly } = {},
+) {
   const { organizationId } = await getUserMembership(userId);
-  return prisma.report.findMany({
-    where: { organizationId, status: 'completed' },
+  const query = q?.trim();
+  const from = dateFrom ? new Date(dateFrom) : null;
+  const to = dateTo ? new Date(dateTo) : null;
+  const runDateFilter = {
+    ...(from && !Number.isNaN(from.getTime()) ? { gte: from } : {}),
+    ...(to && !Number.isNaN(to.getTime()) ? { lte: to } : {}),
+  };
+
+  const reports = await prisma.report.findMany({
+    where: {
+      organizationId,
+      status: 'completed',
+      ...(query
+        ? {
+            OR: [
+              { name: { contains: query, mode: 'insensitive' } },
+              { fileAName: { contains: query, mode: 'insensitive' } },
+              { fileBName: { contains: query, mode: 'insensitive' } },
+            ],
+          }
+        : {}),
+      ...(Object.keys(runDateFilter).length > 0 ? { runDate: runDateFilter } : {}),
+      ...(VALID_TAGS.includes(tag) ? { tag } : {}),
+      ...(favoritesOnly ? { favorites: { some: { userId } } } : {}),
+    },
+    include: { favorites: { where: { userId }, select: { id: true } } },
     orderBy: { runDate: 'desc' },
+    ...(offset ? { skip: offset } : {}),
     ...(limit ? { take: limit } : {}),
   });
+
+  return reports.map(({ favorites, ...report }) => ({ ...report, isFavorited: favorites.length > 0 }));
 }
 
 // Current vs previous calendar month, for the dashboard's headline stat
@@ -201,6 +261,115 @@ export async function getReportsTrend(userId, { months = 6 } = {}) {
   };
 
   return { matchRateSeries, volumeSeries, categoryBreakdown };
+}
+
+// History's headline stat cards: all-time cumulative totals (not a single
+// period, unlike the dashboard's month-over-month cards above), each paired
+// with a rolling 30-vs-previous-30-day growth rate for the "vs last 30 days"
+// trend label.
+export async function getHistoryStats(userId) {
+  const { organizationId } = await getUserMembership(userId);
+
+  const allTimeStats = aggregatePeriod(await getAllTimeCompletedReports(organizationId));
+
+  const last30 = dayRange(0, 30);
+  const prior30 = dayRange(30, 30);
+  const recentReports = await prisma.report.findMany({
+    where: { organizationId, status: 'completed', runDate: { gte: prior30.start, lt: last30.end } },
+    select: {
+      runDate: true,
+      totalRows: true,
+      matchedCount: true,
+      unmatchedCount: true,
+      mismatchedCount: true,
+      totalBreakValue: true,
+    },
+  });
+
+  const currentStats = aggregatePeriod(recentReports.filter((r) => r.runDate >= last30.start));
+  const previousStats = aggregatePeriod(
+    recentReports.filter((r) => r.runDate >= prior30.start && r.runDate < prior30.end),
+  );
+
+  return {
+    totalReconciliations: {
+      value: allTimeStats.count,
+      deltaPercent: deltaPercent(currentStats.count, previousStats.count),
+    },
+    avgMatchRate: {
+      value: allTimeStats.avgMatchRate,
+      deltaPercent: deltaPercent(currentStats.avgMatchRate, previousStats.avgMatchRate),
+    },
+    totalBreakValue: {
+      value: allTimeStats.totalBreakValue,
+      deltaPercent: deltaPercent(currentStats.totalBreakValue, previousStats.totalBreakValue),
+    },
+    totalTransactions: {
+      value: allTimeStats.totalTransactions,
+      deltaPercent: deltaPercent(currentStats.totalTransactions, previousStats.totalTransactions),
+    },
+  };
+}
+
+// HistorySidebar's donut chart. No "Failed" bucket is computed — a Report
+// row is only ever created after a successful save (see saveReport), so
+// there's no concept of a failed run yet; matches the same call made for
+// the "Failed" quick filter right below.
+const MATCH_RATE_BUCKETS = [
+  { label: '≥ 99%', min: 99, max: Infinity },
+  { label: '95% - 98.99%', min: 95, max: 99 },
+  { label: '90% - 94.99%', min: 90, max: 95 },
+  { label: '< 90%', min: -Infinity, max: 90 },
+];
+
+export async function getMatchRateDistribution(userId) {
+  const { organizationId } = await getUserMembership(userId);
+  const reports = await getAllTimeCompletedReports(organizationId);
+
+  const counts = MATCH_RATE_BUCKETS.map(() => 0);
+  for (const report of reports) {
+    const matchRate = report.totalRows > 0 ? (report.matchedCount / report.totalRows) * 100 : 0;
+    const bucketIndex = MATCH_RATE_BUCKETS.findIndex((b) => matchRate >= b.min && matchRate < b.max);
+    if (bucketIndex >= 0) counts[bucketIndex] += 1;
+  }
+
+  const total = reports.length;
+  return MATCH_RATE_BUCKETS.map(({ label }, i) => ({
+    label,
+    value: counts[i],
+    percent: total > 0 ? `${((counts[i] / total) * 100).toFixed(1)}%` : '0.0%',
+  }));
+}
+
+// HistorySidebar's "Top File Pairs" widget. Grouped case-insensitively so
+// "Report.xlsx" and "report.xlsx" count as the same pair; the label keeps
+// whichever casing was seen first.
+export async function getTopFilePairs(userId, { limit = 4 } = {}) {
+  const { organizationId } = await getUserMembership(userId);
+  const reports = await getAllTimeCompletedReports(organizationId);
+
+  const groups = new Map();
+  for (const report of reports) {
+    const fileA = report.fileAName ?? '';
+    const fileB = report.fileBName ?? '';
+    const key = `${fileA.toLowerCase()}|${fileB.toLowerCase()}`;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.count += 1;
+    } else {
+      groups.set(key, { label: `${fileA} vs ${fileB}`, count: 1 });
+    }
+  }
+
+  const sorted = [...groups.values()].sort((a, b) => b.count - a.count);
+  const top = sorted.slice(0, limit);
+  const rest = sorted.slice(limit);
+
+  if (rest.length > 0) {
+    top.push({ label: 'Other File Pairs', count: rest.reduce((sum, g) => sum + g.count, 0) });
+  }
+
+  return top;
 }
 
 export async function getReport(userId, reportId) {
@@ -322,4 +491,96 @@ export async function deleteReport(userId, reportId) {
       entityId: reportId,
     });
   }
+}
+
+// Tags only apply to completed reports (History is the only place they're
+// shown) — scoping to status: 'completed' here means this can never be used
+// to reach into another user's private draft the way a plain org-scoped
+// updateMany could.
+export async function updateReportTag(userId, reportId, tag) {
+  const { organizationId } = await getUserMembership(userId);
+  const { count } = await prisma.report.updateMany({
+    where: { id: reportId, organizationId, status: 'completed' },
+    data: { tag },
+  });
+  if (count === 0) throw new NotFoundError();
+  return prisma.report.findFirst({ where: { id: reportId, organizationId } });
+}
+
+// Both idempotent: favoriting something already favorited, or unfavoriting
+// something that isn't, are no-ops rather than errors.
+export async function addFavorite(userId, reportId) {
+  await getReport(userId, reportId); // org-scoped + draft-privacy visibility check
+  await prisma.reportFavorite.upsert({
+    where: { userId_reportId: { userId, reportId } },
+    create: { userId, reportId },
+    update: {},
+  });
+}
+
+export async function removeFavorite(userId, reportId) {
+  await getReport(userId, reportId);
+  await prisma.reportFavorite.deleteMany({ where: { userId, reportId } });
+}
+
+// Same admin-vs-owner scoping as deleteReport, applied to a set of ids at
+// once. Notifies each distinct non-caller owner once (with a count), not
+// once per deleted report.
+export async function bulkDeleteReports(userId, ids) {
+  const { organizationId, role } = await getUserMembership(userId);
+
+  const existing = await prisma.report.findMany({
+    where: { id: { in: ids }, organizationId },
+    select: { id: true, userId: true },
+  });
+
+  const { count } = await prisma.report.deleteMany({
+    where: { id: { in: ids }, organizationId, ...(role === 'admin' ? {} : { userId }) },
+  });
+
+  await logAuditSafely(userId, {
+    action: 'report.bulk_delete',
+    entityType: 'report',
+    metadata: { ids, count },
+  });
+
+  if (role === 'admin') {
+    const deletedCountByOwner = new Map();
+    for (const report of existing) {
+      if (report.userId !== userId) {
+        deletedCountByOwner.set(report.userId, (deletedCountByOwner.get(report.userId) ?? 0) + 1);
+      }
+    }
+    for (const [ownerId, deletedCount] of deletedCountByOwner) {
+      await createNotification(ownerId, {
+        type: 'report.deleted_by_admin',
+        message: `An organization admin deleted ${deletedCount} of your report${deletedCount > 1 ? 's' : ''}.`,
+        entityType: 'report',
+        entityId: null,
+      });
+    }
+  }
+
+  return { deletedCount: count };
+}
+
+// Bulk-fetch helper for bulk-export: same org-scoping + draft-privacy rule
+// as getReport, applied per row, plus an optional completed-only filter
+// (a draft has no rows to export). Throws NotFoundError if any requested id
+// doesn't resolve — all-or-nothing, so a bulk export never silently omits
+// a file the caller asked for.
+export async function getReportsByIds(userId, ids, { requireCompleted = false } = {}) {
+  const { organizationId } = await getUserMembership(userId);
+  const reports = await prisma.report.findMany({
+    where: { id: { in: ids }, organizationId, ...(requireCompleted ? { status: 'completed' } : {}) },
+    include: { rows: true },
+  });
+
+  const byId = new Map(reports.map((r) => [r.id, r]));
+  const visible = ids
+    .map((id) => byId.get(id))
+    .filter((report) => report && (report.status !== 'draft' || report.userId === userId));
+
+  if (visible.length !== ids.length) throw new NotFoundError();
+  return visible;
 }

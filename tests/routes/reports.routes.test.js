@@ -27,6 +27,13 @@ const mockReportService = {
   updateDraft: jest.fn(),
   listDrafts: jest.fn(),
   completeDraft: jest.fn(),
+  getHistoryStats: jest.fn(),
+  getMatchRateDistribution: jest.fn(),
+  getTopFilePairs: jest.fn(),
+  updateReportTag: jest.fn(),
+  addFavorite: jest.fn(),
+  removeFavorite: jest.fn(),
+  bulkDeleteReports: jest.fn(),
 };
 
 jest.unstable_mockModule('../../services/reportService.js', () => mockReportService);
@@ -92,7 +99,15 @@ describe('GET /api/reports', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: 'r1' }]);
-    expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, { limit: undefined });
+    expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, {
+      limit: undefined,
+      offset: undefined,
+      q: undefined,
+      dateFrom: undefined,
+      dateTo: undefined,
+      tag: undefined,
+      favoritesOnly: false,
+    });
   });
 
   it('passes a valid ?limit= through', async () => {
@@ -100,7 +115,7 @@ describe('GET /api/reports', () => {
 
     await request(app).get('/api/reports?limit=5');
 
-    expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, { limit: 5 });
+    expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ limit: 5 }));
   });
 
   it('ignores an invalid ?limit=', async () => {
@@ -108,7 +123,193 @@ describe('GET /api/reports', () => {
 
     await request(app).get('/api/reports?limit=not-a-number');
 
-    expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, { limit: undefined });
+    expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ limit: undefined }));
+  });
+
+  it('passes ?offset=, ?q=, ?dateFrom=, ?dateTo=, ?tag= through', async () => {
+    mockReportService.listReports.mockResolvedValue([]);
+
+    await request(app).get('/api/reports?offset=10&q=june&dateFrom=2026-06-01&dateTo=2026-06-30&tag=bank');
+
+    expect(mockReportService.listReports).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        offset: 10,
+        q: 'june',
+        dateFrom: '2026-06-01',
+        dateTo: '2026-06-30',
+        tag: 'bank',
+      }),
+    );
+  });
+
+  it('sets favoritesOnly to true only when ?favoritesOnly=true', async () => {
+    mockReportService.listReports.mockResolvedValue([]);
+
+    await request(app).get('/api/reports?favoritesOnly=true');
+    expect(mockReportService.listReports).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ favoritesOnly: true }),
+    );
+
+    mockReportService.listReports.mockClear();
+    await request(app).get('/api/reports?favoritesOnly=nope');
+    expect(mockReportService.listReports).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ favoritesOnly: false }),
+    );
+  });
+});
+
+describe('GET /api/reports/history-stats', () => {
+  it("returns the caller's org history stats", async () => {
+    const stats = { totalReconciliations: { value: 3, deltaPercent: 0 } };
+    mockReportService.getHistoryStats.mockResolvedValue(stats);
+
+    const res = await request(app).get('/api/reports/history-stats');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(stats);
+    expect(mockReportService.getHistoryStats).toHaveBeenCalledWith(USER_ID);
+  });
+});
+
+describe('GET /api/reports/match-rate-distribution', () => {
+  it('returns the match rate distribution buckets', async () => {
+    const distribution = [{ label: '≥ 99%', value: 2, percent: '40.0%' }];
+    mockReportService.getMatchRateDistribution.mockResolvedValue(distribution);
+
+    const res = await request(app).get('/api/reports/match-rate-distribution');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(distribution);
+  });
+});
+
+describe('GET /api/reports/top-file-pairs', () => {
+  it('returns the top file pairs', async () => {
+    const pairs = [{ label: 'a.csv vs b.csv', count: 3 }];
+    mockReportService.getTopFilePairs.mockResolvedValue(pairs);
+
+    const res = await request(app).get('/api/reports/top-file-pairs');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(pairs);
+    expect(mockReportService.getTopFilePairs).toHaveBeenCalledWith(USER_ID);
+  });
+});
+
+describe('POST /api/reports/bulk-delete', () => {
+  it('deletes the given ids and returns the result', async () => {
+    mockReportService.bulkDeleteReports.mockResolvedValue({ deletedCount: 2 });
+
+    const res = await request(app)
+      .post('/api/reports/bulk-delete')
+      .send({ ids: ['123e4567-e89b-12d3-a456-426614174000', '223e4567-e89b-12d3-a456-426614174001'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ deletedCount: 2 });
+    expect(mockReportService.bulkDeleteReports).toHaveBeenCalledWith(USER_ID, [
+      '123e4567-e89b-12d3-a456-426614174000',
+      '223e4567-e89b-12d3-a456-426614174001',
+    ]);
+  });
+
+  it('rejects an empty ids array with a 422', async () => {
+    const res = await request(app).post('/api/reports/bulk-delete').send({ ids: [] });
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.bulkDeleteReports).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-uuid id with a 422', async () => {
+    const res = await request(app).post('/api/reports/bulk-delete').send({ ids: ['not-a-uuid'] });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app)
+      .post('/api/reports/bulk-delete')
+      .send({ ids: ['123e4567-e89b-12d3-a456-426614174000'] });
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.bulkDeleteReports).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/reports/:id/tag', () => {
+  it('updates the tag and returns the report', async () => {
+    mockReportService.updateReportTag.mockResolvedValue({ id: 'r1', tag: 'bank' });
+
+    const res = await request(app).patch('/api/reports/r1/tag').send({ tag: 'bank' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'r1', tag: 'bank' });
+    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', 'bank');
+  });
+
+  it('accepts null to clear a tag', async () => {
+    mockReportService.updateReportTag.mockResolvedValue({ id: 'r1', tag: null });
+
+    const res = await request(app).patch('/api/reports/r1/tag').send({ tag: null });
+
+    expect(res.status).toBe(200);
+    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', null);
+  });
+
+  it('rejects an invalid tag value with a 422', async () => {
+    const res = await request(app).patch('/api/reports/r1/tag').send({ tag: 'not-a-real-tag' });
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.updateReportTag).not.toHaveBeenCalled();
+  });
+
+  it('returns an RFC 7807 404 when the report does not exist or is not completed', async () => {
+    mockReportService.updateReportTag.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).patch('/api/reports/missing/tag').send({ tag: 'bank' });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PUT/DELETE /api/reports/:id/favorite', () => {
+  it('PUT adds a favorite and returns 204', async () => {
+    mockReportService.addFavorite.mockResolvedValue(undefined);
+
+    const res = await request(app).put('/api/reports/r1/favorite');
+
+    expect(res.status).toBe(204);
+    expect(mockReportService.addFavorite).toHaveBeenCalledWith(USER_ID, 'r1');
+  });
+
+  it('PUT returns an RFC 7807 404 when the report is inaccessible', async () => {
+    mockReportService.addFavorite.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).put('/api/reports/missing/favorite');
+
+    expect(res.status).toBe(404);
+  });
+
+  it('DELETE removes a favorite and returns 204', async () => {
+    mockReportService.removeFavorite.mockResolvedValue(undefined);
+
+    const res = await request(app).delete('/api/reports/r1/favorite');
+
+    expect(res.status).toBe(204);
+    expect(mockReportService.removeFavorite).toHaveBeenCalledWith(USER_ID, 'r1');
+  });
+
+  it('is allowed for a viewer (report:read is granted to all three roles)', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+    mockReportService.addFavorite.mockResolvedValue(undefined);
+
+    const res = await request(app).put('/api/reports/r1/favorite');
+
+    expect(res.status).toBe(204);
   });
 });
 
@@ -161,7 +362,11 @@ describe('GET /api/reports/exports', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: 'exp-1' }]);
-    expect(mockReportExportService.listExports).toHaveBeenCalledWith(USER_ID, { limit: undefined });
+    expect(mockReportExportService.listExports).toHaveBeenCalledWith(USER_ID, {
+      limit: undefined,
+      offset: undefined,
+      q: undefined,
+    });
   });
 
   it('passes a valid ?limit= through', async () => {
@@ -169,7 +374,21 @@ describe('GET /api/reports/exports', () => {
 
     await request(app).get('/api/reports/exports?limit=10');
 
-    expect(mockReportExportService.listExports).toHaveBeenCalledWith(USER_ID, { limit: 10 });
+    expect(mockReportExportService.listExports).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ limit: 10 }),
+    );
+  });
+
+  it('passes ?offset= and ?q= through', async () => {
+    mockReportExportService.listExports.mockResolvedValue([]);
+
+    await request(app).get('/api/reports/exports?offset=20&q=june');
+
+    expect(mockReportExportService.listExports).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ offset: 20, q: 'june' }),
+    );
   });
 });
 

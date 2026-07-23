@@ -28,16 +28,33 @@ export async function recordExport(entry) {
   }
 }
 
-export async function listExports(userId, { limit } = {}) {
+export async function listExports(userId, { limit, offset, q } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  const query = q?.trim();
+
   return prisma.reportExport.findMany({
-    where: { organizationId },
+    where: {
+      organizationId,
+      // Matches RecentExports.tsx's search box copy: "by report name or reconciliation"
+      ...(query
+        ? {
+            report: {
+              OR: [
+                { name: { contains: query, mode: 'insensitive' } },
+                { fileAName: { contains: query, mode: 'insensitive' } },
+                { fileBName: { contains: query, mode: 'insensitive' } },
+              ],
+            },
+          }
+        : {}),
+    },
     include: {
       report: { select: { name: true, fileAName: true, fileBName: true } },
       user: { select: { name: true } },
       template: { select: { name: true } },
     },
     orderBy: { createdAt: 'desc' },
+    ...(offset ? { skip: offset } : {}),
     ...(limit ? { take: limit } : {}),
   });
 }

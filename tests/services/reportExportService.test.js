@@ -133,4 +133,43 @@ describe('listExports', () => {
 
     expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 10 }));
   });
+
+  it('passes skip through when an offset is given', async () => {
+    mockPrisma.reportExport.findMany.mockResolvedValue([]);
+
+    await listExports(USER_ID, { offset: 20 });
+
+    expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }));
+  });
+
+  it('filters by report name/file names when q is given', async () => {
+    mockPrisma.reportExport.findMany.mockResolvedValue([]);
+
+    await listExports(USER_ID, { q: 'june' });
+
+    expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          organizationId: ORG_ID,
+          report: {
+            OR: [
+              { name: { contains: 'june', mode: 'insensitive' } },
+              { fileAName: { contains: 'june', mode: 'insensitive' } },
+              { fileBName: { contains: 'june', mode: 'insensitive' } },
+            ],
+          },
+        },
+      }),
+    );
+  });
+
+  it('ignores a blank/whitespace-only q', async () => {
+    mockPrisma.reportExport.findMany.mockResolvedValue([]);
+
+    await listExports(USER_ID, { q: '   ' });
+
+    expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { organizationId: ORG_ID } }),
+    );
+  });
 });

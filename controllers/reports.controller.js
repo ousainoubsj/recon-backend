@@ -1,3 +1,4 @@
+import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
 import { logAuditSafely } from '../services/auditLogService.js';
@@ -10,13 +11,38 @@ import { parsePositiveInt } from '../utils/queryParams.js';
 
 export const listReports = async (req, res) => {
   const limit = parsePositiveInt(req.query.limit, 100);
-  const reports = await reportService.listReports(req.session.user.id, { limit });
+  const offset = parsePositiveInt(req.query.offset);
+  const { q, dateFrom, dateTo, tag, favoritesOnly } = req.query;
+  const reports = await reportService.listReports(req.session.user.id, {
+    limit,
+    offset,
+    q,
+    dateFrom,
+    dateTo,
+    tag,
+    favoritesOnly: favoritesOnly === 'true',
+  });
   res.json(reports);
 };
 
 export const getReportsSummary = async (req, res) => {
   const summary = await reportService.getReportsSummary(req.session.user.id);
   res.json(summary);
+};
+
+export const getHistoryStats = async (req, res) => {
+  const stats = await reportService.getHistoryStats(req.session.user.id);
+  res.json(stats);
+};
+
+export const getMatchRateDistribution = async (req, res) => {
+  const distribution = await reportService.getMatchRateDistribution(req.session.user.id);
+  res.json(distribution);
+};
+
+export const getTopFilePairs = async (req, res) => {
+  const pairs = await reportService.getTopFilePairs(req.session.user.id);
+  res.json(pairs);
 };
 
 export const getReportsTrend = async (req, res) => {
@@ -58,6 +84,90 @@ export const getReport = async (req, res) => {
 export const deleteReport = async (req, res) => {
   await reportService.deleteReport(req.session.user.id, req.params.id);
   res.status(204).end();
+};
+
+export const updateReportTag = async (req, res) => {
+  const report = await reportService.updateReportTag(req.session.user.id, req.params.id, req.body.tag ?? null);
+  res.json(report);
+};
+
+export const addFavorite = async (req, res) => {
+  await reportService.addFavorite(req.session.user.id, req.params.id);
+  res.status(204).end();
+};
+
+export const removeFavorite = async (req, res) => {
+  await reportService.removeFavorite(req.session.user.id, req.params.id);
+  res.status(204).end();
+};
+
+export const bulkDeleteReports = async (req, res) => {
+  const result = await reportService.bulkDeleteReports(req.session.user.id, req.body.ids);
+  res.json(result);
+};
+
+// All-or-nothing: every buffer is built in memory *before* any response
+// bytes are sent, so a single failed report aborts the whole request with a
+// normal RFC 7807 error (same shape as the single-report export failure)
+// instead of streaming a silently-incomplete zip.
+export const bulkExportReports = async (req, res) => {
+  const { ids, format = 'xlsx', templateId, sections: overrideSections } = req.body;
+  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
+
+  const sections = await resolveSections({
+    organizationId: reports[0].organizationId,
+    templateId,
+    overrideSections,
+  });
+
+  const built = [];
+  for (const report of reports) {
+    try {
+      const buffer = format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+      built.push({ report, buffer });
+    } catch (err) {
+      await recordExport({
+        reportId: report.id,
+        userId: req.session.user.id,
+        organizationId: report.organizationId,
+        templateId,
+        format,
+        source: 'manual',
+        status: 'failed',
+        errorMessage: err.message,
+      });
+      throw err;
+    }
+  }
+
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="reports_export_${Date.now()}.zip"`);
+
+  const archive = new ZipArchive();
+  archive.pipe(res);
+  for (const { report, buffer } of built) {
+    archive.append(buffer, { name: `${report.name || 'report'}-${report.id}.${format}` });
+  }
+  await archive.finalize();
+
+  await logAuditSafely(req.session.user.id, {
+    action: 'report.bulk_export',
+    entityType: 'report',
+    metadata: { ids, format, templateId: templateId ?? null },
+  });
+
+  for (const { report, buffer } of built) {
+    await recordExport({
+      reportId: report.id,
+      userId: req.session.user.id,
+      organizationId: report.organizationId,
+      templateId,
+      format,
+      source: 'manual',
+      status: 'success',
+      fileSizeBytes: buffer.length,
+    });
+  }
 };
 
 const CONTENT_TYPE_BY_FORMAT = {
@@ -117,7 +227,8 @@ export const exportReport = async (req, res) => {
 
 export const listExports = async (req, res) => {
   const limit = parsePositiveInt(req.query.limit, 100);
-  const exports = await listReportExports(req.session.user.id, { limit });
+  const offset = parsePositiveInt(req.query.offset);
+  const exports = await listReportExports(req.session.user.id, { limit, offset, q: req.query.q });
   res.json(exports);
 };
 

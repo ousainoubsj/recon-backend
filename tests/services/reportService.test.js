@@ -14,6 +14,10 @@ const mockPrisma = {
     deleteMany: jest.fn(),
     updateMany: jest.fn(),
   },
+  reportFavorite: {
+    upsert: jest.fn(),
+    deleteMany: jest.fn(),
+  },
   member: {
     findFirst: jest.fn(),
   },
@@ -42,6 +46,14 @@ const {
   updateDraft,
   listDrafts,
   completeDraft,
+  getHistoryStats,
+  getMatchRateDistribution,
+  getTopFilePairs,
+  updateReportTag,
+  addFavorite,
+  removeFavorite,
+  bulkDeleteReports,
+  getReportsByIds,
 } = await import('../../services/reportService.js');
 const { NotFoundError } = await import('../../errors.js');
 
@@ -135,15 +147,23 @@ describe('saveReport', () => {
 });
 
 describe('listReports', () => {
-  it("queries all reports in the user's organization, newest first, unbounded by default", async () => {
-    const reports = [{ id: 'r1' }, { id: 'r2' }];
-    mockPrisma.report.findMany.mockResolvedValue(reports);
+  const FAVORITES_INCLUDE = { favorites: { where: { userId: USER_ID }, select: { id: true } } };
+
+  it("queries all reports in the user's organization, newest first, unbounded by default, mapping isFavorited", async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r1', favorites: [] },
+      { id: 'r2', favorites: [{ id: 'fav-1' }] },
+    ]);
 
     const result = await listReports(USER_ID);
 
-    expect(result).toBe(reports);
+    expect(result).toEqual([
+      { id: 'r1', isFavorited: false },
+      { id: 'r2', isFavorited: true },
+    ]);
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID, status: 'completed' },
+      include: FAVORITES_INCLUDE,
       orderBy: { runDate: 'desc' },
     });
   });
@@ -155,9 +175,89 @@ describe('listReports', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID, status: 'completed' },
+      include: FAVORITES_INCLUDE,
       orderBy: { runDate: 'desc' },
       take: 5,
     });
+  });
+
+  it('passes skip through when an offset is given', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { offset: 20 });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ skip: 20 }));
+  });
+
+  it('filters by name/file names when q is given', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { q: 'june' });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG_ID,
+        status: 'completed',
+        OR: [
+          { name: { contains: 'june', mode: 'insensitive' } },
+          { fileAName: { contains: 'june', mode: 'insensitive' } },
+          { fileBName: { contains: 'june', mode: 'insensitive' } },
+        ],
+      },
+      include: FAVORITES_INCLUDE,
+      orderBy: { runDate: 'desc' },
+    });
+  });
+
+  it('filters by date range when dateFrom/dateTo are given', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { dateFrom: '2026-06-01', dateTo: '2026-06-30' });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          runDate: { gte: new Date('2026-06-01'), lte: new Date('2026-06-30') },
+        }),
+      }),
+    );
+  });
+
+  it('ignores an invalid date rather than throwing or filtering', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { dateFrom: 'not-a-date' });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { organizationId: ORG_ID, status: 'completed' } }),
+    );
+  });
+
+  it('filters by tag when valid, ignores an unrecognized tag value', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { tag: 'bank' });
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ tag: 'bank' }) }),
+    );
+
+    mockPrisma.report.findMany.mockClear();
+    await listReports(USER_ID, { tag: 'not-a-real-tag' });
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { organizationId: ORG_ID, status: 'completed' } }),
+    );
+  });
+
+  it('filters to favorited reports only when favoritesOnly is true', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { favoritesOnly: true });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ favorites: { some: { userId: USER_ID } } }),
+      }),
+    );
   });
 });
 
@@ -472,5 +572,274 @@ describe('completeDraft', () => {
 
     await expect(completeDraft(USER_ID, 'missing', dto)).rejects.toBeInstanceOf(NotFoundError);
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+describe('getHistoryStats', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('returns all-time cumulative totals with a rolling 30-vs-previous-30-day delta', async () => {
+    mockPrisma.report.findMany
+      .mockResolvedValueOnce([
+        { totalRows: 100, matchedCount: 90, unmatchedCount: 8, mismatchedCount: 2, duplicateCount: 0, totalBreakValue: 500, fileAName: 'a.csv', fileBName: 'b.csv', runDate: new Date() },
+        { totalRows: 100, matchedCount: 100, unmatchedCount: 0, mismatchedCount: 0, duplicateCount: 0, totalBreakValue: 0, fileAName: 'a.csv', fileBName: 'b.csv', runDate: new Date() },
+        { totalRows: 100, matchedCount: 50, unmatchedCount: 50, mismatchedCount: 0, duplicateCount: 0, totalBreakValue: 1000, fileAName: 'a.csv', fileBName: 'b.csv', runDate: new Date() },
+      ])
+      .mockResolvedValueOnce([
+        { runDate: new Date('2026-07-10T00:00:00Z'), totalRows: 50, matchedCount: 45, unmatchedCount: 5, mismatchedCount: 0, totalBreakValue: 20 },
+        { runDate: new Date('2026-05-20T00:00:00Z'), totalRows: 50, matchedCount: 25, unmatchedCount: 25, mismatchedCount: 0, totalBreakValue: 80 },
+      ]);
+
+    const stats = await getHistoryStats(USER_ID);
+
+    expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        organizationId: ORG_ID,
+        status: 'completed',
+        runDate: { gte: new Date('2026-05-16T12:00:00.000Z'), lt: new Date('2026-07-15T12:00:00.000Z') },
+      },
+      select: {
+        runDate: true,
+        totalRows: true,
+        matchedCount: true,
+        unmatchedCount: true,
+        mismatchedCount: true,
+        totalBreakValue: true,
+      },
+    });
+
+    expect(stats.totalReconciliations).toEqual({ value: 3, deltaPercent: 0 });
+    expect(stats.avgMatchRate).toEqual({ value: 80, deltaPercent: 80 });
+    expect(stats.totalBreakValue).toEqual({ value: 1500, deltaPercent: -75 });
+    expect(stats.totalTransactions).toEqual({ value: 300, deltaPercent: 0 });
+  });
+});
+
+describe('getMatchRateDistribution', () => {
+  it('buckets all-time completed reports by their own match rate', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { totalRows: 100, matchedCount: 99 },
+      { totalRows: 100, matchedCount: 100 },
+      { totalRows: 100, matchedCount: 96 },
+      { totalRows: 100, matchedCount: 92 },
+      { totalRows: 100, matchedCount: 80 },
+    ]);
+
+    const distribution = await getMatchRateDistribution(USER_ID);
+
+    expect(distribution).toEqual([
+      { label: '≥ 99%', value: 2, percent: '40.0%' },
+      { label: '95% - 98.99%', value: 1, percent: '20.0%' },
+      { label: '90% - 94.99%', value: 1, percent: '20.0%' },
+      { label: '< 90%', value: 1, percent: '20.0%' },
+    ]);
+  });
+
+  it('returns all-zero buckets with 0.0% when there are no completed reports', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    const distribution = await getMatchRateDistribution(USER_ID);
+
+    expect(distribution.every((b) => b.value === 0 && b.percent === '0.0%')).toBe(true);
+  });
+});
+
+describe('getTopFilePairs', () => {
+  it('groups by file pair case-insensitively, sorted by count, with an "Other" bucket for the remainder', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { fileAName: 'Internal Ledger.csv', fileBName: 'Bank Statement.csv' },
+      { fileAName: 'internal ledger.csv', fileBName: 'bank statement.csv' },
+      { fileAName: 'AP Ledger.csv', fileBName: 'Supplier Statement.csv' },
+      { fileAName: 'GL Ledger.csv', fileBName: 'Bank Statement.csv' },
+      { fileAName: 'Payroll.csv', fileBName: 'Bank Statement.csv' },
+      { fileAName: 'Other X.csv', fileBName: 'Other Y.csv' },
+    ]);
+
+    const pairs = await getTopFilePairs(USER_ID, { limit: 4 });
+
+    expect(pairs).toEqual([
+      { label: 'Internal Ledger.csv vs Bank Statement.csv', count: 2 },
+      { label: 'AP Ledger.csv vs Supplier Statement.csv', count: 1 },
+      { label: 'GL Ledger.csv vs Bank Statement.csv', count: 1 },
+      { label: 'Payroll.csv vs Bank Statement.csv', count: 1 },
+      { label: 'Other File Pairs', count: 1 },
+    ]);
+  });
+
+  it('omits the "Other" bucket when there are no more than `limit` groups', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { fileAName: 'a.csv', fileBName: 'b.csv' },
+      { fileAName: 'c.csv', fileBName: 'd.csv' },
+    ]);
+
+    const pairs = await getTopFilePairs(USER_ID, { limit: 4 });
+
+    expect(pairs).toEqual([
+      { label: 'a.csv vs b.csv', count: 1 },
+      { label: 'c.csv vs d.csv', count: 1 },
+    ]);
+  });
+});
+
+describe('updateReportTag', () => {
+  it('updates the tag on a completed report in the org', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', tag: 'bank' });
+
+    const result = await updateReportTag(USER_ID, 'r1', 'bank');
+
+    expect(result).toEqual({ id: 'r1', tag: 'bank' });
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: { id: 'r1', organizationId: ORG_ID, status: 'completed' },
+      data: { tag: 'bank' },
+    });
+  });
+
+  it('allows clearing a tag with null', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', tag: null });
+
+    await updateReportTag(USER_ID, 'r1', null);
+
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith(expect.objectContaining({ data: { tag: null } }));
+  });
+
+  it('throws NotFoundError when the report is missing, still a draft, or not in the org', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(updateReportTag(USER_ID, 'missing', 'bank')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('addFavorite / removeFavorite', () => {
+  it('addFavorite upserts a favorite row after checking visibility', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', status: 'completed', rows: [] });
+    mockPrisma.reportFavorite.upsert.mockResolvedValue({ id: 'fav-1' });
+
+    await addFavorite(USER_ID, 'r1');
+
+    expect(mockPrisma.reportFavorite.upsert).toHaveBeenCalledWith({
+      where: { userId_reportId: { userId: USER_ID, reportId: 'r1' } },
+      create: { userId: USER_ID, reportId: 'r1' },
+      update: {},
+    });
+  });
+
+  it("addFavorite throws NotFoundError instead of favoriting an inaccessible report", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(addFavorite(USER_ID, 'missing')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.reportFavorite.upsert).not.toHaveBeenCalled();
+  });
+
+  it("addFavorite can't reach another user's private draft", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', status: 'draft', userId: OTHER_USER_ID, rows: [] });
+
+    await expect(addFavorite(USER_ID, 'r1')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('removeFavorite deletes the favorite row after checking visibility', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', status: 'completed', rows: [] });
+    mockPrisma.reportFavorite.deleteMany.mockResolvedValue({ count: 1 });
+
+    await removeFavorite(USER_ID, 'r1');
+
+    expect(mockPrisma.reportFavorite.deleteMany).toHaveBeenCalledWith({ where: { userId: USER_ID, reportId: 'r1' } });
+  });
+
+  it('removeFavorite is a no-op, not an error, when nothing was favorited', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', status: 'completed', rows: [] });
+    mockPrisma.reportFavorite.deleteMany.mockResolvedValue({ count: 0 });
+
+    await expect(removeFavorite(USER_ID, 'r1')).resolves.toBeUndefined();
+  });
+});
+
+describe('bulkDeleteReports', () => {
+  it('scopes bulk-delete to own reports when the role is not admin', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r1', userId: USER_ID },
+      { id: 'r2', userId: USER_ID },
+    ]);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 2 });
+
+    const result = await bulkDeleteReports(USER_ID, ['r1', 'r2']);
+
+    expect(result).toEqual({ deletedCount: 2 });
+    expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['r1', 'r2'] }, organizationId: ORG_ID, userId: USER_ID },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.bulk_delete',
+      entityType: 'report',
+      metadata: { ids: ['r1', 'r2'], count: 2 },
+    });
+    expect(mockCreateNotification).not.toHaveBeenCalled();
+  });
+
+  it('lets an admin bulk-delete across owners, notifying each distinct owner once with a count', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin' });
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r1', userId: OTHER_USER_ID },
+      { id: 'r2', userId: OTHER_USER_ID },
+      { id: 'r3', userId: USER_ID },
+    ]);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 3 });
+
+    await bulkDeleteReports(USER_ID, ['r1', 'r2', 'r3']);
+
+    expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
+      where: { id: { in: ['r1', 'r2', 'r3'] }, organizationId: ORG_ID },
+    });
+    expect(mockCreateNotification).toHaveBeenCalledTimes(1);
+    expect(mockCreateNotification).toHaveBeenCalledWith(
+      OTHER_USER_ID,
+      expect.objectContaining({ type: 'report.deleted_by_admin', message: expect.stringContaining('2') }),
+    );
+  });
+});
+
+describe('getReportsByIds', () => {
+  it('returns reports in the requested order, org-scoped', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r2', status: 'completed', rows: [] },
+      { id: 'r1', status: 'completed', rows: [] },
+    ]);
+
+    const result = await getReportsByIds(USER_ID, ['r1', 'r2']);
+
+    expect(result.map((r) => r.id)).toEqual(['r1', 'r2']);
+  });
+
+  it('throws NotFoundError when any requested id is missing or inaccessible', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([{ id: 'r1', status: 'completed', rows: [] }]);
+
+    await expect(getReportsByIds(USER_ID, ['r1', 'missing'])).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("excludes another user's private draft, 404ing if it was requested", async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r1', status: 'draft', userId: OTHER_USER_ID, rows: [] },
+    ]);
+
+    await expect(getReportsByIds(USER_ID, ['r1'])).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('applies a completed-only filter when requireCompleted is true', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([{ id: 'r1', status: 'completed', rows: [] }]);
+
+    await getReportsByIds(USER_ID, ['r1'], { requireCompleted: true });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
+      where: { id: { in: ['r1'] }, organizationId: ORG_ID, status: 'completed' },
+      include: { rows: true },
+    });
   });
 });

@@ -45,6 +45,12 @@ enum ReportExportStatus {
   failed
 }
 
+enum ReportTag {
+  bank
+  supplier
+  year_end
+}
+
 model User {
   id        String   @id
   email     String   @unique @db.VarChar(255)
@@ -56,6 +62,7 @@ model User {
   notifications    Notification[]
   reportExports    ReportExport[]
   scheduledReports ScheduledReport[]
+  favorites        ReportFavorite[]
 
   name          String
   emailVerified Boolean      @default(false)
@@ -79,6 +86,7 @@ model Report {
   fileAName         String?      @map("file_a_name") @db.VarChar(255)
   fileBName         String?      @map("file_b_name") @db.VarChar(255)
   name              String?      @db.VarChar(255)
+  tag               ReportTag?
   // 0-100; 100 for a completed/failed run, whatever the client reports for
   // an in-progress draft (see services/reportService.js's saveDraft).
   progress          Int          @default(100)
@@ -97,11 +105,13 @@ model Report {
   rows      ReportRow[]
   exports   ReportExport[]
   schedules ScheduledReport[]
+  favorites ReportFavorite[]
 
   @@index([userId], map: "idx_reports_user_id")
   @@index([organizationId], map: "idx_reports_organization_id")
   @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
   @@index([userId, status], map: "idx_reports_user_status")
+  @@index([organizationId, runDate], map: "idx_reports_org_rundate")
   @@map("reports")
 }
 
@@ -209,6 +219,19 @@ model ReportExport {
   @@index([organizationId, createdAt(sort: Desc)], map: "idx_report_exports_org_created")
   @@index([source])
   @@map("report_exports")
+}
+
+model ReportFavorite {
+  id        String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId    String   @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reportId  String   @map("report_id") @db.Uuid
+  report    Report   @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@unique([userId, reportId])
+  @@index([reportId])
+  @@map("report_favorites")
 }
 
 model ScheduledReport {
