@@ -1,6 +1,6 @@
 export const ROLE_PERMISSIONS = {
   admin: {
-    organization: ['update', 'delete'],
+    organization: ['read', 'update', 'delete'],
     member: ['create', 'read', 'update', 'delete'],
     invitation: ['create', 'cancel'],
     report: ['create', 'read', 'delete', 'export', 'email'],
@@ -8,7 +8,7 @@ export const ROLE_PERMISSIONS = {
     auditLog: ['create', 'read'],
   },
   analyst: {
-    organization: [],
+    organization: ['read'],
     member: ['read'],
     invitation: [],
     report: ['create', 'read', 'export', 'email'],
@@ -16,7 +16,7 @@ export const ROLE_PERMISSIONS = {
     auditLog: ['create'],
   },
   viewer: {
-    organization: [],
+    organization: ['read'],
     member: ['read'],
     invitation: [],
     report: ['read', 'export', 'email'],

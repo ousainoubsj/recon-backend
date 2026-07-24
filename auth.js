@@ -17,7 +17,7 @@ import { sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } from './
 // invitation) alongside our domain resources (report, file) so a single
 // role definition can gate both.
 const statement = {
-  organization: ['update', 'delete'],
+  organization: ['read', 'update', 'delete'],
   member: ['create', 'read', 'update', 'delete'],
   invitation: ['create', 'cancel'],
   report: ['create', 'read', 'delete', 'export', 'email'],

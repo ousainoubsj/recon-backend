@@ -84,6 +84,13 @@ model User {
   members       Member[]
   invitations   Invitation[]
 
+  // Real, persisted preferences — but nothing in this codebase sends a
+  // notification email or a weekly digest yet, so these don't gate
+  // anything real today (schema forward-compatibility, same reasoning as
+  // ReportStatus.failed).
+  emailNotificationsEnabled Boolean @default(true) @map("email_notifications_enabled")
+  weeklyDigestEnabled       Boolean @default(false) @map("weekly_digest_enabled")
+
   @@map("users")
 }
 
@@ -329,20 +336,33 @@ model Verification {
 }
 
 model Organization {
-  id               String            @id
-  name             String
-  slug             String
-  logo             String?
-  createdAt        DateTime
-  metadata         String?
-  members          Member[]
-  invitations      Invitation[]
-  reports          Report[]
-  auditLogs        AuditLog[]
-  notifications    Notification[]
-  reportTemplates  ReportTemplate[]
-  reportExports    ReportExport[]
-  scheduledReports ScheduledReport[]
+  id                       String            @id
+  name                     String
+  slug                     String
+  logo                     String?
+  createdAt                DateTime
+  metadata                 String?
+  // Not part of Better Auth's own org-plugin schema — set/read only by our
+  // own settings endpoints, same reasoning as Member.department/status in
+  // §6 (no schema.organization.additionalFields config needed). No option
+  // list is enforced: the frontend mock has no canonical list for any of
+  // these, so inventing one here would be presumptuous.
+  orgType                  String?           @map("org_type") @db.VarChar(100)
+  country                  String?           @db.VarChar(100)
+  timezone                 String?           @db.VarChar(100)
+  dateFormat               String?           @map("date_format") @db.VarChar(50)
+  currency                 String?           @db.VarChar(10)
+  defaultAmountTolerance   Decimal?          @map("default_amount_tolerance") @db.Decimal(10, 4)
+  defaultDateToleranceDays Int?              @map("default_date_tolerance_days")
+  defaultAmountType        String?           @map("default_amount_type") @db.VarChar(50)
+  members                  Member[]
+  invitations              Invitation[]
+  reports                  Report[]
+  auditLogs                AuditLog[]
+  notifications            Notification[]
+  reportTemplates          ReportTemplate[]
+  reportExports            ReportExport[]
+  scheduledReports         ScheduledReport[]
 
   @@unique([slug])
   @@map("organization")
