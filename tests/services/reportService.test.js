@@ -574,6 +574,43 @@ describe('updateDraft', () => {
 
     await expect(updateDraft(USER_ID, 'missing', { name: 'x' })).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  it('logs report.column_mapping.updated when columnMapping is part of the patch', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1' });
+
+    await updateDraft(USER_ID, 'draft-1', { columnMapping: { fileA: {}, fileB: {} } }, { ip: '10.0.0.1' });
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.column_mapping.updated',
+      entityType: 'report',
+      entityId: 'draft-1',
+      ip: '10.0.0.1',
+    });
+  });
+
+  it('logs report.matching_rules.updated when config is part of the patch', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1' });
+
+    await updateDraft(USER_ID, 'draft-1', { config: { amountTolerance: 0.01 } });
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.matching_rules.updated',
+      entityType: 'report',
+      entityId: 'draft-1',
+      ip: undefined,
+    });
+  });
+
+  it('logs neither event for a patch that touches neither field (e.g. a progress-only autosave)', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1' });
+
+    await updateDraft(USER_ID, 'draft-1', { progress: 40 });
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
 });
 
 describe('listDrafts', () => {
@@ -691,7 +728,14 @@ describe('runReconciliation', () => {
       }),
     );
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
-      action: 'report.run',
+      action: 'report.run.started',
+      entityType: 'report',
+      entityId: 'draft-1',
+      status: 'info',
+      ip: undefined,
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.run.completed',
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
@@ -754,7 +798,7 @@ describe('runReconciliation', () => {
       data: { status: 'failed', errorMessage: 'R2 object not found' },
     });
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
-      action: 'report.run',
+      action: 'report.run.failed',
       entityType: 'report',
       entityId: 'draft-1',
       status: 'failed',

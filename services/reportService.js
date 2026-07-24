@@ -685,7 +685,12 @@ export async function saveDraft(userId, dto) {
   return report;
 }
 
-export async function updateDraft(userId, reportId, dto) {
+// Logs `report.column_mapping.updated`/`report.matching_rules.updated` when
+// the corresponding field is actually present in the patch — matches the
+// mock Audit Log's granular vocabulary, distinct from the single
+// `report.run.*` events below. Not logged on every PATCH, only when that
+// specific field is part of it (e.g. a progress-only autosave stays silent).
+export async function updateDraft(userId, reportId, dto, { ip } = {}) {
   const { count } = await prisma.report.updateMany({
     where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
     data: {
@@ -700,6 +705,24 @@ export async function updateDraft(userId, reportId, dto) {
     },
   });
   if (count === 0) throw new NotFoundError();
+
+  if (dto.columnMapping !== undefined) {
+    await logAuditSafely(userId, {
+      action: 'report.column_mapping.updated',
+      entityType: 'report',
+      entityId: reportId,
+      ip,
+    });
+  }
+  if (dto.config !== undefined) {
+    await logAuditSafely(userId, {
+      action: 'report.matching_rules.updated',
+      entityType: 'report',
+      entityId: reportId,
+      ip,
+    });
+  }
+
   return prisma.report.findFirst({ where: { id: reportId, userId } });
 }
 
@@ -755,6 +778,14 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
 
   const { organizationId } = await getUserMembership(userId);
 
+  await logAuditSafely(userId, {
+    action: 'report.run.started',
+    entityType: 'report',
+    entityId: reportId,
+    status: 'info',
+    ip,
+  });
+
   let summary, rows;
   try {
     const [fileABuffer, fileBBuffer] = await Promise.all([
@@ -767,7 +798,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
   } catch (err) {
     await prisma.report.update({ where: { id: reportId }, data: { status: 'failed', errorMessage: err.message } });
     await logAuditSafely(userId, {
-      action: 'report.run',
+      action: 'report.run.failed',
       entityType: 'report',
       entityId: reportId,
       status: 'failed',
@@ -792,7 +823,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     }),
   );
 
-  await logAuditSafely(userId, { action: 'report.run', entityType: 'report', entityId: report.id, ip });
+  await logAuditSafely(userId, { action: 'report.run.completed', entityType: 'report', entityId: report.id, ip });
 
   return report.id;
 }

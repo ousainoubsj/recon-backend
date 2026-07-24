@@ -62,7 +62,7 @@ export const saveDraft = async (req, res) => {
 };
 
 export const updateDraft = async (req, res) => {
-  const draft = await reportService.updateDraft(req.session.user.id, req.params.id, req.body);
+  const draft = await reportService.updateDraft(req.session.user.id, req.params.id, req.body, { ip: req.ip });
   res.json(draft);
 };
 
@@ -94,6 +94,20 @@ export const runReconciliation = async (req, res) => {
 export const getReport = async (req, res) => {
   const report = await reportService.getReport(req.session.user.id, req.params.id);
   res.json(report);
+
+  // Only completed reports count as "viewing reconciliation results" — a
+  // draft being reopened for editing isn't that. Not logged from
+  // reportService.getReport itself since export/email/bulk-export also call
+  // it internally and shouldn't each register as a "view".
+  if (report.status === 'completed') {
+    await logAuditSafely(req.session.user.id, {
+      action: 'report.results.viewed',
+      entityType: 'report',
+      entityId: report.id,
+      status: 'info',
+      ip: req.ip,
+    });
+  }
 };
 
 export const getTransactions = async (req, res) => {

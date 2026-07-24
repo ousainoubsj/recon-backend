@@ -63,8 +63,9 @@ jest.unstable_mockModule('../../services/scheduledReportService.js', () => ({
   deleteSchedule: jest.fn(),
 }));
 
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
-  logAuditSafely: jest.fn().mockResolvedValue(undefined),
+  logAuditSafely: mockLogAuditSafely,
 }));
 
 const { reportsRouter } = await import('../../routes/reports.js');
@@ -588,7 +589,9 @@ describe('PATCH /api/reports/draft/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 'draft-1', name: 'Updated' });
-    expect(mockReportService.updateDraft).toHaveBeenCalledWith(USER_ID, 'draft-1', { name: 'Updated' });
+    expect(mockReportService.updateDraft).toHaveBeenCalledWith(USER_ID, 'draft-1', { name: 'Updated' }, {
+      ip: expect.any(String),
+    });
   });
 
   it('returns an RFC 7807 404 when not found or not owned', async () => {
@@ -764,6 +767,28 @@ describe('GET /api/reports/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 'r1', rows: [] });
+  });
+
+  it('logs report.results.viewed for a completed report', async () => {
+    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'completed', rows: [] });
+
+    await request(app).get('/api/reports/r1');
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.results.viewed',
+      entityType: 'report',
+      entityId: 'r1',
+      status: 'info',
+      ip: expect.any(String),
+    });
+  });
+
+  it('does not log report.results.viewed for a draft', async () => {
+    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'draft', rows: [] });
+
+    await request(app).get('/api/reports/r1');
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 
   it('returns an RFC 7807 404 when not found or not owned', async () => {
