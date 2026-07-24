@@ -116,6 +116,11 @@ model Report {
   organizationId    String       @map("organization_id")
   organization      Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   status            ReportStatus @default(completed)
+  // Set when a run fails during download/parse/match (unparseable file, a
+  // missing R2 object, etc.); cleared back to null on a subsequent
+  // successful run of the same draft. Only ever populated when status is
+  // 'failed'.
+  errorMessage      String?      @map("error_message")
   // Nullable: a draft can exist before any file has been chosen yet.
   fileAName         String?      @map("file_a_name") @db.VarChar(255)
   fileBName         String?      @map("file_b_name") @db.VarChar(255)

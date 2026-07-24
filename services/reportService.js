@@ -93,6 +93,8 @@ async function persistCompletedRun(tx, reportId, dto) {
     data: {
       status: 'completed',
       progress: 100,
+      // Clears any prior failed-attempt message when this is a retry.
+      errorMessage: null,
       name: dto.name,
       fileAName: dto.fileAName,
       fileBName: dto.fileBName,
@@ -685,7 +687,7 @@ export async function saveDraft(userId, dto) {
 
 export async function updateDraft(userId, reportId, dto) {
   const { count } = await prisma.report.updateMany({
-    where: { id: reportId, userId, status: 'draft' },
+    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
     data: {
       ...(dto.name !== undefined ? { name: dto.name } : {}),
       ...(dto.fileAName !== undefined ? { fileAName: dto.fileAName } : {}),
@@ -731,12 +733,21 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
   return report.id;
 }
 
+// A previously failed run behaves like a draft that can be retried — it
+// still has fileAKey/fileBKey/columnMapping/sample rows to work with, it
+// just needs another attempt.
+function findDraftOrFailedRun(userId, reportId) {
+  return prisma.report.findFirst({ where: { id: reportId, userId, status: { in: ['draft', 'failed'] } } });
+}
+
 // The actual matching engine entry point: re-downloads+re-parses the full
 // files fresh from R2 (never reuses the mapping-preview sample — that's only
 // for the cheap rule-preview endpoint), runs the match, and persists exactly
-// like completeDraft does.
+// like completeDraft does. A failure during download/parse/match persists a
+// `status: 'failed'` row (with the error message) rather than leaving no
+// record at all — the draft stays retryable afterward.
 export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
-  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
+  const draft = await findDraftOrFailedRun(userId, reportId);
   if (!draft) throw new NotFoundError();
   if (!draft.fileAKey || !draft.fileBKey) {
     throw new ValidationError('Both files must be uploaded before running reconciliation');
@@ -744,14 +755,28 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
 
   const { organizationId } = await getUserMembership(userId);
 
-  const [fileABuffer, fileBBuffer] = await Promise.all([
-    downloadFromR2(draft.fileAKey),
-    downloadFromR2(draft.fileBKey),
-  ]);
-  const fileA = parseTabularFile(fileABuffer, draft.fileAName);
-  const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
+  let summary, rows;
+  try {
+    const [fileABuffer, fileBBuffer] = await Promise.all([
+      downloadFromR2(draft.fileAKey),
+      downloadFromR2(draft.fileBKey),
+    ]);
+    const fileA = parseTabularFile(fileABuffer, draft.fileAName);
+    const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
+    ({ summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, dto.config));
+  } catch (err) {
+    await prisma.report.update({ where: { id: reportId }, data: { status: 'failed', errorMessage: err.message } });
+    await logAuditSafely(userId, {
+      action: 'report.run',
+      entityType: 'report',
+      entityId: reportId,
+      status: 'failed',
+      ip,
+      metadata: { reason: err.message },
+    });
+    throw err;
+  }
 
-  const { summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, dto.config);
   const sourceReportId = await findSourceReportId(organizationId, draft.fileAName, draft.fileBName, reportId);
 
   const report = await prisma.$transaction((tx) =>
@@ -777,7 +802,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
 // and caches a bounded row sample on the draft (plus a suggested mapping,
 // only if one isn't already saved) for the rule-preview endpoint to reuse.
 export async function getMappingPreview(userId, reportId) {
-  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
+  const draft = await findDraftOrFailedRun(userId, reportId);
   if (!draft) throw new NotFoundError();
   if (!draft.fileAKey || !draft.fileBKey) {
     throw new ValidationError('Both files must be uploaded before requesting a mapping preview');
@@ -833,7 +858,7 @@ export async function getMappingPreview(userId, reportId) {
 // reuses the bounded sample cached by getMappingPreview instead of
 // re-downloading/re-parsing the full files on every rule-slider tick.
 export async function getRulePreview(userId, reportId, dto) {
-  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
+  const draft = await findDraftOrFailedRun(userId, reportId);
   if (!draft) throw new NotFoundError();
   if (!draft.fileASampleRows || !draft.fileBSampleRows) {
     throw new ConflictError('Call the mapping-preview endpoint before requesting a rule preview');

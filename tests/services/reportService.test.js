@@ -556,7 +556,7 @@ describe('saveDraft', () => {
 });
 
 describe('updateDraft', () => {
-  it('updates only the fields provided, scoped to the caller and status:draft', async () => {
+  it('updates only the fields provided, scoped to the caller and status draft-or-failed', async () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Updated name' });
 
@@ -564,7 +564,7 @@ describe('updateDraft', () => {
 
     expect(result).toEqual({ id: 'draft-1', name: 'Updated name' });
     expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
-      where: { id: 'draft-1', userId: USER_ID, status: 'draft' },
+      where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } },
       data: { name: 'Updated name' },
     });
   });
@@ -723,6 +723,60 @@ describe('runReconciliation', () => {
     await expect(runReconciliation(USER_ID, 'draft-1', runDto)).rejects.toBeInstanceOf(ValidationError);
     expect(mockDownloadFromR2).not.toHaveBeenCalled();
   });
+
+  it('accepts a previously failed run for retry (status draft-or-failed)', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, status: 'failed' });
+
+    await runReconciliation(USER_ID, 'draft-1', runDto);
+
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
+    );
+  });
+
+  it('clears any prior errorMessage on a successful persisted run', async () => {
+    await runReconciliation(USER_ID, 'draft-1', runDto);
+
+    expect(mockTx.report.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ errorMessage: null }) }),
+    );
+  });
+
+  it('persists a failed Report row and rethrows when the file download fails', async () => {
+    const downloadError = new Error('R2 object not found');
+    mockDownloadFromR2.mockRejectedValue(downloadError);
+    mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'failed' });
+
+    await expect(runReconciliation(USER_ID, 'draft-1', runDto, { ip: '10.0.0.1' })).rejects.toBe(downloadError);
+
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { status: 'failed', errorMessage: 'R2 object not found' },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.run',
+      entityType: 'report',
+      entityId: 'draft-1',
+      status: 'failed',
+      ip: '10.0.0.1',
+      metadata: { reason: 'R2 object not found' },
+    });
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('persists a failed Report row when parsing throws (e.g. an unrecognized file extension)', async () => {
+    const parseError = new Error('Unsupported file extension: txt');
+    mockParseTabularFile.mockImplementation(() => {
+      throw parseError;
+    });
+    mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'failed' });
+
+    await expect(runReconciliation(USER_ID, 'draft-1', runDto)).rejects.toBe(parseError);
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { status: 'failed', errorMessage: 'Unsupported file extension: txt' },
+    });
+  });
 });
 
 describe('getMappingPreview', () => {
@@ -788,6 +842,16 @@ describe('getMappingPreview', () => {
     mockPrisma.report.findFirst.mockResolvedValue(null);
 
     await expect(getMappingPreview(USER_ID, 'missing')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('accepts a previously failed run for retry (status draft-or-failed)', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, status: 'failed' });
+
+    await getMappingPreview(USER_ID, 'draft-1');
+
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
+    );
   });
 });
 
