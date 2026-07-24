@@ -76,9 +76,67 @@ export const completeDraft = async (req, res) => {
   res.status(200).json({ id });
 };
 
+export const getMappingPreview = async (req, res) => {
+  const preview = await reportService.getMappingPreview(req.session.user.id, req.params.id);
+  res.json(preview);
+};
+
+export const getRulePreview = async (req, res) => {
+  const preview = await reportService.getRulePreview(req.session.user.id, req.params.id, req.body);
+  res.json(preview);
+};
+
+export const runReconciliation = async (req, res) => {
+  const id = await reportService.runReconciliation(req.session.user.id, req.params.id, req.body, { ip: req.ip });
+  res.status(200).json({ id });
+};
+
 export const getReport = async (req, res) => {
   const report = await reportService.getReport(req.session.user.id, req.params.id);
   res.json(report);
+};
+
+export const getTransactions = async (req, res) => {
+  const { search, status, amountMin, amountMax, dateFrom, dateTo, sortBy, sortDir } = req.query;
+  const result = await reportService.getTransactions(req.session.user.id, req.params.id, {
+    search,
+    status,
+    amountMin: amountMin !== undefined ? Number(amountMin) : undefined,
+    amountMax: amountMax !== undefined ? Number(amountMax) : undefined,
+    dateFrom,
+    dateTo,
+    sortBy,
+    sortDir,
+    limit: parsePositiveInt(req.query.limit, 50),
+    offset: parsePositiveInt(req.query.offset),
+  });
+  res.json(result);
+};
+
+export const getTransaction = async (req, res) => {
+  const transaction = await reportService.getTransaction(req.session.user.id, req.params.id, req.params.rowId);
+  res.json(transaction);
+};
+
+export const markRowReviewed = async (req, res) => {
+  const row = await reportService.markRowReviewed(
+    req.session.user.id,
+    req.params.id,
+    req.params.rowId,
+    req.body.reviewed ?? true,
+    { ip: req.ip },
+  );
+  res.json(row);
+};
+
+export const getBreakBreakdown = async (req, res) => {
+  const breakdown = await reportService.getBreakBreakdown(req.session.user.id, req.params.id);
+  res.json(breakdown);
+};
+
+export const getFilePairTrend = async (req, res) => {
+  const trend = await reportService.getFilePairTrend(req.session.user.id, req.params.id);
+  res.json(trend);
 };
 
 export const deleteReport = async (req, res) => {

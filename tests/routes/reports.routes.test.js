@@ -34,6 +34,14 @@ const mockReportService = {
   addFavorite: jest.fn(),
   removeFavorite: jest.fn(),
   bulkDeleteReports: jest.fn(),
+  getMappingPreview: jest.fn(),
+  getRulePreview: jest.fn(),
+  runReconciliation: jest.fn(),
+  getTransactions: jest.fn(),
+  getTransaction: jest.fn(),
+  markRowReviewed: jest.fn(),
+  getBreakBreakdown: jest.fn(),
+  getFilePairTrend: jest.fn(),
 };
 
 jest.unstable_mockModule('../../services/reportService.js', () => mockReportService);
@@ -61,7 +69,7 @@ jest.unstable_mockModule('../../services/auditLogService.js', () => ({
 
 const { reportsRouter } = await import('../../routes/reports.js');
 const { errorHandler } = await import('../../middleware/errorHandler.js');
-const { NotFoundError } = await import('../../errors.js');
+const { NotFoundError, ValidationError, ConflictError } = await import('../../errors.js');
 
 const app = express();
 app.use(express.json());
@@ -314,6 +322,100 @@ describe('PUT/DELETE /api/reports/:id/favorite', () => {
   });
 });
 
+describe('GET /api/reports/:id/transactions', () => {
+  it('returns the transaction list for a viewer (report:read)', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+    mockReportService.getTransactions.mockResolvedValue({ rows: [{ id: 'row-1' }], total: 1 });
+
+    const res = await request(app).get('/api/reports/r1/transactions?status=matched&limit=10');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ rows: [{ id: 'row-1' }], total: 1 });
+    expect(mockReportService.getTransactions).toHaveBeenCalledWith(
+      USER_ID,
+      'r1',
+      expect.objectContaining({ status: 'matched', limit: 10 }),
+    );
+  });
+});
+
+describe('GET /api/reports/:id/transactions/:rowId', () => {
+  it('returns a single transaction detail', async () => {
+    const transaction = { id: 'row-1', matchAnalysis: [], recommendedAction: 'x' };
+    mockReportService.getTransaction.mockResolvedValue(transaction);
+
+    const res = await request(app).get('/api/reports/r1/transactions/row-1');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(transaction);
+    expect(mockReportService.getTransaction).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1');
+  });
+
+  it('returns an RFC 7807 404 when the row is not found', async () => {
+    mockReportService.getTransaction.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).get('/api/reports/r1/transactions/missing');
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PATCH /api/reports/:id/transactions/:rowId/review', () => {
+  it('marks a row reviewed for an admin', async () => {
+    mockReportService.markRowReviewed.mockResolvedValue({ id: 'row-1', reviewed: true });
+
+    const res = await request(app).patch('/api/reports/r1/transactions/row-1/review').send({ reviewed: true });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'row-1', reviewed: true });
+    expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1', true, {
+      ip: expect.any(String),
+    });
+  });
+
+  it('defaults reviewed to true when the body is empty', async () => {
+    mockReportService.markRowReviewed.mockResolvedValue({ id: 'row-1', reviewed: true });
+
+    const res = await request(app).patch('/api/reports/r1/transactions/row-1/review').send({});
+
+    expect(res.status).toBe(200);
+    expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1', true, expect.anything());
+  });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).patch('/api/reports/r1/transactions/row-1/review').send({ reviewed: false });
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.markRowReviewed).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/reports/:id/break-breakdown', () => {
+  it('returns the break-reason breakdown', async () => {
+    const breakdown = [{ category: 'Amount Mismatch', amount: 100, percent: 50 }];
+    mockReportService.getBreakBreakdown.mockResolvedValue(breakdown);
+
+    const res = await request(app).get('/api/reports/r1/break-breakdown');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(breakdown);
+  });
+});
+
+describe('GET /api/reports/:id/trend', () => {
+  it('returns the file-pair match-rate and break-value trend', async () => {
+    const trend = { matchRateTrend: { current: [], prior: [] }, breakValueTrend: { current: [], prior: [] } };
+    mockReportService.getFilePairTrend.mockResolvedValue(trend);
+
+    const res = await request(app).get('/api/reports/r1/trend');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(trend);
+  });
+});
+
 describe('GET /api/reports/summary', () => {
   it("returns the caller's aggregated summary", async () => {
     const summary = { totalReconciliations: { current: 2, previous: 1, deltaPercent: 100 } };
@@ -527,6 +629,130 @@ describe('POST /api/reports/draft/:id/complete', () => {
     const res = await request(app).post('/api/reports/draft/missing/complete').send(validDto);
 
     expect(res.status).toBe(404);
+  });
+});
+
+describe('POST /api/reports/:id/mapping-preview', () => {
+  it('returns the mapping preview for an admin', async () => {
+    const preview = { fileA: { filename: 'a.csv' }, fileB: { filename: 'b.csv' } };
+    mockReportService.getMappingPreview.mockResolvedValue(preview);
+
+    const res = await request(app).post('/api/reports/draft-1/mapping-preview').send();
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(preview);
+    expect(mockReportService.getMappingPreview).toHaveBeenCalledWith(USER_ID, 'draft-1');
+  });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).post('/api/reports/draft-1/mapping-preview').send();
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.getMappingPreview).not.toHaveBeenCalled();
+  });
+});
+
+const columnMapping = {
+  fileA: { referenceNumber: 'Transaction_ID', amount: 'Debit Amount', transactionDate: 'Posting Date' },
+  fileB: { referenceNumber: 'Ref_No', amount: 'Amount', transactionDate: 'Value Date' },
+};
+
+describe('POST /api/reports/:id/rule-preview', () => {
+  it('returns the estimated preview for an admin', async () => {
+    const preview = { estimatedMatches: 10, possibleMismatches: 1, potentialDuplicates: 0, missingReferences: 2 };
+    mockReportService.getRulePreview.mockResolvedValue(preview);
+
+    const res = await request(app)
+      .post('/api/reports/draft-1/rule-preview')
+      .send({ columnMapping, config: { amountTolerance: 0.5 } });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(preview);
+    expect(mockReportService.getRulePreview).toHaveBeenCalledWith(
+      USER_ID,
+      'draft-1',
+      expect.objectContaining({ columnMapping }),
+    );
+  });
+
+  it('rejects a body missing config with a 422', async () => {
+    const res = await request(app).post('/api/reports/draft-1/rule-preview').send({});
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.getRulePreview).not.toHaveBeenCalled();
+  });
+
+  it('returns an RFC 7807 409 when no sample/mapping is cached yet', async () => {
+    mockReportService.getRulePreview.mockRejectedValue(new ConflictError('Call mapping-preview first'));
+
+    const res = await request(app)
+      .post('/api/reports/draft-1/rule-preview')
+      .send({ config: { amountTolerance: 0.5 } });
+
+    expect(res.status).toBe(409);
+    expect(res.body.type).toBe('https://recon.app/errors/conflict');
+  });
+
+  it('rejects a viewer with a 403 RFC 7807 error', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app)
+      .post('/api/reports/draft-1/rule-preview')
+      .send({ columnMapping, config: { amountTolerance: 0.5 } });
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.getRulePreview).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/reports/:id/run', () => {
+  it('runs reconciliation for an admin and returns the new report id', async () => {
+    mockReportService.runReconciliation.mockResolvedValue('report-1');
+
+    const res = await request(app)
+      .post('/api/reports/draft-1/run')
+      .send({ columnMapping, config: { amountTolerance: 0.5, dateToleranceDays: 1 } });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'report-1' });
+    expect(mockReportService.runReconciliation).toHaveBeenCalledWith(
+      USER_ID,
+      'draft-1',
+      expect.objectContaining({ columnMapping }),
+      { ip: expect.any(String) },
+    );
+  });
+
+  it('rejects a body missing columnMapping with a 422', async () => {
+    const res = await request(app)
+      .post('/api/reports/draft-1/run')
+      .send({ config: { amountTolerance: 0.5 } });
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.runReconciliation).not.toHaveBeenCalled();
+  });
+
+  it('returns an RFC 7807 422 when files have not been uploaded yet', async () => {
+    mockReportService.runReconciliation.mockRejectedValue(new ValidationError('Both files must be uploaded'));
+
+    const res = await request(app)
+      .post('/api/reports/draft-1/run')
+      .send({ columnMapping, config: { amountTolerance: 0.5 } });
+
+    expect(res.status).toBe(422);
+  });
+
+  it('rejects an analyst just fine (report:create is not admin-only) but rejects a viewer with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app)
+      .post('/api/reports/draft-1/run')
+      .send({ columnMapping, config: { amountTolerance: 0.5 } });
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.runReconciliation).not.toHaveBeenCalled();
   });
 });
 

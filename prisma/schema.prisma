@@ -63,18 +63,33 @@ enum ReportTag {
   year_end
 }
 
+// Only set on unmatched_a/unmatched_b/mismatched/duplicate rows — a matched
+// row has nothing to explain. amount_mismatch/date_mismatch are mutually
+// exclusive per row (amount checked first when both fail, see
+// services/matchingEngine.js); `other` covers same-currency-only rejections.
+enum ReconBreakReason {
+  amount_mismatch
+  missing_counterparty
+  missing_internal
+  date_mismatch
+  duplicate
+  other
+}
+
 model User {
   id        String   @id
   email     String   @unique @db.VarChar(255)
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  reports          Report[]
-  auditLogs        AuditLog[]
-  notifications    Notification[]
-  reportExports    ReportExport[]
-  scheduledReports ScheduledReport[]
-  favorites        ReportFavorite[]
+  reports            Report[]
+  auditLogs          AuditLog[]
+  notifications      Notification[]
+  reportExports      ReportExport[]
+  scheduledReports   ScheduledReport[]
+  favorites          ReportFavorite[]
+  reviewedReportRows ReportRow[]         @relation("ReportRowReviewedBy")
+  matchRuleTemplates MatchRuleTemplate[]
 
   name          String
   emailVerified Boolean      @default(false)
@@ -121,6 +136,31 @@ model Report {
   dateToleranceDays Int?         @map("date_tolerance_days")
   config            Json?
 
+  // R2 object keys for the two uploaded files backing a draft — distinct
+  // from fileAName/fileBName, which are just display names. Set once the
+  // frontend has uploaded to R2 (see routes/files.js's presign endpoint),
+  // read by the matching engine at mapping-preview/run time to fetch bytes.
+  fileAKey        String?  @map("file_a_key")
+  fileBKey        String?  @map("file_b_key")
+  // {fileA:{referenceNumber,amount,transactionDate,currency?}, fileB:{...}}
+  columnMapping   Json?    @map("column_mapping")
+  // Full MatchRuleConfig (superset of amountTolerance/dateToleranceDays
+  // above, which stay as their own columns for the existing aggregators to
+  // keep reading directly) — sameCurrencyOnly/ignoreCase/ignoreSpaces/
+  // trimLeadingZeros/duplicateHandling live here only.
+  rulesConfig     Json?    @map("rules_config")
+  // Bounded (<=2000 rows/file) preview-time cache so the rule-preview
+  // endpoint can re-run cheaply as sliders move, without re-parsing the
+  // full file each time. Cleared once /run completes.
+  fileASampleRows Json?    @map("file_a_sample_rows")
+  fileBSampleRows Json?    @map("file_b_sample_rows")
+  // Auto-detected at /run time: the most recent completed report in the org
+  // with the same case-insensitive file-pair name, for "vs prior run" deltas
+  // and the match-rate trend. Not a user-facing "compare against" picker.
+  sourceReportId  String?  @map("source_report_id") @db.Uuid
+  sourceReport    Report?  @relation("ReportRerun", fields: [sourceReportId], references: [id], onDelete: SetNull)
+  rerunsOf        Report[] @relation("ReportRerun")
+
   rows      ReportRow[]
   exports   ReportExport[]
   schedules ScheduledReport[]
@@ -135,21 +175,30 @@ model Report {
 }
 
 model ReportRow {
-  id         String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  reportId   String         @map("report_id") @db.Uuid
-  report     Report         @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  ref        String         @db.VarChar(500)
-  status     ReconRowStatus
-  amountA    Decimal?       @map("amount_a") @db.Decimal(18, 4)
-  amountB    Decimal?       @map("amount_b") @db.Decimal(18, 4)
-  amountDiff Decimal?       @map("amount_diff") @db.Decimal(18, 4)
-  dateA      DateTime?      @map("date_a") @db.Date
-  dateB      DateTime?      @map("date_b") @db.Date
-  rawA       Json?          @map("raw_a")
-  rawB       Json?          @map("raw_b")
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId       String            @map("report_id") @db.Uuid
+  report         Report            @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  ref            String            @db.VarChar(500)
+  status         ReconRowStatus
+  amountA        Decimal?          @map("amount_a") @db.Decimal(18, 4)
+  amountB        Decimal?          @map("amount_b") @db.Decimal(18, 4)
+  amountDiff     Decimal?          @map("amount_diff") @db.Decimal(18, 4)
+  dateA          DateTime?         @map("date_a") @db.Date
+  dateB          DateTime?         @map("date_b") @db.Date
+  rawA           Json?             @map("raw_a")
+  rawB           Json?             @map("raw_b")
+  // Only set for mismatched/unmatched_a/unmatched_b/duplicate rows.
+  breakReason    ReconBreakReason? @map("break_reason")
+  // "Mark as Reviewed" workflow — reviewedBy is nullable+SetNull so a row's
+  // review history survives the reviewing user later being removed.
+  reviewed       Boolean           @default(false)
+  reviewedBy     String?           @map("reviewed_by")
+  reviewedByUser User?             @relation("ReportRowReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  reviewedAt     DateTime?         @map("reviewed_at")
 
   @@index([reportId, status], map: "idx_rows_report_status")
   @@index([reportId, ref], map: "idx_rows_ref")
+  @@index([reportId, breakReason], map: "idx_rows_break_reason")
   @@map("report_rows")
 }
 
@@ -212,6 +261,27 @@ model ReportTemplate {
 
   @@index([organizationId])
   @@map("report_templates")
+}
+
+// A user's saved reconciliation rule-config preset ("Save Template" in
+// MatchingRulesSidebar) — distinct from ReportTemplate, which governs export
+// section layout, not matching behavior. Always user-owned, no system/seeded
+// concept (the mock's own defaults live in Organization's reconciliation
+// defaults, §7).
+model MatchRuleTemplate {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  userId         String       @map("user_id")
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name           String       @db.VarChar(100)
+  description    String?
+  // Full MatchRuleConfig — see routes/reports.js's matchRuleConfigSchema.
+  config         Json
+  createdAt      DateTime     @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@map("match_rule_templates")
 }
 
 model ReportExport {
@@ -336,7 +406,7 @@ model Verification {
 }
 
 model Organization {
-  id                       String            @id
+  id                       String              @id
   name                     String
   slug                     String
   logo                     String?
@@ -347,14 +417,14 @@ model Organization {
   // §6 (no schema.organization.additionalFields config needed). No option
   // list is enforced: the frontend mock has no canonical list for any of
   // these, so inventing one here would be presumptuous.
-  orgType                  String?           @map("org_type") @db.VarChar(100)
-  country                  String?           @db.VarChar(100)
-  timezone                 String?           @db.VarChar(100)
-  dateFormat               String?           @map("date_format") @db.VarChar(50)
-  currency                 String?           @db.VarChar(10)
-  defaultAmountTolerance   Decimal?          @map("default_amount_tolerance") @db.Decimal(10, 4)
-  defaultDateToleranceDays Int?              @map("default_date_tolerance_days")
-  defaultAmountType        String?           @map("default_amount_type") @db.VarChar(50)
+  orgType                  String?             @map("org_type") @db.VarChar(100)
+  country                  String?             @db.VarChar(100)
+  timezone                 String?             @db.VarChar(100)
+  dateFormat               String?             @map("date_format") @db.VarChar(50)
+  currency                 String?             @db.VarChar(10)
+  defaultAmountTolerance   Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
+  defaultDateToleranceDays Int?                @map("default_date_tolerance_days")
+  defaultAmountType        String?             @map("default_amount_type") @db.VarChar(50)
   members                  Member[]
   invitations              Invitation[]
   reports                  Report[]
@@ -363,6 +433,7 @@ model Organization {
   reportTemplates          ReportTemplate[]
   reportExports            ReportExport[]
   scheduledReports         ScheduledReport[]
+  matchRuleTemplates       MatchRuleTemplate[]
 
   @@unique([slug])
   @@map("organization")

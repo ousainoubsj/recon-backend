@@ -1,8 +1,23 @@
 import { prisma } from '../db/index.js';
-import { NotFoundError } from '../errors.js';
+import { NotFoundError, ValidationError, ConflictError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
 import { createNotification } from './notificationService.js';
+import { downloadFromR2, parseTabularFile } from '../utils/fileParser.js';
+import {
+  runMatch,
+  extrapolatePreview,
+  buildMatchAnalysis,
+  buildRecommendedAction,
+  buildShortReason,
+  deriveDescription,
+} from './matchingEngine.js';
+import { suggestMapping, mappingFromSuggestions, computeValidationSummary } from './columnMappingService.js';
+
+// Cap on how many rows of each file get cached on the draft at
+// mapping-preview time, for the rule-preview endpoint to reuse cheaply as
+// sliders move without re-parsing the full file each time.
+const SAMPLE_ROW_CAP = 2000;
 
 const toNum = (decimal) => (decimal == null ? 0 : Number(decimal));
 
@@ -63,7 +78,62 @@ function reportRowsForInsert(reportId, rows) {
     dateB: r.dateB ? new Date(r.dateB) : null,
     rawA: r.rawA ?? undefined,
     rawB: r.rawB ?? undefined,
+    breakReason: r.breakReason ?? null,
   }));
+}
+
+// Shared by completeDraft (legacy client-computed rows) and runReconciliation
+// (server-computed via the matching engine) — both promote a draft into a
+// completed report the same way, just from different sources of `rows`.
+// `dto.name` must already be resolved by the caller (e.g. `body.name ??
+// draft.name`) — this function doesn't know about the draft's prior name.
+async function persistCompletedRun(tx, reportId, dto) {
+  const report = await tx.report.update({
+    where: { id: reportId },
+    data: {
+      status: 'completed',
+      progress: 100,
+      name: dto.name,
+      fileAName: dto.fileAName,
+      fileBName: dto.fileBName,
+      totalRows: dto.summary.total,
+      matchedCount: dto.summary.matched,
+      unmatchedCount: dto.summary.unmatchedA + dto.summary.unmatchedB,
+      mismatchedCount: dto.summary.mismatched,
+      duplicateCount: dto.summary.duplicates,
+      totalBreakValue: dto.summary.totalBreakValue,
+      amountTolerance: dto.config.amountTolerance,
+      dateToleranceDays: dto.config.dateToleranceDays ?? null,
+      config: dto.config,
+      columnMapping: dto.columnMapping ?? undefined,
+      rulesConfig: dto.config,
+      sourceReportId: dto.sourceReportId ?? null,
+      // Cleared once a run completes — no longer needed after the full
+      // files have been re-parsed for the real result.
+      fileASampleRows: null,
+      fileBSampleRows: null,
+    },
+  });
+
+  await tx.reportRow.createMany({ data: reportRowsForInsert(report.id, dto.rows) });
+
+  return report;
+}
+
+async function findSourceReportId(organizationId, fileAName, fileBName, excludeReportId) {
+  if (!fileAName || !fileBName) return null;
+  const match = await prisma.report.findFirst({
+    where: {
+      organizationId,
+      status: 'completed',
+      id: { not: excludeReportId },
+      fileAName: { equals: fileAName, mode: 'insensitive' },
+      fileBName: { equals: fileBName, mode: 'insensitive' },
+    },
+    orderBy: { runDate: 'desc' },
+    select: { id: true },
+  });
+  return match?.id ?? null;
 }
 
 function aggregatePeriod(reports) {
@@ -382,7 +452,215 @@ export async function getReport(userId, reportId) {
   // Drafts are private to their creator — org membership alone isn't enough,
   // unlike a completed report which is shared org-wide.
   if (report.status === 'draft' && report.userId !== userId) throw new NotFoundError();
+
+  let priorRun = null;
+  if (report.sourceReportId) {
+    const prior = await prisma.report.findFirst({
+      where: { id: report.sourceReportId },
+      select: { matchedCount: true, totalRows: true, totalBreakValue: true },
+    });
+    if (prior) {
+      priorRun = {
+        matchRate: prior.totalRows > 0 ? (prior.matchedCount / prior.totalRows) * 100 : 0,
+        totalBreakValue: toNum(prior.totalBreakValue),
+      };
+    }
+  }
+
+  return { ...report, priorRun };
+}
+
+// Lighter-weight than getReport's own access check (no rows include) — used
+// by the Transaction Explorer endpoints below, which query ReportRow
+// directly instead of loading every row through the Report relation.
+async function assertReportAccess(userId, reportId) {
+  const { organizationId } = await getUserMembership(userId);
+  const report = await prisma.report.findFirst({ where: { id: reportId, organizationId } });
+  if (!report) throw new NotFoundError();
+  if (report.status === 'draft' && report.userId !== userId) throw new NotFoundError();
   return report;
+}
+
+const EXPLORER_STATUS_LABELS = {
+  matched: 'Matched',
+  mismatched: 'Mismatched',
+  unmatched_a: 'Unmatched',
+  unmatched_b: 'Unmatched',
+  duplicate: 'Duplicate',
+};
+
+function mapRowForExplorer(row) {
+  const { type, reason } = buildShortReason(row);
+  return {
+    id: row.id,
+    status: EXPLORER_STATUS_LABELS[row.status] ?? row.status,
+    reference: row.ref,
+    date: row.dateA ?? row.dateB,
+    description: deriveDescription(row),
+    ledgerAmount: row.amountA != null ? toNum(row.amountA) : null,
+    counterpartyAmount: row.amountB != null ? toNum(row.amountB) : null,
+    difference: row.amountDiff != null ? toNum(row.amountDiff) : null,
+    hasDifference: row.amountDiff != null && Number(row.amountDiff) !== 0,
+    reviewed: row.reviewed,
+    type,
+    reason,
+  };
+}
+
+const EXPLORER_SORT_FIELD_MAP = { date: 'dateA', amount: 'amountA', reference: 'ref' };
+
+// Transaction Explorer listing — search/filter/sort/paginate over a single
+// report's rows. `status` accepts the mock's 4-way vocabulary
+// (matched|mismatched|unmatched|duplicate); 'unmatched' maps to both
+// unmatched_a and unmatched_b since ReconRowStatus keeps them distinct.
+export async function getTransactions(userId, reportId, filters = {}) {
+  await assertReportAccess(userId, reportId);
+  const { search, status, amountMin, amountMax, dateFrom, dateTo, sortBy, sortDir, limit, offset } = filters;
+
+  const and = [];
+  if (search?.trim()) and.push({ ref: { contains: search.trim(), mode: 'insensitive' } });
+  if (amountMin != null || amountMax != null) {
+    const range = {};
+    if (amountMin != null) range.gte = amountMin;
+    if (amountMax != null) range.lte = amountMax;
+    and.push({ OR: [{ amountA: range }, { amountB: range }] });
+  }
+  if (dateFrom || dateTo) {
+    const range = {};
+    if (dateFrom) range.gte = new Date(dateFrom);
+    if (dateTo) range.lte = new Date(dateTo);
+    and.push({ OR: [{ dateA: range }, { dateB: range }] });
+  }
+
+  const where = {
+    reportId,
+    ...(status ? { status: status === 'unmatched' ? { in: ['unmatched_a', 'unmatched_b'] } : status } : {}),
+    ...(and.length > 0 ? { AND: and } : {}),
+  };
+  const orderBy = { [EXPLORER_SORT_FIELD_MAP[sortBy] ?? 'ref']: sortDir === 'desc' ? 'desc' : 'asc' };
+
+  const [rows, total] = await Promise.all([
+    prisma.reportRow.findMany({ where, orderBy, take: limit ?? 50, skip: offset ?? 0 }),
+    prisma.reportRow.count({ where }),
+  ]);
+
+  return { rows: rows.map(mapRowForExplorer), total };
+}
+
+// Single-transaction drill-down: raw ledger/counterparty fields plus a
+// read-time (never persisted) rule-by-rule match analysis + recommended
+// action, derived from the report's own stored rulesConfig.
+export async function getTransaction(userId, reportId, rowId) {
+  const report = await assertReportAccess(userId, reportId);
+  const row = await prisma.reportRow.findFirst({ where: { id: rowId, reportId } });
+  if (!row) throw new NotFoundError();
+
+  return {
+    ...mapRowForExplorer(row),
+    rawA: row.rawA,
+    rawB: row.rawB,
+    matchAnalysis: buildMatchAnalysis(row, report.rulesConfig ?? report.config ?? {}),
+    recommendedAction: buildRecommendedAction(row),
+  };
+}
+
+export async function markRowReviewed(userId, reportId, rowId, reviewed = true, { ip } = {}) {
+  await assertReportAccess(userId, reportId);
+  const { count } = await prisma.reportRow.updateMany({
+    where: { id: rowId, reportId },
+    data: reviewed
+      ? { reviewed: true, reviewedBy: userId, reviewedAt: new Date() }
+      : { reviewed: false, reviewedBy: null, reviewedAt: null },
+  });
+  if (count === 0) throw new NotFoundError();
+
+  await logAuditSafely(userId, {
+    action: 'report.row.review',
+    entityType: 'reportRow',
+    entityId: rowId,
+    status: 'info',
+    ip,
+    metadata: { reportId, reviewed },
+  });
+
+  return prisma.reportRow.findFirst({ where: { id: rowId } });
+}
+
+const BREAK_REASON_CATEGORY_LABELS = {
+  amount_mismatch: 'Amount Mismatch',
+  missing_counterparty: 'Missing in Counterparty File',
+  missing_internal: 'Missing in Internal Ledger',
+  date_mismatch: 'Date Mismatch',
+  other: 'Others',
+};
+
+// The 5-bucket "Top Break Causes"/categoryBreakdown shape. Duplicates are
+// deliberately excluded — same rationale as summary.totalBreakValue: a
+// duplicate is a data-quality flag, not a value break.
+export async function getBreakBreakdown(userId, reportId) {
+  await assertReportAccess(userId, reportId);
+  const grouped = await prisma.reportRow.groupBy({
+    by: ['breakReason'],
+    where: { reportId, breakReason: { not: null, notIn: ['duplicate'] } },
+    _sum: { amountDiff: true, amountA: true, amountB: true },
+  });
+
+  const amountForGroup = (g) => {
+    if (g.breakReason === 'missing_counterparty') return Math.abs(toNum(g._sum.amountA));
+    if (g.breakReason === 'missing_internal') return Math.abs(toNum(g._sum.amountB));
+    return Math.abs(toNum(g._sum.amountDiff));
+  };
+
+  const buckets = grouped.map((g) => ({
+    category: BREAK_REASON_CATEGORY_LABELS[g.breakReason] ?? 'Others',
+    amount: amountForGroup(g),
+  }));
+  const total = buckets.reduce((sum, b) => sum + b.amount, 0);
+
+  return buckets
+    .map((b) => ({ ...b, percent: total > 0 ? Number(((b.amount / total) * 100).toFixed(2)) : 0 }))
+    .sort((a, b) => b.amount - a.amount);
+}
+
+// 7-day match-rate + break-value trend for this report's file-pair lineage
+// (case-insensitive name match, same convention as getTopFilePairs),
+// current week vs the week before — carry-forward daily values since runs
+// are sparse, not daily, mirroring dayRange's current-vs-previous pattern.
+export async function getFilePairTrend(userId, reportId) {
+  const report = await assertReportAccess(userId, reportId);
+  const { organizationId } = await getUserMembership(userId);
+
+  const candidates = await prisma.report.findMany({
+    where: {
+      organizationId,
+      status: 'completed',
+      fileAName: { equals: report.fileAName ?? '', mode: 'insensitive' },
+      fileBName: { equals: report.fileBName ?? '', mode: 'insensitive' },
+    },
+    select: { runDate: true, totalRows: true, matchedCount: true, totalBreakValue: true },
+    orderBy: { runDate: 'asc' },
+  });
+
+  function seriesFor(daysAgoOffset) {
+    const points = [];
+    for (let i = 6; i >= 0; i--) {
+      const day = new Date(Date.now() - (daysAgoOffset + i) * DAY_MS);
+      const candidate = [...candidates].reverse().find((c) => c.runDate <= day);
+      points.push({
+        matchRate: candidate && candidate.totalRows > 0 ? (candidate.matchedCount / candidate.totalRows) * 100 : 0,
+        totalBreakValue: candidate ? toNum(candidate.totalBreakValue) : 0,
+      });
+    }
+    return points;
+  }
+
+  const current = seriesFor(0);
+  const prior = seriesFor(7);
+
+  return {
+    matchRateTrend: { current: current.map((p) => p.matchRate), prior: prior.map((p) => p.matchRate) },
+    breakValueTrend: { current: current.map((p) => p.totalBreakValue), prior: prior.map((p) => p.totalBreakValue) },
+  };
 }
 
 // A draft is a minimal Report row with no ReportRows yet — just enough to
@@ -414,6 +692,9 @@ export async function updateDraft(userId, reportId, dto) {
       ...(dto.fileBName !== undefined ? { fileBName: dto.fileBName } : {}),
       ...(dto.progress !== undefined ? { progress: dto.progress } : {}),
       ...(dto.config !== undefined ? { config: dto.config } : {}),
+      ...(dto.fileAKey !== undefined ? { fileAKey: dto.fileAKey } : {}),
+      ...(dto.fileBKey !== undefined ? { fileBKey: dto.fileBKey } : {}),
+      ...(dto.columnMapping !== undefined ? { columnMapping: dto.columnMapping } : {}),
     },
   });
   if (count === 0) throw new NotFoundError();
@@ -434,35 +715,144 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
   const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
   if (!draft) throw new NotFoundError();
 
-  const report = await prisma.$transaction(async (tx) => {
-    const report = await tx.report.update({
-      where: { id: reportId },
-      data: {
-        status: 'completed',
-        progress: 100,
-        name: dto.name ?? draft.name,
-        fileAName: dto.fileAName,
-        fileBName: dto.fileBName,
-        totalRows: dto.summary.total,
-        matchedCount: dto.summary.matched,
-        unmatchedCount: dto.summary.unmatchedA + dto.summary.unmatchedB,
-        mismatchedCount: dto.summary.mismatched,
-        duplicateCount: dto.summary.duplicates,
-        totalBreakValue: dto.summary.totalBreakValue,
-        amountTolerance: dto.config.amountTolerance,
-        dateToleranceDays: dto.config.dateToleranceDays ?? null,
-        config: dto.config,
-      },
-    });
-
-    await tx.reportRow.createMany({ data: reportRowsForInsert(report.id, dto.rows) });
-
-    return report;
-  });
+  const report = await prisma.$transaction((tx) =>
+    persistCompletedRun(tx, reportId, {
+      name: dto.name ?? draft.name,
+      fileAName: dto.fileAName,
+      fileBName: dto.fileBName,
+      summary: dto.summary,
+      rows: dto.rows,
+      config: dto.config,
+    }),
+  );
 
   await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id, ip });
 
   return report.id;
+}
+
+// The actual matching engine entry point: re-downloads+re-parses the full
+// files fresh from R2 (never reuses the mapping-preview sample — that's only
+// for the cheap rule-preview endpoint), runs the match, and persists exactly
+// like completeDraft does.
+export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
+  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
+  if (!draft) throw new NotFoundError();
+  if (!draft.fileAKey || !draft.fileBKey) {
+    throw new ValidationError('Both files must be uploaded before running reconciliation');
+  }
+
+  const { organizationId } = await getUserMembership(userId);
+
+  const [fileABuffer, fileBBuffer] = await Promise.all([
+    downloadFromR2(draft.fileAKey),
+    downloadFromR2(draft.fileBKey),
+  ]);
+  const fileA = parseTabularFile(fileABuffer, draft.fileAName);
+  const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
+
+  const { summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, dto.config);
+  const sourceReportId = await findSourceReportId(organizationId, draft.fileAName, draft.fileBName, reportId);
+
+  const report = await prisma.$transaction((tx) =>
+    persistCompletedRun(tx, reportId, {
+      name: dto.name ?? draft.name,
+      fileAName: draft.fileAName,
+      fileBName: draft.fileBName,
+      summary,
+      rows,
+      config: dto.config,
+      columnMapping: dto.columnMapping,
+      sourceReportId,
+    }),
+  );
+
+  await logAuditSafely(userId, { action: 'report.run', entityType: 'report', entityId: report.id, ip });
+
+  return report.id;
+}
+
+// Downloads+parses the draft's full uploaded files, returns per-file
+// preview/validation/mapping-suggestion data for the column-mapping step,
+// and caches a bounded row sample on the draft (plus a suggested mapping,
+// only if one isn't already saved) for the rule-preview endpoint to reuse.
+export async function getMappingPreview(userId, reportId) {
+  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
+  if (!draft) throw new NotFoundError();
+  if (!draft.fileAKey || !draft.fileBKey) {
+    throw new ValidationError('Both files must be uploaded before requesting a mapping preview');
+  }
+
+  const [fileABuffer, fileBBuffer] = await Promise.all([
+    downloadFromR2(draft.fileAKey),
+    downloadFromR2(draft.fileBKey),
+  ]);
+  const fileA = parseTabularFile(fileABuffer, draft.fileAName);
+  const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
+
+  const suggestedA = suggestMapping(fileA.headers);
+  const suggestedB = suggestMapping(fileB.headers);
+  const mappingA = mappingFromSuggestions(suggestedA);
+  const mappingB = mappingFromSuggestions(suggestedB);
+
+  const validationA = computeValidationSummary(fileA.rows, mappingA);
+  const validationB = computeValidationSummary(fileB.rows, mappingB);
+
+  const data = {
+    fileASampleRows: { totalRows: fileA.rows.length, rows: fileA.rows.slice(0, SAMPLE_ROW_CAP) },
+    fileBSampleRows: { totalRows: fileB.rows.length, rows: fileB.rows.slice(0, SAMPLE_ROW_CAP) },
+  };
+  if (!draft.columnMapping) {
+    data.columnMapping = { fileA: mappingA, fileB: mappingB };
+  }
+  await prisma.report.update({ where: { id: reportId }, data });
+
+  return {
+    fileA: {
+      filename: draft.fileAName,
+      rows: fileA.rows.length,
+      columns: fileA.headers.length,
+      fileSizeBytes: fileABuffer.length,
+      previewRows: fileA.rows.slice(0, 5),
+      mappings: suggestedA,
+      ...validationA,
+    },
+    fileB: {
+      filename: draft.fileBName,
+      rows: fileB.rows.length,
+      columns: fileB.headers.length,
+      fileSizeBytes: fileBBuffer.length,
+      previewRows: fileB.rows.slice(0, 5),
+      mappings: suggestedB,
+      ...validationB,
+    },
+  };
+}
+
+// Cheap, sample-based estimate for the "Match Preview (Estimated)" panel —
+// reuses the bounded sample cached by getMappingPreview instead of
+// re-downloading/re-parsing the full files on every rule-slider tick.
+export async function getRulePreview(userId, reportId, dto) {
+  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
+  if (!draft) throw new NotFoundError();
+  if (!draft.fileASampleRows || !draft.fileBSampleRows) {
+    throw new ConflictError('Call the mapping-preview endpoint before requesting a rule preview');
+  }
+  const mapping = dto.columnMapping ?? draft.columnMapping;
+  if (!mapping) throw new ConflictError('No column mapping available — call the mapping-preview endpoint first');
+
+  const sampleA = draft.fileASampleRows;
+  const sampleB = draft.fileBSampleRows;
+
+  const { summary } = runMatch(
+    { rows: sampleA.rows },
+    { rows: sampleB.rows },
+    mapping.fileA,
+    mapping.fileB,
+    dto.config,
+  );
+
+  return extrapolatePreview(summary, sampleA.rows.length, sampleA.totalRows, sampleB.rows.length, sampleB.totalRows);
 }
 
 // Org admins can delete any report in the org; everyone else may only

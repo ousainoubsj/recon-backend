@@ -10,6 +10,30 @@ export const reportsRouter = Router();
 
 const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', 'duplicate'];
 
+// Full reconciliation rule config (MatchingRulesSidebar) — amountTolerance/
+// dateToleranceDays double as the Report columns of the same name, the rest
+// (toggles + duplicateHandling) live only in Report.rulesConfig/config JSON.
+// Optional-with-default so older callers that only ever sent
+// {amountTolerance, dateToleranceDays} keep working unchanged.
+const matchRuleConfigSchema = z.object({
+  amountTolerance: z.number().min(0, 'amount_tolerance must be a non-negative number').max(1),
+  dateToleranceDays: z.number().int().min(0).max(3).optional(),
+  sameCurrencyOnly: z.boolean().optional().default(true),
+  ignoreCase: z.boolean().optional().default(true),
+  ignoreSpaces: z.boolean().optional().default(true),
+  trimLeadingZeros: z.boolean().optional().default(true),
+  duplicateHandling: z.enum(['keep-first', 'keep-last', 'flag-all', 'skip']).optional().default('keep-first'),
+});
+
+const fileColumnMappingSchema = z.object({
+  referenceNumber: z.string(),
+  amount: z.string(),
+  transactionDate: z.string(),
+  currency: z.string().optional(),
+});
+
+const columnMappingSchema = z.object({ fileA: fileColumnMappingSchema, fileB: fileColumnMappingSchema });
+
 const saveReportSchema = z.object({
   name: z.string().max(255).optional(),
   fileAName: z.string(),
@@ -38,10 +62,7 @@ const saveReportSchema = z.object({
       rawB: z.record(z.string()).nullable().optional(),
     }),
   ),
-  config: z.object({
-    amountTolerance: z.number().min(0, 'amount_tolerance must be a non-negative number'),
-    dateToleranceDays: z.number().optional(),
-  }),
+  config: matchRuleConfigSchema,
 });
 
 reportsRouter.get(
@@ -77,6 +98,17 @@ const draftSchema = z.object({
   fileBName: z.string().optional(),
   progress: z.number().min(0).max(100).optional(),
   config: z.record(z.unknown()).optional(),
+  // Set once the frontend has PUT the file to R2 via the presigned upload
+  // (POST /files/presign) — distinct from fileAName/fileBName above, which
+  // are just display names.
+  fileAKey: z.string().optional(),
+  fileBKey: z.string().optional(),
+  // Partial: the mapping UI lets a user assign one canonical field at a
+  // time, so a draft may be saved mid-mapping.
+  columnMapping: z
+    .object({ fileA: fileColumnMappingSchema.partial(), fileB: fileColumnMappingSchema.partial() })
+    .partial()
+    .optional(),
 });
 
 // Registered before /:id so Express doesn't match these as a report id.
@@ -184,6 +216,49 @@ reportsRouter.post(
   catchAsync(reportsController.completeDraft),
 );
 
+// Downloads+parses the draft's uploaded files fresh from R2, returns
+// per-file preview/validation/mapping-suggestion data, and caches a bounded
+// row sample on the draft for the rule-preview endpoint below to reuse.
+reportsRouter.post(
+  '/:id/mapping-preview',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  catchAsync(reportsController.getMappingPreview),
+);
+
+const rulePreviewSchema = z.object({
+  columnMapping: columnMappingSchema.optional(),
+  config: matchRuleConfigSchema,
+});
+
+// Cheap, sample-based estimate — safe to call on every rule-slider tick.
+// Requires mapping-preview to have run first (it's what populates the
+// cached sample rows this reads).
+reportsRouter.post(
+  '/:id/rule-preview',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(rulePreviewSchema),
+  catchAsync(reportsController.getRulePreview),
+);
+
+const runReconciliationSchema = z.object({
+  name: z.string().max(255).optional(),
+  columnMapping: columnMappingSchema,
+  config: matchRuleConfigSchema,
+});
+
+// The actual matching engine: re-downloads+re-parses the full files (not
+// the cached sample), computes real results, and persists them exactly like
+// completeDraft does.
+reportsRouter.post(
+  '/:id/run',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(runReconciliationSchema),
+  catchAsync(reportsController.runReconciliation),
+);
+
 reportsRouter.get(
   '/:id',
   authenticate,
@@ -220,6 +295,46 @@ reportsRouter.delete(
   authenticate,
   catchAsync(requirePermission('report', 'read')),
   catchAsync(reportsController.removeFavorite),
+);
+
+// Transaction Explorer — search/filter/sort/paginate over a single report's
+// rows, plus per-row drill-down and the "Mark as Reviewed" workflow.
+reportsRouter.get(
+  '/:id/transactions',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getTransactions),
+);
+
+reportsRouter.get(
+  '/:id/transactions/:rowId',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getTransaction),
+);
+
+const markReviewedSchema = z.object({ reviewed: z.boolean().optional() });
+
+reportsRouter.patch(
+  '/:id/transactions/:rowId/review',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(markReviewedSchema),
+  catchAsync(reportsController.markRowReviewed),
+);
+
+reportsRouter.get(
+  '/:id/break-breakdown',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getBreakBreakdown),
+);
+
+reportsRouter.get(
+  '/:id/trend',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  catchAsync(reportsController.getFilePairTrend),
 );
 
 const exportSchema = z.object({

@@ -13,10 +13,18 @@ const mockPrisma = {
     findFirst: jest.fn(),
     deleteMany: jest.fn(),
     updateMany: jest.fn(),
+    update: jest.fn(),
   },
   reportFavorite: {
     upsert: jest.fn(),
     deleteMany: jest.fn(),
+  },
+  reportRow: {
+    findMany: jest.fn(),
+    count: jest.fn(),
+    findFirst: jest.fn(),
+    updateMany: jest.fn(),
+    groupBy: jest.fn(),
   },
   member: {
     findFirst: jest.fn(),
@@ -35,6 +43,37 @@ jest.unstable_mockModule('../../services/notificationService.js', () => ({
   createNotification: mockCreateNotification,
 }));
 
+const mockDownloadFromR2 = jest.fn();
+const mockParseTabularFile = jest.fn();
+jest.unstable_mockModule('../../utils/fileParser.js', () => ({
+  downloadFromR2: mockDownloadFromR2,
+  parseTabularFile: mockParseTabularFile,
+}));
+
+const mockRunMatch = jest.fn();
+const mockExtrapolatePreview = jest.fn();
+const mockBuildMatchAnalysis = jest.fn();
+const mockBuildRecommendedAction = jest.fn();
+const mockBuildShortReason = jest.fn().mockReturnValue({ type: 'Other', reason: '' });
+const mockDeriveDescription = jest.fn().mockReturnValue('');
+jest.unstable_mockModule('../../services/matchingEngine.js', () => ({
+  runMatch: mockRunMatch,
+  extrapolatePreview: mockExtrapolatePreview,
+  buildMatchAnalysis: mockBuildMatchAnalysis,
+  buildRecommendedAction: mockBuildRecommendedAction,
+  buildShortReason: mockBuildShortReason,
+  deriveDescription: mockDeriveDescription,
+}));
+
+const mockSuggestMapping = jest.fn();
+const mockMappingFromSuggestions = jest.fn();
+const mockComputeValidationSummary = jest.fn();
+jest.unstable_mockModule('../../services/columnMappingService.js', () => ({
+  suggestMapping: mockSuggestMapping,
+  mappingFromSuggestions: mockMappingFromSuggestions,
+  computeValidationSummary: mockComputeValidationSummary,
+}));
+
 const {
   saveReport,
   listReports,
@@ -46,6 +85,14 @@ const {
   updateDraft,
   listDrafts,
   completeDraft,
+  runReconciliation,
+  getMappingPreview,
+  getRulePreview,
+  getTransactions,
+  getTransaction,
+  markRowReviewed,
+  getBreakBreakdown,
+  getFilePairTrend,
   getHistoryStats,
   getMatchRateDistribution,
   getTopFilePairs,
@@ -55,7 +102,7 @@ const {
   bulkDeleteReports,
   getReportsByIds,
 } = await import('../../services/reportService.js');
-const { NotFoundError } = await import('../../errors.js');
+const { NotFoundError, ValidationError, ConflictError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
 const OTHER_USER_ID = 'user-2';
@@ -263,17 +310,27 @@ describe('listReports', () => {
 });
 
 describe('getReport', () => {
-  it('returns the report with rows when found within the org', async () => {
-    const report = { id: 'r1', rows: [] };
+  it('returns the report with rows when found within the org, plus a null priorRun when there is no source report', async () => {
+    const report = { id: 'r1', rows: [], sourceReportId: null };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
     const result = await getReport(USER_ID, 'r1');
 
-    expect(result).toBe(report);
+    expect(result).toEqual({ ...report, priorRun: null });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
       include: { rows: true },
     });
+  });
+
+  it('resolves priorRun from the linked sourceReportId', async () => {
+    mockPrisma.report.findFirst
+      .mockResolvedValueOnce({ id: 'r1', rows: [], sourceReportId: 'prior-1' })
+      .mockResolvedValueOnce({ matchedCount: 45, totalRows: 50, totalBreakValue: 12.5 });
+
+    const result = await getReport(USER_ID, 'r1');
+
+    expect(result.priorRun).toEqual({ matchRate: 90, totalBreakValue: 12.5 });
   });
 
   it('throws NotFoundError when the report does not exist or is not in the org', async () => {
@@ -289,10 +346,10 @@ describe('getReport', () => {
   });
 
   it("returns the caller's own draft", async () => {
-    const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [] };
+    const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [], sourceReportId: null };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
-    await expect(getReport(USER_ID, 'r1')).resolves.toBe(report);
+    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, priorRun: null });
   });
 });
 
@@ -580,6 +637,417 @@ describe('completeDraft', () => {
 
     await expect(completeDraft(USER_ID, 'missing', dto)).rejects.toBeInstanceOf(NotFoundError);
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+});
+
+const runDto = {
+  columnMapping: {
+    fileA: { referenceNumber: 'Transaction_ID', amount: 'Debit Amount', transactionDate: 'Posting Date' },
+    fileB: { referenceNumber: 'Ref_No', amount: 'Amount', transactionDate: 'Value Date' },
+  },
+  config: { amountTolerance: 0.5, dateToleranceDays: 1 },
+};
+
+describe('runReconciliation', () => {
+  const draft = {
+    id: 'draft-1',
+    userId: USER_ID,
+    name: 'Old name',
+    fileAName: 'a.csv',
+    fileBName: 'b.csv',
+    fileAKey: 'uploads/u1/a.csv',
+    fileBKey: 'uploads/u1/b.csv',
+    status: 'draft',
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(draft);
+    mockDownloadFromR2.mockResolvedValue(Buffer.from('x'));
+    mockParseTabularFile.mockReturnValue({ headers: ['ref'], rows: [] });
+    mockRunMatch.mockReturnValue({
+      summary: { total: 0, matched: 0, mismatched: 0, unmatchedA: 0, unmatchedB: 0, duplicates: 0, totalBreakValue: 0 },
+      rows: [],
+    });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+  });
+
+  it('downloads+parses both files fresh, runs the match, and persists a completed report', async () => {
+    const id = await runReconciliation(USER_ID, 'draft-1', runDto);
+
+    expect(id).toBe('draft-1');
+    expect(mockDownloadFromR2).toHaveBeenCalledWith('uploads/u1/a.csv');
+    expect(mockDownloadFromR2).toHaveBeenCalledWith('uploads/u1/b.csv');
+    expect(mockRunMatch).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      runDto.columnMapping.fileA,
+      runDto.columnMapping.fileB,
+      runDto.config,
+    );
+    expect(mockTx.report.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'draft-1' },
+        data: expect.objectContaining({ status: 'completed', columnMapping: runDto.columnMapping }),
+      }),
+    );
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.run',
+      entityType: 'report',
+      entityId: 'draft-1',
+      ip: undefined,
+    });
+  });
+
+  it('auto-detects sourceReportId from a completed report sharing the same file pair', async () => {
+    mockPrisma.report.findFirst
+      .mockResolvedValueOnce(draft) // the draft lookup
+      .mockResolvedValueOnce({ id: 'prior-report' }); // findSourceReportId's lookup
+
+    await runReconciliation(USER_ID, 'draft-1', runDto);
+
+    expect(mockTx.report.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ sourceReportId: 'prior-report' }) }),
+    );
+  });
+
+  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(runReconciliation(USER_ID, 'missing', runDto)).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockDownloadFromR2).not.toHaveBeenCalled();
+  });
+
+  it('throws ValidationError when either file has not been uploaded yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileBKey: null });
+
+    await expect(runReconciliation(USER_ID, 'draft-1', runDto)).rejects.toBeInstanceOf(ValidationError);
+    expect(mockDownloadFromR2).not.toHaveBeenCalled();
+  });
+});
+
+describe('getMappingPreview', () => {
+  const draft = {
+    id: 'draft-1',
+    userId: USER_ID,
+    fileAName: 'a.csv',
+    fileBName: 'b.csv',
+    fileAKey: 'uploads/u1/a.csv',
+    fileBKey: 'uploads/u1/b.csv',
+    columnMapping: null,
+    status: 'draft',
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(draft);
+    mockDownloadFromR2.mockResolvedValue(Buffer.from('xxxx'));
+    mockParseTabularFile
+      .mockReturnValueOnce({ headers: ['Ref'], rows: [{ Ref: 'R1' }] })
+      .mockReturnValueOnce({ headers: ['Ref'], rows: [{ Ref: 'R1' }] });
+    mockSuggestMapping.mockReturnValue([{ field: 'referenceNumber', label: 'Reference Number', value: 'Ref', confidence: 90 }]);
+    mockMappingFromSuggestions.mockReturnValue({ referenceNumber: 'Ref' });
+    mockComputeValidationSummary.mockReturnValue({
+      missingValues: { count: 0, percent: 0 },
+      duplicateReferences: { count: 0, percent: 0 },
+    });
+  });
+
+  it('returns per-file preview data and caches a sample + suggested mapping on the draft', async () => {
+    const preview = await getMappingPreview(USER_ID, 'draft-1');
+
+    expect(preview.fileA.filename).toBe('a.csv');
+    expect(preview.fileA.rows).toBe(1);
+    expect(preview.fileA.mappings).toEqual([
+      { field: 'referenceNumber', label: 'Reference Number', value: 'Ref', confidence: 90 },
+    ]);
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: expect.objectContaining({
+        fileASampleRows: { totalRows: 1, rows: [{ Ref: 'R1' }] },
+        fileBSampleRows: { totalRows: 1, rows: [{ Ref: 'R1' }] },
+        columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Ref' } },
+      }),
+    });
+  });
+
+  it('does not overwrite an already-saved column mapping', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, columnMapping: { fileA: {}, fileB: {} } });
+
+    await getMappingPreview(USER_ID, 'draft-1');
+
+    const call = mockPrisma.report.update.mock.calls[0][0];
+    expect(call.data.columnMapping).toBeUndefined();
+  });
+
+  it('throws ValidationError when either file has not been uploaded yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileAKey: null });
+
+    await expect(getMappingPreview(USER_ID, 'draft-1')).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(getMappingPreview(USER_ID, 'missing')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('getRulePreview', () => {
+  const sampleRows = { totalRows: 2, rows: [{ ref: 'R1' }] };
+  const draft = {
+    id: 'draft-1',
+    userId: USER_ID,
+    fileASampleRows: sampleRows,
+    fileBSampleRows: sampleRows,
+    columnMapping: runDto.columnMapping,
+    status: 'draft',
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(draft);
+    mockRunMatch.mockReturnValue({
+      summary: { matched: 1, mismatched: 0, duplicates: 0, unmatchedA: 0, unmatchedB: 0 },
+      rows: [],
+    });
+    mockExtrapolatePreview.mockReturnValue({
+      estimatedMatches: 1,
+      possibleMismatches: 0,
+      potentialDuplicates: 0,
+      missingReferences: 0,
+    });
+  });
+
+  it('runs the match against the cached sample and extrapolates the result', async () => {
+    const result = await getRulePreview(USER_ID, 'draft-1', { config: runDto.config });
+
+    expect(result).toEqual({
+      estimatedMatches: 1,
+      possibleMismatches: 0,
+      potentialDuplicates: 0,
+      missingReferences: 0,
+    });
+    expect(mockRunMatch).toHaveBeenCalledWith(
+      { rows: sampleRows.rows },
+      { rows: sampleRows.rows },
+      runDto.columnMapping.fileA,
+      runDto.columnMapping.fileB,
+      runDto.config,
+    );
+    expect(mockExtrapolatePreview).toHaveBeenCalledWith(expect.anything(), 1, 2, 1, 2);
+  });
+
+  it('uses an explicit columnMapping override when provided instead of the cached one', async () => {
+    const override = { fileA: { referenceNumber: 'X', amount: 'Y', transactionDate: 'Z' }, fileB: runDto.columnMapping.fileB };
+
+    await getRulePreview(USER_ID, 'draft-1', { config: runDto.config, columnMapping: override });
+
+    expect(mockRunMatch).toHaveBeenCalledWith(expect.anything(), expect.anything(), override.fileA, override.fileB, runDto.config);
+  });
+
+  it('throws ConflictError when no sample has been cached yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileASampleRows: null });
+
+    await expect(getRulePreview(USER_ID, 'draft-1', { config: runDto.config })).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it('throws ConflictError when no column mapping is available anywhere', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, columnMapping: null });
+
+    await expect(getRulePreview(USER_ID, 'draft-1', { config: runDto.config })).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(getRulePreview(USER_ID, 'missing', { config: runDto.config })).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('getTransactions', () => {
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+    mockPrisma.reportRow.findMany.mockResolvedValue([
+      { id: 'row-1', ref: 'REF1', status: 'matched', amountA: 100, amountB: 100, amountDiff: 0, dateA: new Date('2026-01-01'), dateB: new Date('2026-01-01'), reviewed: false, rawA: {}, rawB: {} },
+    ]);
+    mockPrisma.reportRow.count.mockResolvedValue(1);
+    mockBuildShortReason.mockReturnValue({ type: 'Other', reason: '' });
+  });
+
+  it('lists rows for a report the caller can access, mapped to the Explorer shape', async () => {
+    const result = await getTransactions(USER_ID, 'r1', {});
+
+    expect(result.total).toBe(1);
+    expect(result.rows[0]).toEqual(
+      expect.objectContaining({ id: 'row-1', status: 'Matched', reference: 'REF1', ledgerAmount: 100 }),
+    );
+    expect(mockPrisma.reportRow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { reportId: 'r1' }, take: 50, skip: 0 }),
+    );
+  });
+
+  it("maps the 'unmatched' status filter to both unmatched_a and unmatched_b", async () => {
+    await getTransactions(USER_ID, 'r1', { status: 'unmatched' });
+
+    expect(mockPrisma.reportRow.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { reportId: 'r1', status: { in: ['unmatched_a', 'unmatched_b'] } } }),
+    );
+  });
+
+  it('applies search/amount-range/date-range as AND conditions', async () => {
+    await getTransactions(USER_ID, 'r1', { search: 'REF', amountMin: 10, amountMax: 100, dateFrom: '2026-01-01', dateTo: '2026-01-31' });
+
+    const call = mockPrisma.reportRow.findMany.mock.calls[0][0];
+    expect(call.where.AND).toHaveLength(3);
+  });
+
+  it('throws NotFoundError when the report is inaccessible', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(getTransactions(USER_ID, 'missing', {})).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('getTransaction', () => {
+  it('returns a single row with raw fields, match analysis, and recommended action', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed', rulesConfig: { amountTolerance: 0.5 } });
+    const row = { id: 'row-1', ref: 'REF1', status: 'mismatched', amountA: 100, amountB: 90, amountDiff: 10, rawA: { a: 1 }, rawB: { b: 2 } };
+    mockPrisma.reportRow.findFirst.mockResolvedValue(row);
+    mockBuildMatchAnalysis.mockReturnValue([{ text: 'x', passed: false }]);
+    mockBuildRecommendedAction.mockReturnValue('Review it');
+
+    const result = await getTransaction(USER_ID, 'r1', 'row-1');
+
+    expect(result.rawA).toEqual({ a: 1 });
+    expect(result.matchAnalysis).toEqual([{ text: 'x', passed: false }]);
+    expect(result.recommendedAction).toBe('Review it');
+    expect(mockBuildMatchAnalysis).toHaveBeenCalledWith(row, { amountTolerance: 0.5 });
+  });
+
+  it('throws NotFoundError when the row does not belong to the report', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+    mockPrisma.reportRow.findFirst.mockResolvedValue(null);
+
+    await expect(getTransaction(USER_ID, 'r1', 'missing-row')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('markRowReviewed', () => {
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+  });
+
+  it('marks a row reviewed and audit-logs it', async () => {
+    mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', reviewed: true });
+
+    const result = await markRowReviewed(USER_ID, 'r1', 'row-1', true, { ip: '10.0.0.1' });
+
+    expect(result).toEqual({ id: 'row-1', reviewed: true });
+    expect(mockPrisma.reportRow.updateMany).toHaveBeenCalledWith({
+      where: { id: 'row-1', reportId: 'r1' },
+      data: expect.objectContaining({ reviewed: true, reviewedBy: USER_ID }),
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ action: 'report.row.review' }));
+  });
+
+  it('clears reviewedBy/reviewedAt when un-reviewing', async () => {
+    mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', reviewed: false });
+
+    await markRowReviewed(USER_ID, 'r1', 'row-1', false);
+
+    expect(mockPrisma.reportRow.updateMany).toHaveBeenCalledWith({
+      where: { id: 'row-1', reportId: 'r1' },
+      data: { reviewed: false, reviewedBy: null, reviewedAt: null },
+    });
+  });
+
+  it('throws NotFoundError when the row does not exist', async () => {
+    mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(markRowReviewed(USER_ID, 'r1', 'missing-row')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('getBreakBreakdown', () => {
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+  });
+
+  it('sums the correct amount column per break reason and sorts descending by amount', async () => {
+    mockPrisma.reportRow.groupBy.mockResolvedValue([
+      { breakReason: 'amount_mismatch', _sum: { amountDiff: 50, amountA: null, amountB: null } },
+      { breakReason: 'missing_counterparty', _sum: { amountDiff: null, amountA: 200, amountB: null } },
+      { breakReason: 'missing_internal', _sum: { amountDiff: null, amountA: null, amountB: 30 } },
+    ]);
+
+    const breakdown = await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(breakdown[0]).toEqual({ category: 'Missing in Counterparty File', amount: 200, percent: expect.any(Number) });
+    expect(breakdown.map((b) => b.category)).toEqual([
+      'Missing in Counterparty File',
+      'Amount Mismatch',
+      'Missing in Internal Ledger',
+    ]);
+    const totalPercent = breakdown.reduce((sum, b) => sum + b.percent, 0);
+    expect(totalPercent).toBeCloseTo(100, 0);
+  });
+
+  it('excludes duplicate from the groupBy query', async () => {
+    mockPrisma.reportRow.groupBy.mockResolvedValue([]);
+
+    await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(mockPrisma.reportRow.groupBy).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { reportId: 'r1', breakReason: { not: null, notIn: ['duplicate'] } } }),
+    );
+  });
+});
+
+describe('getFilePairTrend', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'r1',
+      organizationId: ORG_ID,
+      status: 'completed',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+    });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('returns 7-point current and prior series, carrying forward the most recent run', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { runDate: new Date('2026-07-01'), totalRows: 100, matchedCount: 90, totalBreakValue: 50 },
+      { runDate: new Date('2026-07-10'), totalRows: 100, matchedCount: 95, totalBreakValue: 20 },
+    ]);
+
+    const trend = await getFilePairTrend(USER_ID, 'r1');
+
+    expect(trend.matchRateTrend.current).toHaveLength(7);
+    expect(trend.matchRateTrend.prior).toHaveLength(7);
+    expect(trend.breakValueTrend.current).toHaveLength(7);
+    // 2026-07-15 falls after the 2026-07-10 run, so the most recent point
+    // carries that run's 95% match rate forward.
+    expect(trend.matchRateTrend.current[6]).toBe(95);
+  });
+
+  it('queries completed reports with a case-insensitive file-pair match', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await getFilePairTrend(USER_ID, 'r1');
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          fileAName: { equals: 'a.csv', mode: 'insensitive' },
+          fileBName: { equals: 'b.csv', mode: 'insensitive' },
+        }),
+      }),
+    );
   });
 });
 
