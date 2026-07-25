@@ -101,7 +101,14 @@ export async function auditOrgAction(ctx, { getSession, logAuditSafely, createNo
     entityType: SELF_CONTAINED_USER_PATHS.has(ctx.path) ? null : 'organization',
     status: STATUS_BY_ACTION[action] ?? 'success',
     ip: extractIp(ctx.headers),
-    metadata: SELF_CONTAINED_USER_PATHS.has(ctx.path) ? { method: LOGIN_METHOD_BY_PATH[ctx.path] } : (ctx.body ?? null),
+    // For '/organization/update', ctx.body.data is the actual set of fields
+    // being changed (name/logo/slug/metadata) — the rest of ctx.body is just
+    // routing (organizationId), not a "what changed" detail worth logging.
+    metadata: SELF_CONTAINED_USER_PATHS.has(ctx.path)
+      ? { method: LOGIN_METHOD_BY_PATH[ctx.path] }
+      : ctx.path === '/organization/update'
+        ? (ctx.body?.data ?? null)
+        : (ctx.body ?? null),
   });
 
   if (ctx.path === '/organization/update-member-role') {

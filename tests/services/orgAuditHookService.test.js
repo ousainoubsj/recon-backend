@@ -52,6 +52,23 @@ describe('auditOrgAction', () => {
     );
   });
 
+  it("narrows '/organization/update' metadata to the changed fields, dropping organizationId", async () => {
+    const deps = makeDeps();
+    const ctx = {
+      path: '/organization/update',
+      body: { data: { name: 'Datafin Ltd' }, organizationId: 'org-1' },
+      headers: {},
+      context: { returned: {} },
+    };
+
+    await auditOrgAction(ctx, deps);
+
+    expect(deps.logAuditSafely).toHaveBeenCalledWith(
+      'user-1',
+      expect.objectContaining({ metadata: { name: 'Datafin Ltd' } }),
+    );
+  });
+
   it('does nothing for an unmapped path', async () => {
     const deps = makeDeps();
 

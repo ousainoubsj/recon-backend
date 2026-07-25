@@ -54,12 +54,17 @@ describe('getOrganizationInfo', () => {
 });
 
 describe('updateOrganizationInfo', () => {
-  it('updates only the provided fields and audit-logs the change', async () => {
+  it('updates only the provided fields and audit-logs a from/to diff', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ orgType: null });
     mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID, orgType: 'Financial Services' });
 
     const result = await updateOrganizationInfo(USER_ID, { orgType: 'Financial Services' });
 
     expect(result).toEqual({ id: ORG_ID, orgType: 'Financial Services' });
+    expect(mockPrisma.organization.findFirst).toHaveBeenCalledWith({
+      where: { id: ORG_ID },
+      select: { orgType: true },
+    });
     expect(mockPrisma.organization.update).toHaveBeenCalledWith({
       where: { id: ORG_ID },
       data: { orgType: 'Financial Services' },
@@ -68,11 +73,12 @@ describe('updateOrganizationInfo', () => {
       action: 'settings.organization_info.update',
       entityType: 'organization',
       entityId: ORG_ID,
-      metadata: { orgType: 'Financial Services' },
+      metadata: { changes: { orgType: { from: null, to: 'Financial Services' } } },
     });
   });
 
   it('ignores fields not present in the dto', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ country: null });
     mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID });
 
     await updateOrganizationInfo(USER_ID, { country: 'United Kingdom' });
@@ -81,6 +87,24 @@ describe('updateOrganizationInfo', () => {
       where: { id: ORG_ID },
       data: { country: 'United Kingdom' },
     });
+  });
+
+  it('does not audit-log when the provided value matches the current one', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ orgType: 'Financial Services' });
+    mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID, orgType: 'Financial Services' });
+
+    await updateOrganizationInfo(USER_ID, { orgType: 'Financial Services' });
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+
+  it('skips the before-lookup and audit log entirely for an empty dto', async () => {
+    mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID });
+
+    await updateOrganizationInfo(USER_ID, {});
+
+    expect(mockPrisma.organization.findFirst).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });
 
@@ -98,7 +122,8 @@ describe('getReconciliationDefaults', () => {
 });
 
 describe('updateReconciliationDefaults', () => {
-  it('updates only the provided fields and audit-logs the change', async () => {
+  it('updates only the provided fields and audit-logs a from/to diff', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ defaultDateToleranceDays: 5 });
     mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID, defaultDateToleranceDays: 3 });
 
     const result = await updateReconciliationDefaults(USER_ID, { defaultDateToleranceDays: 3 });
@@ -112,8 +137,17 @@ describe('updateReconciliationDefaults', () => {
       action: 'settings.reconciliation_defaults.update',
       entityType: 'organization',
       entityId: ORG_ID,
-      metadata: { defaultDateToleranceDays: 3 },
+      metadata: { changes: { defaultDateToleranceDays: { from: 5, to: 3 } } },
     });
+  });
+
+  it('unwraps a Prisma Decimal before diffing so an unchanged tolerance is not falsely logged', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ defaultAmountTolerance: { toNumber: () => 0.01 } });
+    mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID, defaultAmountTolerance: 0.01 });
+
+    await updateReconciliationDefaults(USER_ID, { defaultAmountTolerance: 0.01 });
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });
 
@@ -134,7 +168,8 @@ describe('getNotificationPreferences', () => {
 });
 
 describe('updateNotificationPreferences', () => {
-  it("updates the caller's own User row and audit-logs as info", async () => {
+  it("updates the caller's own User row and audit-logs a from/to diff as info", async () => {
+    mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: true, weeklyDigestEnabled: false });
     mockPrisma.user.update.mockResolvedValue({
       id: USER_ID,
       emailNotificationsEnabled: false,
@@ -156,11 +191,17 @@ describe('updateNotificationPreferences', () => {
       entityType: 'user',
       entityId: USER_ID,
       status: 'info',
-      metadata: { emailNotificationsEnabled: false, weeklyDigestEnabled: true },
+      metadata: {
+        changes: {
+          emailNotificationsEnabled: { from: true, to: false },
+          weeklyDigestEnabled: { from: false, to: true },
+        },
+      },
     });
   });
 
   it('updates only the provided field', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: true });
     mockPrisma.user.update.mockResolvedValue({ emailNotificationsEnabled: false, weeklyDigestEnabled: false });
 
     await updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false });
@@ -169,5 +210,14 @@ describe('updateNotificationPreferences', () => {
       where: { id: USER_ID },
       data: { emailNotificationsEnabled: false },
     });
+  });
+
+  it('does not audit-log when the provided value matches the current one', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: false });
+    mockPrisma.user.update.mockResolvedValue({ emailNotificationsEnabled: false, weeklyDigestEnabled: false });
+
+    await updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false });
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });

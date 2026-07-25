@@ -13,6 +13,29 @@ function pickProvided(dto, fields) {
   return data;
 }
 
+function normalizeValue(value) {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'object' && typeof value.toNumber === 'function') return value.toNumber(); // Prisma Decimal
+  return value;
+}
+
+// Only fields that actually changed value end up in the audit log's
+// metadata — the frontend's "Save Changes" button always PATCHes the full
+// form regardless of what the user actually touched, so naively logging
+// whatever was provided would falsely claim every field changed on every
+// save (and spam the activity feed with no-op entries).
+function diffFields(before, after) {
+  const changes = {};
+  for (const [field, newValue] of Object.entries(after)) {
+    const oldValue = normalizeValue(before?.[field]);
+    const normalizedNew = normalizeValue(newValue);
+    if (oldValue !== normalizedNew) {
+      changes[field] = { from: oldValue, to: normalizedNew };
+    }
+  }
+  return changes;
+}
+
 export async function getOrganizationInfo(userId) {
   const { organizationId } = await getUserMembership(userId);
   return prisma.organization.findFirst({
@@ -23,17 +46,30 @@ export async function getOrganizationInfo(userId) {
 
 export async function updateOrganizationInfo(userId, dto) {
   const { organizationId } = await getUserMembership(userId);
+  const provided = pickProvided(dto, ORG_INFO_FIELDS);
+
+  const before =
+    Object.keys(provided).length > 0
+      ? await prisma.organization.findFirst({
+          where: { id: organizationId },
+          select: Object.fromEntries(Object.keys(provided).map((f) => [f, true])),
+        })
+      : null;
+
   const organization = await prisma.organization.update({
     where: { id: organizationId },
-    data: pickProvided(dto, ORG_INFO_FIELDS),
+    data: provided,
   });
 
-  await logAuditSafely(userId, {
-    action: 'settings.organization_info.update',
-    entityType: 'organization',
-    entityId: organizationId,
-    metadata: pickProvided(dto, ORG_INFO_FIELDS),
-  });
+  const changes = diffFields(before ?? {}, provided);
+  if (Object.keys(changes).length > 0) {
+    await logAuditSafely(userId, {
+      action: 'settings.organization_info.update',
+      entityType: 'organization',
+      entityId: organizationId,
+      metadata: { changes },
+    });
+  }
 
   return organization;
 }
@@ -48,17 +84,30 @@ export async function getReconciliationDefaults(userId) {
 
 export async function updateReconciliationDefaults(userId, dto) {
   const { organizationId } = await getUserMembership(userId);
+  const provided = pickProvided(dto, RECONCILIATION_DEFAULT_FIELDS);
+
+  const before =
+    Object.keys(provided).length > 0
+      ? await prisma.organization.findFirst({
+          where: { id: organizationId },
+          select: Object.fromEntries(Object.keys(provided).map((f) => [f, true])),
+        })
+      : null;
+
   const organization = await prisma.organization.update({
     where: { id: organizationId },
-    data: pickProvided(dto, RECONCILIATION_DEFAULT_FIELDS),
+    data: provided,
   });
 
-  await logAuditSafely(userId, {
-    action: 'settings.reconciliation_defaults.update',
-    entityType: 'organization',
-    entityId: organizationId,
-    metadata: pickProvided(dto, RECONCILIATION_DEFAULT_FIELDS),
-  });
+  const changes = diffFields(before ?? {}, provided);
+  if (Object.keys(changes).length > 0) {
+    await logAuditSafely(userId, {
+      action: 'settings.reconciliation_defaults.update',
+      entityType: 'organization',
+      entityId: organizationId,
+      metadata: { changes },
+    });
+  }
 
   return organization;
 }
@@ -75,15 +124,27 @@ export async function getNotificationPreferences(userId) {
 
 export async function updateNotificationPreferences(userId, dto) {
   const data = pickProvided(dto, ['emailNotificationsEnabled', 'weeklyDigestEnabled']);
+
+  const before =
+    Object.keys(data).length > 0
+      ? await prisma.user.findFirst({
+          where: { id: userId },
+          select: Object.fromEntries(Object.keys(data).map((f) => [f, true])),
+        })
+      : null;
+
   const user = await prisma.user.update({ where: { id: userId }, data });
 
-  await logAuditSafely(userId, {
-    action: 'settings.notifications.update',
-    entityType: 'user',
-    entityId: userId,
-    status: 'info',
-    metadata: data,
-  });
+  const changes = diffFields(before ?? {}, data);
+  if (Object.keys(changes).length > 0) {
+    await logAuditSafely(userId, {
+      action: 'settings.notifications.update',
+      entityType: 'user',
+      entityId: userId,
+      status: 'info',
+      metadata: { changes },
+    });
+  }
 
   return { emailNotificationsEnabled: user.emailNotificationsEnabled, weeklyDigestEnabled: user.weeklyDigestEnabled };
 }
