@@ -11,7 +11,18 @@ const { app } = await import('./server.js');
 // reads DATABASE_URL at module-evaluation time via db/index.js.
 const { startScheduledReportCron } = await import('./services/scheduledReportRunner.js');
 
+const { prisma } = await import('./db/index.js');
+
 const port = process.env.PORT ?? 3001;
+
+try {
+  await prisma.$queryRaw`SELECT 1`;
+  console.log('Database connected');
+} catch (err) {
+  console.error('Database connection failed:', err.message);
+  process.exit(1);
+}
+
 app.listen(port, () => {
   console.log(`recon-backend listening on :${port}`);
 });
