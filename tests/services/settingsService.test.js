@@ -116,7 +116,7 @@ describe('getReconciliationDefaults', () => {
 
     expect(mockPrisma.organization.findFirst).toHaveBeenCalledWith({
       where: { id: ORG_ID },
-      select: { defaultAmountTolerance: true, defaultDateToleranceDays: true, defaultAmountType: true },
+      select: { defaultAmountTolerance: true, defaultDateToleranceDays: true },
     });
   });
 });

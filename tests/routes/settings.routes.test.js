@@ -116,7 +116,7 @@ describe('PATCH /api/settings/organization-info', () => {
 
 describe('GET /api/settings/reconciliation-defaults', () => {
   it("returns the org's reconciliation defaults", async () => {
-    const defaults = { defaultAmountTolerance: 0.01, defaultDateToleranceDays: 3, defaultAmountType: 'Net Amount' };
+    const defaults = { defaultAmountTolerance: 0.01, defaultDateToleranceDays: 3 };
     mockSettingsService.getReconciliationDefaults.mockResolvedValue(defaults);
 
     const res = await request(app).get('/api/settings/reconciliation-defaults');

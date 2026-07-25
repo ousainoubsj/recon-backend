@@ -439,7 +439,6 @@ model Organization {
   currency                 String?             @db.VarChar(10)
   defaultAmountTolerance   Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
   defaultDateToleranceDays Int?                @map("default_date_tolerance_days")
-  defaultAmountType        String?             @map("default_amount_type") @db.VarChar(50)
   members                  Member[]
   invitations              Invitation[]
   reports                  Report[]

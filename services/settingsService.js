@@ -3,7 +3,7 @@ import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
 
 const ORG_INFO_FIELDS = ['orgType', 'country', 'timezone', 'dateFormat', 'currency'];
-const RECONCILIATION_DEFAULT_FIELDS = ['defaultAmountTolerance', 'defaultDateToleranceDays', 'defaultAmountType'];
+const RECONCILIATION_DEFAULT_FIELDS = ['defaultAmountTolerance', 'defaultDateToleranceDays'];
 
 function pickProvided(dto, fields) {
   const data = {};
