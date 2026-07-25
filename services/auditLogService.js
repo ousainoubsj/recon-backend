@@ -46,7 +46,7 @@ export async function listAuditLogs(
             ],
           }
         : {}),
-      ...(action ? { action } : {}),
+      ...(action ? (Array.isArray(action) ? { action: { in: action } } : { action }) : {}),
       ...(entityType ? { entityType } : {}),
       ...(actorUserId ? { userId: actorUserId } : {}),
       ...(AUDIT_LOG_STATUSES.includes(status) ? { status } : {}),

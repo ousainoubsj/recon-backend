@@ -129,6 +129,23 @@ describe('listAuditLogs', () => {
     );
   });
 
+  it('filters by a list of actions using an IN clause when action is an array', async () => {
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+
+    await listAuditLogs(USER_ID, {
+      action: ['settings.organization_info.update', 'organization.update'],
+    });
+
+    expect(mockPrisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          organizationId: ORG_ID,
+          action: { in: ['settings.organization_info.update', 'organization.update'] },
+        },
+      }),
+    );
+  });
+
   it('ignores an unrecognized status value', async () => {
     mockPrisma.auditLog.findMany.mockResolvedValue([]);
 
