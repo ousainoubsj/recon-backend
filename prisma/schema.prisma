@@ -209,8 +209,14 @@ model ReportRow {
 
 model AuditLog {
   id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  userId         String         @map("user_id")
-  user           User           @relation(fields: [userId], references: [id])
+  // Nullable + SetNull, same reasoning as organizationId right below: an
+  // audit trail must survive the deletion of the thing it's auditing,
+  // including the user who performed the action. Previously left at
+  // Prisma's default (Restrict), which blocked deleting a user outright the
+  // moment they had any audit history — inconsistent with organizationId's
+  // own handling of the identical concern.
+  userId         String?        @map("user_id")
+  user           User?          @relation(fields: [userId], references: [id], onDelete: SetNull)
   // Nullable + SetNull (unlike Report's cascading organizationId): an audit
   // trail must survive the deletion of the thing it's auditing, including
   // the org.delete entry itself — cascading here would silently destroy the
