@@ -225,7 +225,11 @@ model AuditLog {
   organization   Organization?  @relation(fields: [organizationId], references: [id], onDelete: SetNull)
   action         String         @db.VarChar(100)
   entityType     String?        @map("entity_type") @db.VarChar(50)
-  entityId       String?        @map("entity_id") @db.Uuid
+  // Plain string, not @db.Uuid: entities being audited include both real
+  // Postgres-generated UUIDs (Report.id) and Better Auth-managed string ids
+  // (Organization.id, User.id, Member.id, Invitation.id) — a strict uuid
+  // column silently failed every insert for the latter group.
+  entityId       String?        @map("entity_id") @db.VarChar(64)
   status         AuditLogStatus @default(success)
   ip             String?        @map("ip_address")
   ts             DateTime       @default(now())
