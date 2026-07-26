@@ -69,7 +69,7 @@ describe('createAuditLog', () => {
 });
 
 describe('listAuditLogs', () => {
-  const USER_INCLUDE = { user: { select: { name: true, email: true } } };
+  const USER_INCLUDE = { user: { select: { name: true, email: true, image: true } } };
 
   it('lists entries scoped to the organization, newest first, unbounded by default', async () => {
     const logs = [{ id: 'log-1' }, { id: 'log-2' }];

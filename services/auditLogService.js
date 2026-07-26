@@ -52,7 +52,7 @@ export async function listAuditLogs(
       ...(AUDIT_LOG_STATUSES.includes(status) ? { status } : {}),
       ...(Object.keys(tsFilter).length > 0 ? { ts: tsFilter } : {}),
     },
-    include: { user: { select: { name: true, email: true } } },
+    include: { user: { select: { name: true, email: true, image: true } } },
     orderBy: { ts: 'desc' },
     ...(offset ? { skip: offset } : {}),
     ...(limit ? { take: limit } : {}),
