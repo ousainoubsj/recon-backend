@@ -439,6 +439,10 @@ model Organization {
   currency                 String?             @db.VarChar(10)
   defaultAmountTolerance   Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
   defaultDateToleranceDays Int?                @map("default_date_tolerance_days")
+  // Canonical list of department names admins can assign to members via
+  // Member.department (still a plain freeform string, not a FK — this list
+  // is a soft steer for the UI, not an enforced constraint on that column).
+  departments              String[]            @default([])
   members                  Member[]
   invitations              Invitation[]
   reports                  Report[]

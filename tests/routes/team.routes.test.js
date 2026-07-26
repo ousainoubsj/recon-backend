@@ -25,12 +25,14 @@ const mockTeamService = {
   listMembers: jest.fn(),
   getTeamStats: jest.fn(),
   updateMember: jest.fn(),
+  getDepartments: jest.fn(),
+  addDepartment: jest.fn(),
 };
 jest.unstable_mockModule('../../services/teamService.js', () => mockTeamService);
 
 const { teamRouter } = await import('../../routes/team.js');
 const { errorHandler } = await import('../../middleware/errorHandler.js');
-const { NotFoundError } = await import('../../errors.js');
+const { NotFoundError, ConflictError } = await import('../../errors.js');
 
 const app = express();
 app.use(express.json());
@@ -169,5 +171,62 @@ describe('PATCH /api/team/members/:id', () => {
       USER_ID,
       expect.objectContaining({ metadata: { role: 'admin', reason: 'inactive' } }),
     );
+  });
+});
+
+describe('GET /api/team/departments', () => {
+  it("returns the org's department list", async () => {
+    mockTeamService.getDepartments.mockResolvedValue(['Finance', 'Engineering']);
+
+    const res = await request(app).get('/api/team/departments');
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(['Finance', 'Engineering']);
+    expect(mockTeamService.getDepartments).toHaveBeenCalledWith(USER_ID);
+  });
+
+  it('is allowed for a viewer (member:read is granted to all three roles)', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+    mockTeamService.getDepartments.mockResolvedValue([]);
+
+    const res = await request(app).get('/api/team/departments');
+
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('POST /api/team/departments', () => {
+  it('adds a department, trims the name, and returns the updated list', async () => {
+    mockTeamService.addDepartment.mockResolvedValue(['Finance', 'Engineering']);
+
+    const res = await request(app).post('/api/team/departments').send({ name: ' Engineering ' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual(['Finance', 'Engineering']);
+    expect(mockTeamService.addDepartment).toHaveBeenCalledWith(USER_ID, 'Engineering');
+  });
+
+  it('rejects an empty name with a 422', async () => {
+    const res = await request(app).post('/api/team/departments').send({ name: '   ' });
+
+    expect(res.status).toBe(422);
+    expect(mockTeamService.addDepartment).not.toHaveBeenCalled();
+  });
+
+  it('returns an RFC 7807 409 on a duplicate department', async () => {
+    mockTeamService.addDepartment.mockRejectedValue(new ConflictError('That department already exists'));
+
+    const res = await request(app).post('/api/team/departments').send({ name: 'Finance' });
+
+    expect(res.status).toBe(409);
+  });
+
+  it('rejects a non-admin with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
+
+    const res = await request(app).post('/api/team/departments').send({ name: 'Finance' });
+
+    expect(res.status).toBe(403);
+    expect(mockTeamService.addDepartment).not.toHaveBeenCalled();
   });
 });

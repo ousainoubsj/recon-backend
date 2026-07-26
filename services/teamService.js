@@ -1,5 +1,5 @@
 import { prisma } from '../db/index.js';
-import { NotFoundError } from '../errors.js';
+import { ConflictError, NotFoundError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
 import { createNotification } from './notificationService.js';
@@ -86,4 +86,32 @@ export async function updateMember(userId, memberId, { department, status }) {
   }
 
   return member;
+}
+
+export async function getDepartments(userId) {
+  const { organizationId } = await getUserMembership(userId);
+  const org = await prisma.organization.findFirst({ where: { id: organizationId }, select: { departments: true } });
+  return org.departments;
+}
+
+export async function addDepartment(userId, name) {
+  const { organizationId } = await getUserMembership(userId);
+  const trimmed = name.trim();
+
+  const org = await prisma.organization.findFirst({ where: { id: organizationId }, select: { departments: true } });
+  if (org.departments.some((d) => d.toLowerCase() === trimmed.toLowerCase())) {
+    throw new ConflictError('That department already exists');
+  }
+
+  const departments = [...org.departments, trimmed];
+  await prisma.organization.update({ where: { id: organizationId }, data: { departments } });
+
+  await logAuditSafely(userId, {
+    action: 'team.department.create',
+    entityType: 'organization',
+    entityId: organizationId,
+    metadata: { department: trimmed },
+  });
+
+  return departments;
 }

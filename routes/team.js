@@ -34,3 +34,22 @@ teamRouter.patch(
   validate(updateMemberSchema),
   catchAsync(teamController.updateMember),
 );
+
+teamRouter.get(
+  '/departments',
+  authenticate,
+  catchAsync(requirePermission('member', 'read')),
+  catchAsync(teamController.getDepartments),
+);
+
+const addDepartmentSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+});
+
+teamRouter.post(
+  '/departments',
+  authenticate,
+  catchAsync(requirePermission('member', 'update')),
+  validate(addDepartmentSchema),
+  catchAsync(teamController.addDepartment),
+);

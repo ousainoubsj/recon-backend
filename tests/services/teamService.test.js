@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 const mockPrisma = {
   member: { findMany: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
   invitation: { count: jest.fn() },
+  organization: { findFirst: jest.fn(), update: jest.fn() },
 };
 
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
@@ -22,8 +23,10 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
   getUserMembership: mockMemberFindFirst,
 }));
 
-const { listMembers, getTeamStats, updateMember } = await import('../../services/teamService.js');
-const { NotFoundError } = await import('../../errors.js');
+const { listMembers, getTeamStats, updateMember, getDepartments, addDepartment } = await import(
+  '../../services/teamService.js'
+);
+const { NotFoundError, ConflictError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
 const ORG_ID = 'org-1';
@@ -174,6 +177,49 @@ describe('updateMember', () => {
     mockPrisma.member.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(updateMember(USER_ID, 'missing', { department: 'IT' })).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+});
+
+describe('getDepartments', () => {
+  it("returns the org's department list", async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ departments: ['Finance', 'Engineering'] });
+
+    const result = await getDepartments(USER_ID);
+
+    expect(result).toEqual(['Finance', 'Engineering']);
+    expect(mockPrisma.organization.findFirst).toHaveBeenCalledWith({
+      where: { id: ORG_ID },
+      select: { departments: true },
+    });
+  });
+});
+
+describe('addDepartment', () => {
+  it('appends the new department and audit-logs it', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ departments: ['Finance'] });
+    mockPrisma.organization.update.mockResolvedValue({});
+
+    const result = await addDepartment(USER_ID, ' Engineering ');
+
+    expect(result).toEqual(['Finance', 'Engineering']);
+    expect(mockPrisma.organization.update).toHaveBeenCalledWith({
+      where: { id: ORG_ID },
+      data: { departments: ['Finance', 'Engineering'] },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'team.department.create',
+      entityType: 'organization',
+      entityId: ORG_ID,
+      metadata: { department: 'Engineering' },
+    });
+  });
+
+  it('throws ConflictError on a case-insensitive duplicate and does not write', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ departments: ['Finance'] });
+
+    await expect(addDepartment(USER_ID, 'finance')).rejects.toBeInstanceOf(ConflictError);
+    expect(mockPrisma.organization.update).not.toHaveBeenCalled();
     expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });

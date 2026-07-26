@@ -25,3 +25,13 @@ export const updateMember = async (req, res) => {
   const member = await teamService.updateMember(req.session.user.id, req.params.id, req.body);
   res.json(member);
 };
+
+export const getDepartments = async (req, res) => {
+  const departments = await teamService.getDepartments(req.session.user.id);
+  res.json(departments);
+};
+
+export const addDepartment = async (req, res) => {
+  const departments = await teamService.addDepartment(req.session.user.id, req.body.name);
+  res.status(201).json(departments);
+};
