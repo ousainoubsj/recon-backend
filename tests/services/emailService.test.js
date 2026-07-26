@@ -52,7 +52,7 @@ describe('sendOrgInvitationEmail', () => {
     email: 'invitee@example.com',
     organization: { name: 'Acme Corp' },
     invitation: { expiresAt: '2026-07-03T00:00:00Z' },
-    inviter: { user: { email: 'admin@acme.com' } },
+    inviter: { user: { name: 'Ada Lovelace', email: 'admin@acme.com' } },
   };
 
   it('sends an HTML invitation email with the accept link', async () => {
@@ -67,6 +67,25 @@ describe('sendOrgInvitationEmail', () => {
         html: expect.stringContaining(`${process.env.FRONTEND_URL}/accept-invite/invite-1`),
       }),
     );
+  });
+
+  it("uses the inviter's display name rather than their email address", async () => {
+    mockSend.mockResolvedValue({ data: { id: 'email-2' }, error: null });
+
+    await sendOrgInvitationEmail(invitationData);
+
+    const { html } = mockSend.mock.calls[0][0];
+    expect(html).toContain('Ada Lovelace has invited you');
+    expect(html).not.toContain('admin@acme.com');
+  });
+
+  it("falls back to the inviter's email when no name is set", async () => {
+    mockSend.mockResolvedValue({ data: { id: 'email-2' }, error: null });
+
+    await sendOrgInvitationEmail({ ...invitationData, inviter: { user: { name: '', email: 'admin@acme.com' } } });
+
+    const { html } = mockSend.mock.calls[0][0];
+    expect(html).toContain('admin@acme.com has invited you');
   });
 
   it('throws when Resend reports an error', async () => {

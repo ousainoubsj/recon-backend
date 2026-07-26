@@ -17,14 +17,14 @@ describe('renderEmailTemplate', () => {
   it('substitutes known placeholders from the real email-invitation template', async () => {
     const html = await renderEmailTemplate('email-invitation', {
       organizationName: 'Acme Corp',
-      inviterEmail: 'admin@acme.com',
+      inviterName: 'Ada Lovelace',
       role: 'analyst',
       acceptLink: 'https://app.example.com/accept-invite/abc123',
       expiresFormatted: 'Jul 3, 2026',
     });
 
     expect(html).toContain('Acme Corp');
-    expect(html).toContain('admin@acme.com');
+    expect(html).toContain('Ada Lovelace');
     expect(html).toContain('analyst');
     expect(html).toContain('https://app.example.com/accept-invite/abc123');
     expect(html).toContain('Jul 3, 2026');

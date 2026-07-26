@@ -91,13 +91,13 @@ export async function sendScheduledReportEmail(report, buffer, format, recipient
 
 /**
  * Wired into Better Auth's organization plugin `sendInvitationEmail` option.
- * @param {{id: string, role: string, email: string, organization: {name: string}, invitation?: {expiresAt?: string|Date}, inviter: {user: {email: string}}}} data
+ * @param {{id: string, role: string, email: string, organization: {name: string}, invitation?: {expiresAt?: string|Date}, inviter: {user: {name: string, email: string}}}} data
  */
 export async function sendOrgInvitationEmail(data) {
   const acceptLink = `${process.env.FRONTEND_URL}/accept-invite/${data.id}`;
   const html = await renderEmailTemplate('email-invitation', {
     organizationName: escapeHtmlForEmail(data.organization.name),
-    inviterEmail: escapeHtmlForEmail(data.inviter.user.email),
+    inviterName: escapeHtmlForEmail(data.inviter.user.name || data.inviter.user.email),
     role: escapeHtmlForEmail(data.role),
     acceptLink,
     expiresFormatted: escapeHtmlForEmail(formatDate(data.invitation?.expiresAt)),
