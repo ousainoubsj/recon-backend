@@ -36,15 +36,36 @@ export async function listMembers(userId, { q, role, status, department, offset,
 
 export async function getTeamStats(userId) {
   const { organizationId } = await getUserMembership(userId);
+  const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 
-  const [totalUsers, activeUsers, administrators, pendingInvites] = await Promise.all([
+  const [totalUsers, activeUsers, administrators, pendingInvites, newThisMonth, deactivatedThisMonth] = await Promise.all([
     prisma.member.count({ where: { organizationId } }),
     prisma.member.count({ where: { organizationId, status: 'active' } }),
     prisma.member.count({ where: { organizationId, role: 'admin' } }),
     prisma.invitation.count({ where: { organizationId, status: 'pending' } }),
+    prisma.member.count({ where: { organizationId, createdAt: { gte: startOfMonth } } }),
+    // Member has no deactivatedAt timestamp — the only record of *when* a
+    // deactivation happened is updateMember's own 'member.update' audit log
+    // entry, whose metadata carries the new status.
+    prisma.auditLog.count({
+      where: {
+        organizationId,
+        action: 'member.update',
+        ts: { gte: startOfMonth },
+        metadata: { path: ['status'], equals: 'inactive' },
+      },
+    }),
   ]);
 
-  return { totalUsers, activeUsers, inactiveUsers: totalUsers - activeUsers, administrators, pendingInvites };
+  return {
+    totalUsers,
+    activeUsers,
+    inactiveUsers: totalUsers - activeUsers,
+    administrators,
+    pendingInvites,
+    newThisMonth,
+    deactivatedThisMonth,
+  };
 }
 
 // Deactivating someone is a sensitive action (same reasoning as §5's

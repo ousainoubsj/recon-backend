@@ -4,6 +4,7 @@ const mockPrisma = {
   member: { findMany: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn(), count: jest.fn() },
   invitation: { count: jest.fn() },
   organization: { findFirst: jest.fn(), update: jest.fn() },
+  auditLog: { count: jest.fn() },
 };
 
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
@@ -107,20 +108,43 @@ describe('listMembers', () => {
 });
 
 describe('getTeamStats', () => {
-  it('returns total/active/inactive/administrator/pending-invite counts', async () => {
+  it('returns total/active/inactive/administrator/pending-invite/new/deactivated counts', async () => {
     mockPrisma.member.count
       .mockResolvedValueOnce(10) // total
       .mockResolvedValueOnce(8) // active
-      .mockResolvedValueOnce(2); // administrators
+      .mockResolvedValueOnce(2) // administrators
+      .mockResolvedValueOnce(4); // newThisMonth
     mockPrisma.invitation.count.mockResolvedValue(3);
+    mockPrisma.auditLog.count.mockResolvedValue(1);
 
     const stats = await getTeamStats(USER_ID);
 
-    expect(stats).toEqual({ totalUsers: 10, activeUsers: 8, inactiveUsers: 2, administrators: 2, pendingInvites: 3 });
+    expect(stats).toEqual({
+      totalUsers: 10,
+      activeUsers: 8,
+      inactiveUsers: 2,
+      administrators: 2,
+      pendingInvites: 3,
+      newThisMonth: 4,
+      deactivatedThisMonth: 1,
+    });
     expect(mockPrisma.member.count).toHaveBeenNthCalledWith(1, { where: { organizationId: ORG_ID } });
     expect(mockPrisma.member.count).toHaveBeenNthCalledWith(2, { where: { organizationId: ORG_ID, status: 'active' } });
     expect(mockPrisma.member.count).toHaveBeenNthCalledWith(3, { where: { organizationId: ORG_ID, role: 'admin' } });
+    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({ where: expect.objectContaining({ organizationId: ORG_ID, createdAt: expect.any(Object) }) }),
+    );
     expect(mockPrisma.invitation.count).toHaveBeenCalledWith({ where: { organizationId: ORG_ID, status: 'pending' } });
+    expect(mockPrisma.auditLog.count).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({
+          organizationId: ORG_ID,
+          action: 'member.update',
+          metadata: { path: ['status'], equals: 'inactive' },
+        }),
+      }),
+    );
   });
 });
 
