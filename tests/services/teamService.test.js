@@ -34,7 +34,7 @@ beforeEach(() => {
 });
 
 describe('listMembers', () => {
-  const USER_INCLUDE = { user: { select: { id: true, name: true, email: true } } };
+  const USER_INCLUDE = { user: { select: { id: true, name: true, email: true, image: true } } };
 
   it('lists all org members, newest first, unbounded by default', async () => {
     const members = [{ id: 'm1' }, { id: 'm2' }];
