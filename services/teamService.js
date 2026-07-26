@@ -27,7 +27,7 @@ export async function listMembers(userId, { q, role, status, department, offset,
       ...(MEMBER_STATUSES.includes(status) ? { status } : {}),
       ...(department ? { department } : {}),
     },
-    include: { user: { select: { id: true, name: true, email: true } } },
+    include: { user: { select: { id: true, name: true, email: true, image: true } } },
     orderBy: { createdAt: 'desc' },
     ...(offset ? { skip: offset } : {}),
     ...(limit ? { take: limit } : {}),
@@ -64,7 +64,7 @@ export async function updateMember(userId, memberId, { department, status }) {
 
   const member = await prisma.member.findFirst({
     where: { id: memberId, organizationId },
-    include: { user: { select: { name: true, email: true } } },
+    include: { user: { select: { name: true, email: true, image: true } } },
   });
 
   const isDeactivating = status === 'inactive' && member.userId !== userId;
