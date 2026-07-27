@@ -219,9 +219,15 @@ export async function saveReport(userId, dto, { ip } = {}) {
   return report.id;
 }
 
+// History includes both completed and failed runs (a failed run is still a
+// real, persisted attempt worth showing up in the log) — drafts never
+// appear here regardless. `status`, when given, narrows to just that one
+// outcome; omitted entirely (the default "All" quick filter) returns both.
+const HISTORY_STATUSES = ['completed', 'failed'];
+
 export async function listReports(
   userId,
-  { limit, offset, q, dateFrom, dateTo, tag, favoritesOnly } = {},
+  { limit, offset, q, dateFrom, dateTo, tag, favoritesOnly, status } = {},
 ) {
   const { organizationId } = await getUserMembership(userId);
   const query = q?.trim();
@@ -231,11 +237,12 @@ export async function listReports(
     ...(from && !Number.isNaN(from.getTime()) ? { gte: from } : {}),
     ...(to && !Number.isNaN(to.getTime()) ? { lte: to } : {}),
   };
+  const statusFilter = HISTORY_STATUSES.includes(status) ? status : { in: HISTORY_STATUSES };
 
   const reports = await prisma.report.findMany({
     where: {
       organizationId,
-      status: 'completed',
+      status: statusFilter,
       ...(query
         ? {
             OR: [
@@ -413,10 +420,11 @@ export async function getHistoryStats(userId) {
   };
 }
 
-// HistorySidebar's donut chart. No "Failed" bucket is computed — a Report
-// row is only ever created after a successful save (see saveReport), so
-// there's no concept of a failed run yet; matches the same call made for
-// the "Failed" quick filter right below.
+// HistorySidebar's donut chart. The first 4 buckets split completed runs by
+// match rate; "Failed" is a 5th bucket alongside them (not a match-rate
+// bucket itself — a failed run never produced a match rate) counting failed
+// runs, so the donut reflects every non-draft attempt, same as the History
+// table/list now does.
 const MATCH_RATE_BUCKETS = [
   { label: '≥ 99%', min: 99, max: Infinity },
   { label: '95% - 98.99%', min: 95, max: 99 },
@@ -427,6 +435,7 @@ const MATCH_RATE_BUCKETS = [
 export async function getMatchRateDistribution(userId) {
   const { organizationId } = await getUserMembership(userId);
   const reports = await getAllTimeCompletedReports(organizationId);
+  const failedCount = await prisma.report.count({ where: { organizationId, status: 'failed' } });
 
   const counts = MATCH_RATE_BUCKETS.map(() => 0);
   for (const report of reports) {
@@ -435,12 +444,18 @@ export async function getMatchRateDistribution(userId) {
     if (bucketIndex >= 0) counts[bucketIndex] += 1;
   }
 
-  const total = reports.length;
-  return MATCH_RATE_BUCKETS.map(({ label }, i) => ({
+  const total = reports.length + failedCount;
+  const buckets = MATCH_RATE_BUCKETS.map(({ label }, i) => ({
     label,
     value: counts[i],
     percent: total > 0 ? `${((counts[i] / total) * 100).toFixed(1)}%` : '0.0%',
   }));
+  buckets.push({
+    label: 'Failed',
+    value: failedCount,
+    percent: total > 0 ? `${((failedCount / total) * 100).toFixed(1)}%` : '0.0%',
+  });
+  return buckets;
 }
 
 // HistorySidebar's "Top File Pairs" widget. Grouped case-insensitively so

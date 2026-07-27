@@ -12,6 +12,7 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     findFirst: jest.fn(),
+    count: jest.fn(),
     deleteMany: jest.fn(),
     updateMany: jest.fn(),
     update: jest.fn(),
@@ -212,8 +213,9 @@ describe('saveReport', () => {
 
 describe('listReports', () => {
   const FAVORITES_INCLUDE = { favorites: { where: { userId: USER_ID }, select: { id: true } } };
+  const DEFAULT_STATUS = { in: ['completed', 'failed'] };
 
-  it("queries all reports in the user's organization, newest first, unbounded by default, mapping isFavorited", async () => {
+  it("queries all completed+failed reports in the user's organization, newest first, unbounded by default, mapping isFavorited", async () => {
     mockPrisma.report.findMany.mockResolvedValue([
       { id: 'r1', favorites: [] },
       { id: 'r2', favorites: [{ id: 'fav-1' }] },
@@ -226,10 +228,35 @@ describe('listReports', () => {
       { id: 'r2', isFavorited: true },
     ]);
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
-      where: { organizationId: ORG_ID, status: 'completed' },
+      where: { organizationId: ORG_ID, status: DEFAULT_STATUS },
       include: FAVORITES_INCLUDE,
       orderBy: { runDate: 'desc' },
     });
+  });
+
+  it('narrows to a single status when given', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { status: 'failed' });
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: 'failed' }) }),
+    );
+
+    mockPrisma.report.findMany.mockClear();
+    await listReports(USER_ID, { status: 'completed' });
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: 'completed' }) }),
+    );
+  });
+
+  it('ignores an unrecognized status value and falls back to the default (completed+failed)', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listReports(USER_ID, { status: 'draft' });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ status: DEFAULT_STATUS }) }),
+    );
   });
 
   it('passes take through when a limit is given', async () => {
@@ -238,7 +265,7 @@ describe('listReports', () => {
     await listReports(USER_ID, { limit: 5 });
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
-      where: { organizationId: ORG_ID, status: 'completed' },
+      where: { organizationId: ORG_ID, status: DEFAULT_STATUS },
       include: FAVORITES_INCLUDE,
       orderBy: { runDate: 'desc' },
       take: 5,
@@ -261,7 +288,7 @@ describe('listReports', () => {
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: {
         organizationId: ORG_ID,
-        status: 'completed',
+        status: DEFAULT_STATUS,
         OR: [
           { name: { contains: 'june', mode: 'insensitive' } },
           { fileAName: { contains: 'june', mode: 'insensitive' } },
@@ -293,7 +320,7 @@ describe('listReports', () => {
     await listReports(USER_ID, { dateFrom: 'not-a-date' });
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { organizationId: ORG_ID, status: 'completed' } }),
+      expect.objectContaining({ where: { organizationId: ORG_ID, status: DEFAULT_STATUS } }),
     );
   });
 
@@ -308,7 +335,7 @@ describe('listReports', () => {
     mockPrisma.report.findMany.mockClear();
     await listReports(USER_ID, { tag: 'not-a-real-tag' });
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { organizationId: ORG_ID, status: 'completed' } }),
+      expect.objectContaining({ where: { organizationId: ORG_ID, status: DEFAULT_STATUS } }),
     );
   });
 
@@ -1249,7 +1276,7 @@ describe('getHistoryStats', () => {
 });
 
 describe('getMatchRateDistribution', () => {
-  it('buckets all-time completed reports by their own match rate', async () => {
+  it('buckets all-time completed reports by their own match rate, plus a Failed bucket counting failed runs', async () => {
     mockPrisma.report.findMany.mockResolvedValue([
       { totalRows: 100, matchedCount: 99 },
       { totalRows: 100, matchedCount: 100 },
@@ -1257,19 +1284,25 @@ describe('getMatchRateDistribution', () => {
       { totalRows: 100, matchedCount: 92 },
       { totalRows: 100, matchedCount: 80 },
     ]);
+    mockPrisma.report.count.mockResolvedValue(5);
 
     const distribution = await getMatchRateDistribution(USER_ID);
 
+    expect(mockPrisma.report.count).toHaveBeenCalledWith({
+      where: { organizationId: ORG_ID, status: 'failed' },
+    });
     expect(distribution).toEqual([
-      { label: '≥ 99%', value: 2, percent: '40.0%' },
-      { label: '95% - 98.99%', value: 1, percent: '20.0%' },
-      { label: '90% - 94.99%', value: 1, percent: '20.0%' },
-      { label: '< 90%', value: 1, percent: '20.0%' },
+      { label: '≥ 99%', value: 2, percent: '20.0%' },
+      { label: '95% - 98.99%', value: 1, percent: '10.0%' },
+      { label: '90% - 94.99%', value: 1, percent: '10.0%' },
+      { label: '< 90%', value: 1, percent: '10.0%' },
+      { label: 'Failed', value: 5, percent: '50.0%' },
     ]);
   });
 
-  it('returns all-zero buckets with 0.0% when there are no completed reports', async () => {
+  it('returns all-zero buckets with 0.0% when there are no completed or failed reports', async () => {
     mockPrisma.report.findMany.mockResolvedValue([]);
+    mockPrisma.report.count.mockResolvedValue(0);
 
     const distribution = await getMatchRateDistribution(USER_ID);
 

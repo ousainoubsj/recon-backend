@@ -12,7 +12,7 @@ import { parsePositiveInt } from '../utils/queryParams.js';
 export const listReports = async (req, res) => {
   const limit = parsePositiveInt(req.query.limit, 100);
   const offset = parsePositiveInt(req.query.offset);
-  const { q, dateFrom, dateTo, tag, favoritesOnly } = req.query;
+  const { q, dateFrom, dateTo, tag, favoritesOnly, status } = req.query;
   const reports = await reportService.listReports(req.session.user.id, {
     limit,
     offset,
@@ -21,6 +21,7 @@ export const listReports = async (req, res) => {
     dateTo,
     tag,
     favoritesOnly: favoritesOnly === 'true',
+    status,
   });
   res.json(reports);
 };

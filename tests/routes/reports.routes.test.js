@@ -116,7 +116,19 @@ describe('GET /api/reports', () => {
       dateTo: undefined,
       tag: undefined,
       favoritesOnly: false,
+      status: undefined,
     });
+  });
+
+  it('passes ?status= through', async () => {
+    mockReportService.listReports.mockResolvedValue([]);
+
+    await request(app).get('/api/reports?status=failed');
+
+    expect(mockReportService.listReports).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ status: 'failed' }),
+    );
   });
 
   it('passes a valid ?limit= through', async () => {
