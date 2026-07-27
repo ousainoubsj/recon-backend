@@ -120,7 +120,7 @@ describe('PATCH /api/team/members/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 'm1', status: 'inactive' });
-    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { status: 'inactive' });
+    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { status: 'inactive' }, { ip: expect.anything() });
   });
 
   it('accepts department alone', async () => {
@@ -129,7 +129,7 @@ describe('PATCH /api/team/members/:id', () => {
     const res = await request(app).patch('/api/team/members/m1').send({ department: 'Finance' });
 
     expect(res.status).toBe(200);
-    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { department: 'Finance' });
+    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { department: 'Finance' }, { ip: expect.anything() });
   });
 
   it('rejects an invalid status value with a 422', async () => {
@@ -203,7 +203,7 @@ describe('POST /api/team/departments', () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toEqual(['Finance', 'Engineering']);
-    expect(mockTeamService.addDepartment).toHaveBeenCalledWith(USER_ID, 'Engineering');
+    expect(mockTeamService.addDepartment).toHaveBeenCalledWith(USER_ID, 'Engineering', { ip: expect.anything() });
   });
 
   it('rejects an empty name with a 422', async () => {

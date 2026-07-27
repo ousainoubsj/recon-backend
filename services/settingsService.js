@@ -44,7 +44,7 @@ export async function getOrganizationInfo(userId) {
   });
 }
 
-export async function updateOrganizationInfo(userId, dto) {
+export async function updateOrganizationInfo(userId, dto, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const provided = pickProvided(dto, ORG_INFO_FIELDS);
 
@@ -67,6 +67,7 @@ export async function updateOrganizationInfo(userId, dto) {
       action: 'settings.organization_info.update',
       entityType: 'organization',
       entityId: organizationId,
+      ip,
       metadata: { changes },
     });
   }
@@ -82,7 +83,7 @@ export async function getReconciliationDefaults(userId) {
   });
 }
 
-export async function updateReconciliationDefaults(userId, dto) {
+export async function updateReconciliationDefaults(userId, dto, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const provided = pickProvided(dto, RECONCILIATION_DEFAULT_FIELDS);
 
@@ -105,6 +106,7 @@ export async function updateReconciliationDefaults(userId, dto) {
       action: 'settings.reconciliation_defaults.update',
       entityType: 'organization',
       entityId: organizationId,
+      ip,
       metadata: { changes },
     });
   }
@@ -122,7 +124,7 @@ export async function getNotificationPreferences(userId) {
   });
 }
 
-export async function updateNotificationPreferences(userId, dto) {
+export async function updateNotificationPreferences(userId, dto, { ip } = {}) {
   const data = pickProvided(dto, ['emailNotificationsEnabled', 'weeklyDigestEnabled']);
 
   const before =
@@ -142,6 +144,7 @@ export async function updateNotificationPreferences(userId, dto) {
       entityType: 'user',
       entityId: userId,
       status: 'info',
+      ip,
       metadata: { changes },
     });
   }

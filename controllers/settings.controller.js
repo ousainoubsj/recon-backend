@@ -15,7 +15,7 @@ export const getOrganizationInfo = async (req, res) => {
 };
 
 export const updateOrganizationInfo = async (req, res) => {
-  const info = await settingsService.updateOrganizationInfo(req.session.user.id, req.body);
+  const info = await settingsService.updateOrganizationInfo(req.session.user.id, req.body, { ip: req.ip });
   res.json(info);
 };
 
@@ -25,7 +25,7 @@ export const getReconciliationDefaults = async (req, res) => {
 };
 
 export const updateReconciliationDefaults = async (req, res) => {
-  const defaults = await settingsService.updateReconciliationDefaults(req.session.user.id, req.body);
+  const defaults = await settingsService.updateReconciliationDefaults(req.session.user.id, req.body, { ip: req.ip });
   res.json(defaults);
 };
 
@@ -35,7 +35,7 @@ export const getNotificationPreferences = async (req, res) => {
 };
 
 export const updateNotificationPreferences = async (req, res) => {
-  const prefs = await settingsService.updateNotificationPreferences(req.session.user.id, req.body);
+  const prefs = await settingsService.updateNotificationPreferences(req.session.user.id, req.body, { ip: req.ip });
   res.json(prefs);
 };
 

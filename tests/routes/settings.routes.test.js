@@ -83,7 +83,11 @@ describe('PATCH /api/settings/organization-info', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ orgType: 'Financial Services' });
-    expect(mockSettingsService.updateOrganizationInfo).toHaveBeenCalledWith(USER_ID, { orgType: 'Financial Services' });
+    expect(mockSettingsService.updateOrganizationInfo).toHaveBeenCalledWith(
+      USER_ID,
+      { orgType: 'Financial Services' },
+      { ip: expect.anything() },
+    );
   });
 
   it('rejects a non-admin with a 403 RFC 7807 error', async () => {
@@ -135,9 +139,11 @@ describe('PATCH /api/settings/reconciliation-defaults', () => {
       .send({ defaultDateToleranceDays: 5 });
 
     expect(res.status).toBe(200);
-    expect(mockSettingsService.updateReconciliationDefaults).toHaveBeenCalledWith(USER_ID, {
-      defaultDateToleranceDays: 5,
-    });
+    expect(mockSettingsService.updateReconciliationDefaults).toHaveBeenCalledWith(
+      USER_ID,
+      { defaultDateToleranceDays: 5 },
+      { ip: expect.anything() },
+    );
   });
 
   it('rejects a non-admin with a 403', async () => {
@@ -182,9 +188,11 @@ describe('PATCH /api/settings/notifications', () => {
       .send({ emailNotificationsEnabled: false });
 
     expect(res.status).toBe(200);
-    expect(mockSettingsService.updateNotificationPreferences).toHaveBeenCalledWith(USER_ID, {
-      emailNotificationsEnabled: false,
-    });
+    expect(mockSettingsService.updateNotificationPreferences).toHaveBeenCalledWith(
+      USER_ID,
+      { emailNotificationsEnabled: false },
+      { ip: expect.anything() },
+    );
   });
 
   it('rejects a non-boolean value with a 422', async () => {

@@ -279,34 +279,37 @@ describe('getTopActions', () => {
 });
 
 describe('getTopUsers', () => {
-  it('joins user names and appends an "Other Users" remainder bucket', async () => {
+  it('joins user names/images and appends an "Other Users" remainder bucket', async () => {
     mockPrisma.auditLog.count.mockResolvedValue(30);
     mockPrisma.auditLog.groupBy.mockResolvedValue([
       { userId: 'u1', _count: 15 },
       { userId: 'u2', _count: 5 },
     ]);
     mockPrisma.user.findMany.mockResolvedValue([
-      { id: 'u1', name: 'Ousainou J.' },
-      { id: 'u2', name: 'Amie J.' },
+      { id: 'u1', name: 'Ousainou J.', image: 'https://example.com/u1.jpg' },
+      { id: 'u2', name: 'Amie J.', image: null },
     ]);
 
     const users = await getTopUsers(USER_ID, { limit: 2 });
 
     expect(users).toEqual([
-      { name: 'Ousainou J.', count: 15 },
-      { name: 'Amie J.', count: 5 },
-      { name: 'Other Users', count: 10 },
+      { name: 'Ousainou J.', image: 'https://example.com/u1.jpg', count: 15 },
+      { name: 'Amie J.', image: null, count: 5 },
+      { name: 'Other Users', image: null, count: 10 },
     ]);
+    expect(mockPrisma.user.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ select: { id: true, name: true, image: true } }),
+    );
   });
 
   it('omits the remainder bucket when the top group already covers the total', async () => {
     mockPrisma.auditLog.count.mockResolvedValue(15);
     mockPrisma.auditLog.groupBy.mockResolvedValue([{ userId: 'u1', _count: 15 }]);
-    mockPrisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Ousainou J.' }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: 'u1', name: 'Ousainou J.', image: null }]);
 
     const users = await getTopUsers(USER_ID, { limit: 5 });
 
-    expect(users).toEqual([{ name: 'Ousainou J.', count: 15 }]);
+    expect(users).toEqual([{ name: 'Ousainou J.', image: null, count: 15 }]);
   });
 });
 
