@@ -39,4 +39,25 @@ describe('authRouter', () => {
     expect(res.status).toBe(200);
     expect(res.body.path).toBe('/api/auth/get-session');
   });
+
+  it('fills x-forwarded-for from req.ip before delegating, when no proxy header is present', async () => {
+    mockHandler.mockImplementationOnce((req, res) => {
+      res.status(200).json({ xForwardedFor: req.headers['x-forwarded-for'] });
+    });
+
+    const res = await request(app).post('/api/auth/sign-in/email').send({});
+
+    // supertest's default local connection — Express resolves it to a loopback address.
+    expect(res.body.xForwardedFor).toMatch(/127\.0\.0\.1|::1|::ffff:127\.0\.0\.1/);
+  });
+
+  it('leaves a genuine proxy-supplied x-forwarded-for untouched', async () => {
+    mockHandler.mockImplementationOnce((req, res) => {
+      res.status(200).json({ xForwardedFor: req.headers['x-forwarded-for'] });
+    });
+
+    const res = await request(app).post('/api/auth/sign-in/email').set('x-forwarded-for', '203.0.113.5').send({});
+
+    expect(res.body.xForwardedFor).toBe('203.0.113.5');
+  });
 });
