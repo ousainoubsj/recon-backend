@@ -194,9 +194,15 @@ describe('listAuditLogs', () => {
 });
 
 describe('getAuditLogStats', () => {
-  it('returns total, unique users, and counts grouped by status', async () => {
-    mockPrisma.auditLog.count.mockResolvedValue(100);
-    mockPrisma.auditLog.findMany.mockResolvedValue([{ userId: 'u1' }, { userId: 'u2' }]);
+  it('returns total, unique users, counts grouped by status, and 30-day trends', async () => {
+    mockPrisma.auditLog.count
+      .mockResolvedValueOnce(100) // total
+      .mockResolvedValueOnce(60) // last30Count
+      .mockResolvedValueOnce(40); // prev30Count
+    mockPrisma.auditLog.findMany
+      .mockResolvedValueOnce([{ userId: 'u1' }, { userId: 'u2' }]) // uniqueUsers (all-time)
+      .mockResolvedValueOnce([{ userId: 'u1' }, { userId: 'u2' }, { userId: 'u3' }]) // last30Unique
+      .mockResolvedValueOnce([{ userId: 'u1' }]); // prev30Unique
     mockPrisma.auditLog.groupBy.mockResolvedValue([
       { status: 'success', _count: 80 },
       { status: 'failed', _count: 5 },
@@ -210,8 +216,14 @@ describe('getAuditLogStats', () => {
       total: 100,
       uniqueUsers: 2,
       byStatus: { success: 80, info: 5, warning: 10, failed: 5 },
+      totalTrendPercent: 50,
+      uniqueUsersTrend: 2,
     });
-    expect(mockPrisma.auditLog.count).toHaveBeenCalledWith({ where: { organizationId: ORG_ID } });
+    expect(mockPrisma.auditLog.count).toHaveBeenNthCalledWith(1, { where: { organizationId: ORG_ID } });
+    expect(mockPrisma.auditLog.count).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ where: expect.objectContaining({ organizationId: ORG_ID, ts: expect.any(Object) }) }),
+    );
     expect(mockPrisma.auditLog.groupBy).toHaveBeenCalledWith({
       by: ['status'],
       where: { organizationId: ORG_ID },
@@ -227,6 +239,19 @@ describe('getAuditLogStats', () => {
     const stats = await getAuditLogStats(USER_ID);
 
     expect(stats.byStatus).toEqual({ success: 1, info: 0, warning: 0, failed: 0 });
+  });
+
+  it('returns null totalTrendPercent when there is no prior-30-day activity to compare against', async () => {
+    mockPrisma.auditLog.count
+      .mockResolvedValueOnce(10) // total
+      .mockResolvedValueOnce(10) // last30Count
+      .mockResolvedValueOnce(0); // prev30Count
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+    mockPrisma.auditLog.groupBy.mockResolvedValue([]);
+
+    const stats = await getAuditLogStats(USER_ID);
+
+    expect(stats.totalTrendPercent).toBeNull();
   });
 });
 

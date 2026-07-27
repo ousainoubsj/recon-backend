@@ -22,7 +22,7 @@ export const getTeamStats = async (req, res) => {
 };
 
 export const updateMember = async (req, res) => {
-  const member = await teamService.updateMember(req.session.user.id, req.params.id, req.body);
+  const member = await teamService.updateMember(req.session.user.id, req.params.id, req.body, { ip: req.ip });
   res.json(member);
 };
 
@@ -32,6 +32,6 @@ export const getDepartments = async (req, res) => {
 };
 
 export const addDepartment = async (req, res) => {
-  const departments = await teamService.addDepartment(req.session.user.id, req.body.name);
+  const departments = await teamService.addDepartment(req.session.user.id, req.body.name, { ip: req.ip });
   res.status(201).json(departments);
 };

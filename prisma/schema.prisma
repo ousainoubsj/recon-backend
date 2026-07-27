@@ -166,17 +166,36 @@ model Report {
   sourceReport    Report?  @relation("ReportRerun", fields: [sourceReportId], references: [id], onDelete: SetNull)
   rerunsOf        Report[] @relation("ReportRerun")
 
+  // Human-facing formatted ID (REC-YYYY-NNNNNN), assigned once — the first
+  // time a report reaches 'completed' status — via ReportSequence's atomic
+  // per-year counter. Drafts and never-completed failed runs stay null; a
+  // retry of a previously-failed run keeps whatever sequence it already has
+  // rather than getting a new one (see reportService.js's persistCompletedRun).
+  sequenceYear   Int? @map("sequence_year")
+  sequenceNumber Int? @map("sequence_number")
+
   rows      ReportRow[]
   exports   ReportExport[]
   schedules ScheduledReport[]
   favorites ReportFavorite[]
 
+  @@unique([sequenceYear, sequenceNumber])
   @@index([userId], map: "idx_reports_user_id")
   @@index([organizationId], map: "idx_reports_organization_id")
   @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
   @@index([userId, status], map: "idx_reports_user_status")
   @@index([organizationId, runDate], map: "idx_reports_org_rundate")
   @@map("reports")
+}
+
+// Backs Report.sequenceNumber's atomic per-year counter — a dedicated row
+// per calendar year, incremented via upsert inside the same transaction
+// that completes a report, so concurrent completions never collide.
+model ReportSequence {
+  year      Int @id
+  lastValue Int @default(0) @map("last_value")
+
+  @@map("report_sequence")
 }
 
 model ReportRow {

@@ -1,8 +1,9 @@
 import { jest } from '@jest/globals';
 
 const mockTx = {
-  report: { create: jest.fn(), update: jest.fn() },
+  report: { create: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
   reportRow: { createMany: jest.fn() },
+  reportSequence: { upsert: jest.fn() },
 };
 
 const mockPrisma = {
@@ -130,10 +131,18 @@ const dto = {
   config: { amountTolerance: 0.01, dateToleranceDays: 1 },
 };
 
+const CURRENT_YEAR = new Date().getUTCFullYear();
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockPrisma.$transaction.mockImplementation(async (fn) => fn(mockTx));
   mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+  mockTx.reportSequence.upsert.mockResolvedValue({ year: CURRENT_YEAR, lastValue: 1 });
+  // Default: already has a sequence number, so persistCompletedRun's
+  // (completeDraft/runReconciliation) needsSequence check is false and the
+  // existing literal-match assertions on tx.report.update's payload below
+  // don't need to account for sequenceYear/sequenceNumber being added.
+  mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
 });
 
 describe('saveReport', () => {
@@ -161,7 +170,14 @@ describe('saveReport', () => {
         amountTolerance: 0.01,
         dateToleranceDays: 1,
         config: dto.config,
+        sequenceYear: CURRENT_YEAR,
+        sequenceNumber: 1,
       },
+    });
+    expect(mockTx.reportSequence.upsert).toHaveBeenCalledWith({
+      where: { year: CURRENT_YEAR },
+      create: { year: CURRENT_YEAR, lastValue: 1 },
+      update: { lastValue: { increment: 1 } },
     });
 
     expect(mockTx.reportRow.createMany).toHaveBeenCalledWith({
@@ -674,6 +690,33 @@ describe('completeDraft', () => {
 
     await expect(completeDraft(USER_ID, 'missing', dto)).rejects.toBeInstanceOf(NotFoundError);
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
+  it('assigns a sequence number on first completion (no prior sequence on the draft)', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
+    mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: null });
+    mockTx.reportSequence.upsert.mockResolvedValue({ year: CURRENT_YEAR, lastValue: 7 });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(mockTx.report.findUnique).toHaveBeenCalledWith({ where: { id: 'draft-1' }, select: { sequenceNumber: true } });
+    expect(mockTx.report.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ sequenceYear: CURRENT_YEAR, sequenceNumber: 7 }) }),
+    );
+  });
+
+  it('does not reassign a sequence number on a retry that already has one', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
+    mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(mockTx.reportSequence.upsert).not.toHaveBeenCalled();
+    const updateData = mockTx.report.update.mock.calls[0][0].data;
+    expect(updateData).not.toHaveProperty('sequenceYear');
+    expect(updateData).not.toHaveProperty('sequenceNumber');
   });
 });
 

@@ -68,11 +68,26 @@ const AUDIT_LOG_STATUSES = ['success', 'info', 'warning', 'failed'];
 // same numbers, different presentation — so there's only one query to make.
 export async function getAuditLogStats(userId) {
   const { organizationId } = await getUserMembership(userId);
+  const now = new Date();
+  const last30Start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+  const prev30Start = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);
 
-  const [total, uniqueUsers, byStatusRows] = await Promise.all([
+  const [total, uniqueUsers, byStatusRows, last30Count, prev30Count, last30UniqueRows, prev30UniqueRows] = await Promise.all([
     prisma.auditLog.count({ where: { organizationId } }),
     prisma.auditLog.findMany({ where: { organizationId }, distinct: ['userId'], select: { userId: true } }),
     prisma.auditLog.groupBy({ by: ['status'], where: { organizationId }, _count: true }),
+    prisma.auditLog.count({ where: { organizationId, ts: { gte: last30Start } } }),
+    prisma.auditLog.count({ where: { organizationId, ts: { gte: prev30Start, lt: last30Start } } }),
+    prisma.auditLog.findMany({
+      where: { organizationId, ts: { gte: last30Start } },
+      distinct: ['userId'],
+      select: { userId: true },
+    }),
+    prisma.auditLog.findMany({
+      where: { organizationId, ts: { gte: prev30Start, lt: last30Start } },
+      distinct: ['userId'],
+      select: { userId: true },
+    }),
   ]);
 
   const byStatus = { success: 0, info: 0, warning: 0, failed: 0 };
@@ -80,7 +95,12 @@ export async function getAuditLogStats(userId) {
     byStatus[row.status] = row._count;
   }
 
-  return { total, uniqueUsers: uniqueUsers.length, byStatus };
+  // null (not 0) when there's nothing to compare against yet — a fresh org
+  // with no prior-30-day activity has no meaningful "% vs last 30 days".
+  const totalTrendPercent = prev30Count > 0 ? ((last30Count - prev30Count) / prev30Count) * 100 : null;
+  const uniqueUsersTrend = last30UniqueRows.length - prev30UniqueRows.length;
+
+  return { total, uniqueUsers: uniqueUsers.length, byStatus, totalTrendPercent, uniqueUsersTrend };
 }
 
 export async function getTopActions(userId, { limit = 5 } = {}) {
@@ -116,16 +136,19 @@ export async function getTopUsers(userId, { limit = 5 } = {}) {
 
   const users = await prisma.user.findMany({
     where: { id: { in: grouped.map((row) => row.userId) } },
-    select: { id: true, name: true },
+    select: { id: true, name: true, image: true },
   });
-  const nameById = new Map(users.map((u) => [u.id, u.name]));
+  const userById = new Map(users.map((u) => [u.id, u]));
 
-  const top = grouped.map((row) => ({ name: nameById.get(row.userId) ?? row.userId, count: row._count }));
+  const top = grouped.map((row) => {
+    const user = userById.get(row.userId);
+    return { name: user?.name ?? row.userId, image: user?.image ?? null, count: row._count };
+  });
   const topCount = top.reduce((sum, row) => sum + row.count, 0);
   const remainder = total - topCount;
 
   if (remainder > 0) {
-    top.push({ name: 'Other Users', count: remainder });
+    top.push({ name: 'Other Users', image: null, count: remainder });
   }
 
   return top;

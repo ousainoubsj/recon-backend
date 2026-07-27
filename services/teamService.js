@@ -71,7 +71,7 @@ export async function getTeamStats(userId) {
 // Deactivating someone is a sensitive action (same reasoning as §5's
 // role_update/remove) — audited as a warning, not a plain success, and the
 // affected member is notified, mirroring the existing role_changed pattern.
-export async function updateMember(userId, memberId, { department, status }) {
+export async function updateMember(userId, memberId, { department, status }, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
 
   const { count } = await prisma.member.updateMany({
@@ -94,6 +94,7 @@ export async function updateMember(userId, memberId, { department, status }) {
     entityType: 'member',
     entityId: memberId,
     status: status === 'inactive' ? 'warning' : 'success',
+    ip,
     metadata: { department, status },
   });
 
@@ -115,7 +116,7 @@ export async function getDepartments(userId) {
   return org.departments;
 }
 
-export async function addDepartment(userId, name) {
+export async function addDepartment(userId, name, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const trimmed = name.trim();
 
@@ -131,6 +132,7 @@ export async function addDepartment(userId, name) {
     action: 'team.department.create',
     entityType: 'organization',
     entityId: organizationId,
+    ip,
     metadata: { department: trimmed },
   });
 

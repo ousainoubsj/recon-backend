@@ -82,12 +82,33 @@ function reportRowsForInsert(reportId, rows) {
   }));
 }
 
+// Atomic per-year counter backing Report.sequenceNumber — the upsert's
+// `update` branch is a single UPDATE statement guarded by the year's row
+// lock, so concurrent completions in the same transaction-per-request model
+// never hand out the same number twice.
+async function nextSequenceNumber(tx, year) {
+  const seq = await tx.reportSequence.upsert({
+    where: { year },
+    create: { year, lastValue: 1 },
+    update: { lastValue: { increment: 1 } },
+  });
+  return seq.lastValue;
+}
+
 // Shared by completeDraft (legacy client-computed rows) and runReconciliation
 // (server-computed via the matching engine) — both promote a draft into a
 // completed report the same way, just from different sources of `rows`.
 // `dto.name` must already be resolved by the caller (e.g. `body.name ??
 // draft.name`) — this function doesn't know about the draft's prior name.
 async function persistCompletedRun(tx, reportId, dto) {
+  // A retry of a previously-failed run reuses this same reportId — only
+  // assign a sequence number the first time it actually completes, never
+  // reassign one on a later retry.
+  const existing = await tx.report.findUnique({ where: { id: reportId }, select: { sequenceNumber: true } });
+  const needsSequence = existing?.sequenceNumber == null;
+  const year = new Date().getUTCFullYear();
+  const sequenceNumber = needsSequence ? await nextSequenceNumber(tx, year) : undefined;
+
   const report = await tx.report.update({
     where: { id: reportId },
     data: {
@@ -114,6 +135,7 @@ async function persistCompletedRun(tx, reportId, dto) {
       // files have been re-parsed for the real result.
       fileASampleRows: null,
       fileBSampleRows: null,
+      ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
     },
   });
 
@@ -158,6 +180,12 @@ export async function saveReport(userId, dto, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
 
   const report = await prisma.$transaction(async (tx) => {
+    // This path always creates an already-'completed' report (the schema
+    // default), so it always needs a fresh sequence number — unlike
+    // persistCompletedRun, there's no draft/retry history to check first.
+    const year = new Date().getUTCFullYear();
+    const sequenceNumber = await nextSequenceNumber(tx, year);
+
     // 1. Insert summary row
     const report = await tx.report.create({
       data: {
@@ -175,6 +203,8 @@ export async function saveReport(userId, dto, { ip } = {}) {
         amountTolerance: dto.config.amountTolerance,
         dateToleranceDays: dto.config.dateToleranceDays ?? null,
         config: dto.config,
+        sequenceYear: year,
+        sequenceNumber,
       },
     });
 
