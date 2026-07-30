@@ -99,6 +99,7 @@ const {
   getMatchRateDistribution,
   getTopFilePairs,
   updateReportTag,
+  updateReportName,
   addFavorite,
   removeFavorite,
   bulkDeleteReports,
@@ -618,23 +619,55 @@ describe('updateDraft', () => {
     await expect(updateDraft(USER_ID, 'missing', { name: 'x' })).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it('logs report.column_mapping.updated when columnMapping is part of the patch', async () => {
+  it('logs report.column_mapping.updated with a from/to diff when columnMapping actually changes', async () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1' });
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'draft-1',
+      columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: {} },
+      config: null,
+    });
 
-    await updateDraft(USER_ID, 'draft-1', { columnMapping: { fileA: {}, fileB: {} } }, { ip: '10.0.0.1' });
+    await updateDraft(
+      USER_ID,
+      'draft-1',
+      { columnMapping: { fileA: { referenceNumber: 'Reference No' }, fileB: { amount: 'Amount' } } },
+      { ip: '10.0.0.1' },
+    );
 
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.column_mapping.updated',
       entityType: 'report',
       entityId: 'draft-1',
       ip: '10.0.0.1',
+      metadata: {
+        changes: {
+          fileAReferenceNumber: { from: 'Ref', to: 'Reference No' },
+          fileBAmount: { from: null, to: 'Amount' },
+        },
+      },
     });
   });
 
-  it('logs report.matching_rules.updated when config is part of the patch', async () => {
+  it('does not log report.column_mapping.updated when the patch resaves the same mapping', async () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1' });
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'draft-1',
+      columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: {} },
+      config: null,
+    });
+
+    await updateDraft(USER_ID, 'draft-1', { columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: {} } });
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+
+  it('logs report.matching_rules.updated with a from/to diff when config actually changes', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'draft-1',
+      columnMapping: null,
+      config: { amountTolerance: 0.5 },
+    });
 
     await updateDraft(USER_ID, 'draft-1', { config: { amountTolerance: 0.01 } });
 
@@ -643,7 +676,21 @@ describe('updateDraft', () => {
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
+      metadata: { changes: { amountTolerance: { from: 0.5, to: 0.01 } } },
     });
+  });
+
+  it('does not log report.matching_rules.updated when the patch resaves the same config', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'draft-1',
+      columnMapping: null,
+      config: { amountTolerance: 0.5 },
+    });
+
+    await updateDraft(USER_ID, 'draft-1', { config: { amountTolerance: 0.5 } });
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 
   it('logs neither event for a patch that touches neither field (e.g. a progress-only autosave)', async () => {
@@ -1245,7 +1292,6 @@ describe('getBreakBreakdown', () => {
 
 describe('getFilePairTrend', () => {
   beforeEach(() => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
     mockPrisma.report.findFirst.mockResolvedValue({
       id: 'r1',
       organizationId: ORG_ID,
@@ -1255,27 +1301,49 @@ describe('getFilePairTrend', () => {
     });
   });
 
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('returns 7-point current and prior series, carrying forward the most recent run', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      { runDate: new Date('2026-07-01'), totalRows: 100, matchedCount: 90, totalBreakValue: 50 },
-      { runDate: new Date('2026-07-10'), totalRows: 100, matchedCount: 95, totalBreakValue: 20 },
-    ]);
+  it('returns the 7 most recent runs (oldest to newest) as current, and the 7 before those as prior', async () => {
+    // Most-recent-first from the DB (orderBy runDate desc) — 10 runs total.
+    const runs = Array.from({ length: 10 }, (_, i) => ({
+      totalRows: 100,
+      matchedCount: 90 + i,
+      totalBreakValue: 10 * i,
+    }));
+    mockPrisma.report.findMany.mockResolvedValue(runs);
 
     const trend = await getFilePairTrend(USER_ID, 'r1');
 
     expect(trend.matchRateTrend.current).toHaveLength(7);
-    expect(trend.matchRateTrend.prior).toHaveLength(7);
-    expect(trend.breakValueTrend.current).toHaveLength(7);
-    // 2026-07-15 falls after the 2026-07-10 run, so the most recent point
-    // carries that run's 95% match rate forward.
-    expect(trend.matchRateTrend.current[6]).toBe(95);
+    expect(trend.matchRateTrend.prior).toHaveLength(3);
+    // runs[0] (matchedCount 90) is the most recent — reversed, it lands last
+    // in `current`.
+    expect(trend.matchRateTrend.current[6]).toBe(90);
+    expect(trend.matchRateTrend.current[0]).toBe(96);
+    expect(trend.matchRateTrend.prior[2]).toBe(97);
   });
 
-  it('queries completed reports with a case-insensitive file-pair match', async () => {
+  it('returns shorter (or empty) arrays rather than padding when fewer than 7/14 runs exist', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { totalRows: 100, matchedCount: 80, totalBreakValue: 5 },
+      { totalRows: 100, matchedCount: 90, totalBreakValue: 2 },
+    ]);
+
+    const trend = await getFilePairTrend(USER_ID, 'r1');
+
+    expect(trend.matchRateTrend.current).toHaveLength(2);
+    expect(trend.matchRateTrend.prior).toHaveLength(0);
+  });
+
+  it('returns empty series when there are no completed runs for this file pair yet', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    const trend = await getFilePairTrend(USER_ID, 'r1');
+
+    expect(trend.matchRateTrend.current).toEqual([]);
+    expect(trend.matchRateTrend.prior).toEqual([]);
+    expect(trend.breakValueTrend.current).toEqual([]);
+  });
+
+  it('queries completed reports with a case-insensitive file-pair match, most recent 14', async () => {
     mockPrisma.report.findMany.mockResolvedValue([]);
 
     await getFilePairTrend(USER_ID, 'r1');
@@ -1286,6 +1354,8 @@ describe('getFilePairTrend', () => {
           fileAName: { equals: 'a.csv', mode: 'insensitive' },
           fileBName: { equals: 'b.csv', mode: 'insensitive' },
         }),
+        orderBy: { runDate: 'desc' },
+        take: 14,
       }),
     );
   });
@@ -1436,6 +1506,27 @@ describe('updateReportTag', () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(updateReportTag(USER_ID, 'missing', 'bank')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('updateReportName', () => {
+  it('renames a completed report in the org', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', name: 'July Bank Reconciliation' });
+
+    const result = await updateReportName(USER_ID, 'r1', 'July Bank Reconciliation');
+
+    expect(result).toEqual({ id: 'r1', name: 'July Bank Reconciliation' });
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: { id: 'r1', organizationId: ORG_ID, status: 'completed' },
+      data: { name: 'July Bank Reconciliation' },
+    });
+  });
+
+  it('throws NotFoundError when the report is missing, still a draft, or not in the org', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(updateReportName(USER_ID, 'missing', 'New Name')).rejects.toBeInstanceOf(NotFoundError);
   });
 });
 

@@ -164,6 +164,11 @@ export const updateReportTag = async (req, res) => {
   res.json(report);
 };
 
+export const updateReportName = async (req, res) => {
+  const report = await reportService.updateReportName(req.session.user.id, req.params.id, req.body.name);
+  res.json(report);
+};
+
 export const addFavorite = async (req, res) => {
   await reportService.addFavorite(req.session.user.id, req.params.id);
   res.status(204).end();

@@ -21,6 +21,37 @@ const SAMPLE_ROW_CAP = 2000;
 
 const toNum = (decimal) => (decimal == null ? 0 : Number(decimal));
 
+const CANONICAL_MAPPING_FIELDS = ['referenceNumber', 'amount', 'transactionDate', 'currency'];
+
+// Same "only log fields that actually changed value" idea as
+// settingsService.js's diffFields — the frontend always saves the full
+// column mapping/rule config, not just what the user touched, so a naive
+// log would falsely claim every field changed on every save.
+function diffColumnMapping(before, after) {
+  const changes = {};
+  for (const side of ['fileA', 'fileB']) {
+    const beforeSide = before?.[side] ?? {};
+    const afterSide = after?.[side] ?? {};
+    for (const field of CANONICAL_MAPPING_FIELDS) {
+      const oldValue = beforeSide[field] ?? null;
+      const newValue = afterSide[field] ?? null;
+      if (oldValue !== newValue) {
+        changes[`${side}${field[0].toUpperCase()}${field.slice(1)}`] = { from: oldValue, to: newValue };
+      }
+    }
+  }
+  return changes;
+}
+
+function diffConfigFields(before, after) {
+  const changes = {};
+  for (const [field, newValue] of Object.entries(after ?? {})) {
+    const oldValue = before?.[field] ?? null;
+    if (oldValue !== newValue) changes[field] = { from: oldValue, to: newValue };
+  }
+  return changes;
+}
+
 function deltaPercent(current, previous) {
   if (previous === 0) return null; // no baseline to compare against
   return ((current - previous) / previous) * 100;
@@ -701,44 +732,43 @@ export async function getBreakBreakdown(userId, reportId) {
     .sort((a, b) => b.amount - a.amount);
 }
 
-// 7-day match-rate + break-value trend for this report's file-pair lineage
-// (case-insensitive name match, same convention as getTopFilePairs),
-// current week vs the week before — carry-forward daily values since runs
-// are sparse, not daily, mirroring dayRange's current-vs-previous pattern.
+// Match-rate + break-value trend across this report's file-pair lineage
+// (case-insensitive name match, same convention as getTopFilePairs): the 7
+// most recent actual runs vs the 7 before those. Deliberately run-indexed,
+// not calendar-day-indexed — reconciliation runs for a given file pair are
+// typically weekly/monthly, so a daily calendar view is mostly flat,
+// carried-forward filler; comparing actual runs against each other is the
+// only version of this chart with real signal in it regardless of how
+// sparse or bursty the usage pattern is. Arrays can be shorter than 7 (or
+// empty for "prior") when fewer runs exist yet — callers must not assume a
+// fixed length.
 export async function getFilePairTrend(userId, reportId) {
   const report = await assertReportAccess(userId, reportId);
   const { organizationId } = await getUserMembership(userId);
 
-  const candidates = await prisma.report.findMany({
+  const runs = await prisma.report.findMany({
     where: {
       organizationId,
       status: 'completed',
       fileAName: { equals: report.fileAName ?? '', mode: 'insensitive' },
       fileBName: { equals: report.fileBName ?? '', mode: 'insensitive' },
     },
-    select: { runDate: true, totalRows: true, matchedCount: true, totalBreakValue: true },
-    orderBy: { runDate: 'asc' },
+    select: { totalRows: true, matchedCount: true, totalBreakValue: true },
+    orderBy: { runDate: 'desc' },
+    take: 14,
   });
 
-  function seriesFor(daysAgoOffset) {
-    const points = [];
-    for (let i = 6; i >= 0; i--) {
-      const day = new Date(Date.now() - (daysAgoOffset + i) * DAY_MS);
-      const candidate = [...candidates].reverse().find((c) => c.runDate <= day);
-      points.push({
-        matchRate: candidate && candidate.totalRows > 0 ? (candidate.matchedCount / candidate.totalRows) * 100 : 0,
-        totalBreakValue: candidate ? toNum(candidate.totalBreakValue) : 0,
-      });
-    }
-    return points;
-  }
+  // runs[0] is the most recent — reverse each slice so points render oldest
+  // to newest, left to right, matching how the chart reads.
+  const currentRuns = runs.slice(0, 7).reverse();
+  const priorRuns = runs.slice(7, 14).reverse();
 
-  const current = seriesFor(0);
-  const prior = seriesFor(7);
+  const matchRateOf = (r) => (r.totalRows > 0 ? (r.matchedCount / r.totalRows) * 100 : 0);
+  const breakValueOf = (r) => toNum(r.totalBreakValue);
 
   return {
-    matchRateTrend: { current: current.map((p) => p.matchRate), prior: prior.map((p) => p.matchRate) },
-    breakValueTrend: { current: current.map((p) => p.totalBreakValue), prior: prior.map((p) => p.totalBreakValue) },
+    matchRateTrend: { current: currentRuns.map(matchRateOf), prior: priorRuns.map(matchRateOf) },
+    breakValueTrend: { current: currentRuns.map(breakValueOf), prior: priorRuns.map(breakValueOf) },
   };
 }
 
@@ -768,6 +798,11 @@ export async function saveDraft(userId, dto) {
 // `report.run.*` events below. Not logged on every PATCH, only when that
 // specific field is part of it (e.g. a progress-only autosave stays silent).
 export async function updateDraft(userId, reportId, dto, { ip } = {}) {
+  const needsBefore = dto.columnMapping !== undefined || dto.config !== undefined;
+  const before = needsBefore
+    ? await prisma.report.findFirst({ where: { id: reportId, userId }, select: { columnMapping: true, config: true } })
+    : null;
+
   const { count } = await prisma.report.updateMany({
     where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
     data: {
@@ -784,20 +819,28 @@ export async function updateDraft(userId, reportId, dto, { ip } = {}) {
   if (count === 0) throw new NotFoundError();
 
   if (dto.columnMapping !== undefined) {
-    await logAuditSafely(userId, {
-      action: 'report.column_mapping.updated',
-      entityType: 'report',
-      entityId: reportId,
-      ip,
-    });
+    const changes = diffColumnMapping(before?.columnMapping, dto.columnMapping);
+    if (Object.keys(changes).length > 0) {
+      await logAuditSafely(userId, {
+        action: 'report.column_mapping.updated',
+        entityType: 'report',
+        entityId: reportId,
+        ip,
+        metadata: { changes },
+      });
+    }
   }
   if (dto.config !== undefined) {
-    await logAuditSafely(userId, {
-      action: 'report.matching_rules.updated',
-      entityType: 'report',
-      entityId: reportId,
-      ip,
-    });
+    const changes = diffConfigFields(before?.config, dto.config);
+    if (Object.keys(changes).length > 0) {
+      await logAuditSafely(userId, {
+        action: 'report.matching_rules.updated',
+        entityType: 'report',
+        entityId: reportId,
+        ip,
+        metadata: { changes },
+      });
+    }
   }
 
   return prisma.report.findFirst({ where: { id: reportId, userId } });
@@ -951,14 +994,14 @@ export async function getMappingPreview(userId, reportId) {
   return {
     fileA: {
       filename: draft.fileAName,
-      previewRows: fileA.rows.slice(0, 5),
+      previewRows: fileA.rows.slice(0, 6),
       mappings: suggestedA,
       ...validationA,
       ...fileASummary,
     },
     fileB: {
       filename: draft.fileBName,
-      previewRows: fileB.rows.slice(0, 5),
+      previewRows: fileB.rows.slice(0, 6),
       mappings: suggestedB,
       ...validationB,
       ...fileBSummary,
@@ -1036,6 +1079,19 @@ export async function updateReportTag(userId, reportId, tag) {
   const { count } = await prisma.report.updateMany({
     where: { id: reportId, organizationId, status: 'completed' },
     data: { tag },
+  });
+  if (count === 0) throw new NotFoundError();
+  return prisma.report.findFirst({ where: { id: reportId, organizationId } });
+}
+
+// Same scoping rationale as updateReportTag above — renaming is only ever
+// exposed on a completed report (Results page), and a draft's name is
+// already covered by the plain draft-update PATCH.
+export async function updateReportName(userId, reportId, name) {
+  const { organizationId } = await getUserMembership(userId);
+  const { count } = await prisma.report.updateMany({
+    where: { id: reportId, organizationId, status: 'completed' },
+    data: { name },
   });
   if (count === 0) throw new NotFoundError();
   return prisma.report.findFirst({ where: { id: reportId, organizationId } });

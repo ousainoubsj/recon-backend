@@ -283,6 +283,16 @@ reportsRouter.patch(
   catchAsync(reportsController.updateReportTag),
 );
 
+const updateNameSchema = z.object({ name: z.string().min(1).max(255) });
+
+reportsRouter.patch(
+  '/:id/name',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validate(updateNameSchema),
+  catchAsync(reportsController.updateReportName),
+);
+
 reportsRouter.put(
   '/:id/favorite',
   authenticate,

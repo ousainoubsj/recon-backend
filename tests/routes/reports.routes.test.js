@@ -31,6 +31,7 @@ const mockReportService = {
   getMatchRateDistribution: jest.fn(),
   getTopFilePairs: jest.fn(),
   updateReportTag: jest.fn(),
+  updateReportName: jest.fn(),
   addFavorite: jest.fn(),
   removeFavorite: jest.fn(),
   bulkDeleteReports: jest.fn(),
@@ -293,6 +294,40 @@ describe('PATCH /api/reports/:id/tag', () => {
     mockReportService.updateReportTag.mockRejectedValue(new NotFoundError());
 
     const res = await request(app).patch('/api/reports/missing/tag').send({ tag: 'bank' });
+
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('PATCH /api/reports/:id/name', () => {
+  it('renames the report and returns it', async () => {
+    mockReportService.updateReportName.mockResolvedValue({ id: 'r1', name: 'July Bank Reconciliation' });
+
+    const res = await request(app).patch('/api/reports/r1/name').send({ name: 'July Bank Reconciliation' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ id: 'r1', name: 'July Bank Reconciliation' });
+    expect(mockReportService.updateReportName).toHaveBeenCalledWith(USER_ID, 'r1', 'July Bank Reconciliation');
+  });
+
+  it('rejects an empty name with a 422', async () => {
+    const res = await request(app).patch('/api/reports/r1/name').send({ name: '' });
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.updateReportName).not.toHaveBeenCalled();
+  });
+
+  it('rejects a missing name with a 422', async () => {
+    const res = await request(app).patch('/api/reports/r1/name').send({});
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.updateReportName).not.toHaveBeenCalled();
+  });
+
+  it('returns an RFC 7807 404 when the report does not exist or is not completed', async () => {
+    mockReportService.updateReportName.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).patch('/api/reports/missing/name').send({ name: 'New Name' });
 
     expect(res.status).toBe(404);
   });
