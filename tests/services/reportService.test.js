@@ -1294,10 +1294,16 @@ describe('getTransaction', () => {
 
 describe('markRowReviewed', () => {
   beforeEach(() => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'r1',
+      organizationId: ORG_ID,
+      status: 'completed',
+      sequenceYear: 2026,
+      sequenceNumber: 8,
+    });
   });
 
-  it('marks a row reviewed and audit-logs it', async () => {
+  it('marks a row reviewed and audit-logs it with the formatted report reference, not the raw id', async () => {
     mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', reviewed: true });
 
@@ -1308,7 +1314,26 @@ describe('markRowReviewed', () => {
       where: { id: 'row-1', reportId: 'r1' },
       data: expect.objectContaining({ reviewed: true, reviewedBy: USER_ID }),
     });
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ action: 'report.row.review' }));
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        action: 'report.row.review',
+        metadata: { reportReference: 'REC-2026-000008', reviewed: true },
+      }),
+    );
+  });
+
+  it('falls back to the raw report id when the report has no sequence number yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed', sequenceYear: null, sequenceNumber: null });
+    mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', reviewed: true });
+
+    await markRowReviewed(USER_ID, 'r1', 'row-1', true);
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ metadata: { reportReference: 'r1', reviewed: true } }),
+    );
   });
 
   it('clears reviewedBy/reviewedAt when un-reviewing', async () => {
@@ -1460,6 +1485,41 @@ describe('getFilePairTrend', () => {
         take: 14,
       }),
     );
+  });
+
+  it('scope: "overall" drops the file-pair filter, comparing all of the org\'s completed runs', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await getFilePairTrend(USER_ID, 'r1', { scope: 'overall' });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { organizationId: ORG_ID, status: 'completed' },
+        orderBy: { runDate: 'desc' },
+        take: 14,
+      }),
+    );
+  });
+
+  it('honors a custom limit, taking 2x for the current+prior windows and splitting at that boundary', async () => {
+    // 10 runs total, most-recent-first — with limit:5, current should be
+    // runs[0..4] (reversed) and prior should be runs[5..9] (reversed), not
+    // the default 7/14 split.
+    const runs = Array.from({ length: 10 }, (_, i) => ({
+      totalRows: 100,
+      matchedCount: 90 + i,
+      totalBreakValue: 10 * i,
+    }));
+    mockPrisma.report.findMany.mockResolvedValue(runs);
+
+    const trend = await getFilePairTrend(USER_ID, 'r1', { limit: 5 });
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ take: 10 }));
+    expect(trend.matchRateTrend.current).toHaveLength(5);
+    expect(trend.matchRateTrend.prior).toHaveLength(5);
+    expect(trend.matchRateTrend.current[4]).toBe(90);
+    expect(trend.matchRateTrend.current[0]).toBe(94);
+    expect(trend.matchRateTrend.prior[0]).toBe(99);
   });
 });
 
@@ -1677,11 +1737,11 @@ describe('addFavorite / removeFavorite', () => {
 });
 
 describe('bulkDeleteReports', () => {
-  it('scopes bulk-delete to own reports when the role is not admin', async () => {
+  it('scopes bulk-delete to own reports when the role is not admin, logging formatted references not raw ids', async () => {
     mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
     mockPrisma.report.findMany.mockResolvedValue([
-      { id: 'r1', userId: USER_ID },
-      { id: 'r2', userId: USER_ID },
+      { id: 'r1', userId: USER_ID, sequenceYear: 2026, sequenceNumber: 8 },
+      { id: 'r2', userId: USER_ID, sequenceYear: null, sequenceNumber: null },
     ]);
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 2 });
 
@@ -1696,7 +1756,7 @@ describe('bulkDeleteReports', () => {
       entityType: 'report',
       status: 'success',
       ip: undefined,
-      metadata: { ids: ['r1', 'r2'], count: 2 },
+      metadata: { references: ['REC-2026-000008', 'r2'], count: 2 },
     });
     expect(mockCreateNotification).not.toHaveBeenCalled();
   });

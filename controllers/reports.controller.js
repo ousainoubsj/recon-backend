@@ -151,7 +151,9 @@ export const getBreakBreakdown = async (req, res) => {
 };
 
 export const getFilePairTrend = async (req, res) => {
-  const trend = await reportService.getFilePairTrend(req.session.user.id, req.params.id);
+  const scope = req.query.scope === 'overall' ? 'overall' : 'filePair';
+  const limit = parsePositiveInt(req.query.limit, 7);
+  const trend = await reportService.getFilePairTrend(req.session.user.id, req.params.id, { scope, limit });
   res.json(trend);
 };
 
@@ -234,7 +236,11 @@ export const bulkExportReports = async (req, res) => {
     entityType: 'report',
     status: 'info',
     ip: req.ip,
-    metadata: { ids, format, templateId: templateId ?? null },
+    metadata: {
+      references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
+      format,
+      templateId: templateId ?? null,
+    },
   });
 
   for (const { report, buffer } of built) {

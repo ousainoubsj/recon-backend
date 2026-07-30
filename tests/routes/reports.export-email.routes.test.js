@@ -16,7 +16,12 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
   getUserMembership: mockGetUserMembership,
 }));
 
-const mockReportService = { getReport: jest.fn(), getReportsByIds: jest.fn() };
+const mockReportService = {
+  getReport: jest.fn(),
+  getReportsByIds: jest.fn(),
+  formatReportReference: (sequenceYear, sequenceNumber) =>
+    sequenceYear == null || sequenceNumber == null ? null : `REC-${sequenceYear}-${String(sequenceNumber).padStart(6, '0')}`,
+};
 jest.unstable_mockModule('../../services/reportService.js', () => mockReportService);
 
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);

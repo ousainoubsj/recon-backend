@@ -455,7 +455,7 @@ describe('GET /api/reports/:id/break-breakdown', () => {
 });
 
 describe('GET /api/reports/:id/trend', () => {
-  it('returns the file-pair match-rate and break-value trend', async () => {
+  it('returns the file-pair match-rate and break-value trend, defaulting scope to "filePair"', async () => {
     const trend = { matchRateTrend: { current: [], prior: [] }, breakValueTrend: { current: [], prior: [] } };
     mockReportService.getFilePairTrend.mockResolvedValue(trend);
 
@@ -463,6 +463,39 @@ describe('GET /api/reports/:id/trend', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(trend);
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair' });
+  });
+
+  it('passes scope=overall through when given', async () => {
+    mockReportService.getFilePairTrend.mockResolvedValue({});
+
+    await request(app).get('/api/reports/r1/trend?scope=overall');
+
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'overall' });
+  });
+
+  it('ignores an unrecognized scope value, falling back to "filePair"', async () => {
+    mockReportService.getFilePairTrend.mockResolvedValue({});
+
+    await request(app).get('/api/reports/r1/trend?scope=bogus');
+
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair' });
+  });
+
+  it('passes a valid ?limit= through, capped at 7', async () => {
+    mockReportService.getFilePairTrend.mockResolvedValue({});
+
+    await request(app).get('/api/reports/r1/trend?limit=5');
+
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair', limit: 5 });
+  });
+
+  it('passes limit: undefined when not given, leaving the default (7) to the service layer', async () => {
+    mockReportService.getFilePairTrend.mockResolvedValue({});
+
+    await request(app).get('/api/reports/r1/trend');
+
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair', limit: undefined });
   });
 });
 

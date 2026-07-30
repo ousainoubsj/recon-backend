@@ -21,6 +21,16 @@ const SAMPLE_ROW_CAP = 2000;
 
 const toNum = (decimal) => (decimal == null ? 0 : Number(decimal));
 
+// Mirrors the frontend's formatReportReference (recon-frontend/lib/format.ts)
+// exactly — audit-log metadata should show the same human-readable
+// REC-YYYY-NNNNNN reference the UI does, not the raw UUID. Exported since
+// controllers/reports.controller.js needs the identical formatting for its
+// own audit-log calls (bulk export).
+export function formatReportReference(sequenceYear, sequenceNumber) {
+  if (sequenceYear == null || sequenceNumber == null) return null;
+  return `REC-${sequenceYear}-${String(sequenceNumber).padStart(6, '0')}`;
+}
+
 const CANONICAL_MAPPING_FIELDS = ['referenceNumber', 'amount', 'transactionDate', 'currency'];
 
 // Same "only log fields that actually changed value" idea as
@@ -705,7 +715,7 @@ export async function getTransaction(userId, reportId, rowId) {
 }
 
 export async function markRowReviewed(userId, reportId, rowId, reviewed = true, { ip } = {}) {
-  await assertReportAccess(userId, reportId);
+  const report = await assertReportAccess(userId, reportId);
   const { count } = await prisma.reportRow.updateMany({
     where: { id: rowId, reportId },
     data: reviewed
@@ -720,7 +730,7 @@ export async function markRowReviewed(userId, reportId, rowId, reviewed = true, 
     entityId: rowId,
     status: 'info',
     ip,
-    metadata: { reportId, reviewed },
+    metadata: { reportReference: formatReportReference(report.sequenceYear, report.sequenceNumber) ?? reportId, reviewed },
   });
 
   return prisma.reportRow.findFirst({ where: { id: rowId } });
@@ -777,17 +787,25 @@ export async function getBreakBreakdown(userId, reportId) {
     .sort((a, b) => b.amount - a.amount);
 }
 
-// Match-rate + break-value trend across this report's file-pair lineage
-// (case-insensitive name match, same convention as getTopFilePairs): the 7
-// most recent actual runs vs the 7 before those. Deliberately run-indexed,
-// not calendar-day-indexed — reconciliation runs for a given file pair are
-// typically weekly/monthly, so a daily calendar view is mostly flat,
-// carried-forward filler; comparing actual runs against each other is the
-// only version of this chart with real signal in it regardless of how
-// sparse or bursty the usage pattern is. Arrays can be shorter than 7 (or
-// empty for "prior") when fewer runs exist yet — callers must not assume a
-// fixed length.
-export async function getFilePairTrend(userId, reportId) {
+// Match-rate + break-value trend, the 7 most recent actual runs vs the 7
+// before those. Deliberately run-indexed, not calendar-day-indexed —
+// reconciliation runs are typically weekly/monthly, so a daily calendar view
+// is mostly flat, carried-forward filler; comparing actual runs against each
+// other is the only version of this chart with real signal in it regardless
+// of how sparse or bursty the usage pattern is. Arrays can be shorter than 7
+// (or empty for "prior") when fewer runs exist yet — callers must not assume
+// a fixed length.
+//
+// scope: 'filePair' (default) compares this report's file-pair lineage only
+// (case-insensitive name match, same convention as getTopFilePairs) — the
+// meaningful comparison for a recurring reconciliation (e.g. the same
+// monthly bank statement vs. ledger). 'overall' compares the org's last N
+// completed runs regardless of file pair — useful when there's no repeat
+// history for this exact pair yet.
+// limit: how many "current" runs to compare (paired with an equal-sized
+// "prior" window just before it) — defaults to 7, but callers with a smaller
+// or larger natural window (e.g. Explorer's Break Value Trend) can override it.
+export async function getFilePairTrend(userId, reportId, { scope = 'filePair', limit = 7 } = {}) {
   const report = await assertReportAccess(userId, reportId);
   const { organizationId } = await getUserMembership(userId);
 
@@ -795,18 +813,22 @@ export async function getFilePairTrend(userId, reportId) {
     where: {
       organizationId,
       status: 'completed',
-      fileAName: { equals: report.fileAName ?? '', mode: 'insensitive' },
-      fileBName: { equals: report.fileBName ?? '', mode: 'insensitive' },
+      ...(scope === 'overall'
+        ? {}
+        : {
+            fileAName: { equals: report.fileAName ?? '', mode: 'insensitive' },
+            fileBName: { equals: report.fileBName ?? '', mode: 'insensitive' },
+          }),
     },
     select: { totalRows: true, matchedCount: true, totalBreakValue: true },
     orderBy: { runDate: 'desc' },
-    take: 14,
+    take: limit * 2,
   });
 
   // runs[0] is the most recent — reverse each slice so points render oldest
   // to newest, left to right, matching how the chart reads.
-  const currentRuns = runs.slice(0, 7).reverse();
-  const priorRuns = runs.slice(7, 14).reverse();
+  const currentRuns = runs.slice(0, limit).reverse();
+  const priorRuns = runs.slice(limit, limit * 2).reverse();
 
   const matchRateOf = (r) => (r.totalRows > 0 ? (r.matchedCount / r.totalRows) * 100 : 0);
   const breakValueOf = (r) => toNum(r.totalBreakValue);
@@ -1192,7 +1214,7 @@ export async function bulkDeleteReports(userId, ids, { ip } = {}) {
 
   const existing = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId },
-    select: { id: true, userId: true },
+    select: { id: true, userId: true, sequenceYear: true, sequenceNumber: true },
   });
 
   const { count } = await prisma.report.deleteMany({
@@ -1213,7 +1235,10 @@ export async function bulkDeleteReports(userId, ids, { ip } = {}) {
     entityType: 'report',
     status: deletedCountByOwner.size > 0 ? 'warning' : 'success',
     ip,
-    metadata: { ids, count },
+    metadata: {
+      references: existing.map((r) => formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
+      count,
+    },
   });
 
   if (role === 'admin') {
