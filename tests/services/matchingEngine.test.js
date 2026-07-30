@@ -294,6 +294,11 @@ describe('deriveDescription', () => {
     expect(desc).toBe('Refund');
   });
 
+  it.each(['Notes', 'Comment', 'Remarks'])('recognizes %s as a description-like column', (header) => {
+    const desc = deriveDescription({ rawA: { Ref: 'R1', [header]: 'Wire transfer' }, rawB: null });
+    expect(desc).toBe('Wire transfer');
+  });
+
   it('returns an empty string when neither side has one', () => {
     expect(deriveDescription({ rawA: { Ref: 'R1' }, rawB: { Amount: '100' } })).toBe('');
   });

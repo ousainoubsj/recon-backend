@@ -552,6 +552,25 @@ export async function getTopFilePairs(userId, { limit = 4 } = {}) {
   return top;
 }
 
+// No duration column is persisted on Report itself, but the run mutation
+// already audit-logs a report.run.started/report.run.completed pair
+// (reportService.js's runReconciliation) with real timestamps — this reuses
+// those rather than inventing a number. Pairs the latest completed event
+// with the latest started event that precedes it, so a run that failed once
+// and was retried measures only the successful attempt's duration.
+async function getRunDurationMs(reportId) {
+  const events = await prisma.auditLog.findMany({
+    where: { entityType: 'report', entityId: reportId, action: { in: ['report.run.started', 'report.run.completed'] } },
+    orderBy: { ts: 'asc' },
+    select: { action: true, ts: true },
+  });
+  const lastCompleted = [...events].reverse().find((e) => e.action === 'report.run.completed');
+  if (!lastCompleted) return null;
+  const lastStarted = [...events].reverse().find((e) => e.action === 'report.run.started' && e.ts <= lastCompleted.ts);
+  if (!lastStarted) return null;
+  return lastCompleted.ts.getTime() - lastStarted.ts.getTime();
+}
+
 export async function getReport(userId, reportId) {
   const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
@@ -577,7 +596,9 @@ export async function getReport(userId, reportId) {
     }
   }
 
-  return { ...withDraftProgress(report), priorRun };
+  const runDurationMs = report.status === 'completed' ? await getRunDurationMs(reportId) : null;
+
+  return { ...withDraftProgress(report), priorRun, runDurationMs };
 }
 
 // Lighter-weight than getReport's own access check (no rows include) — used
@@ -706,7 +727,12 @@ const BREAK_REASON_CATEGORY_LABELS = {
 
 // The 5-bucket "Top Break Causes"/categoryBreakdown shape. Duplicates are
 // deliberately excluded — same rationale as summary.totalBreakValue: a
-// duplicate is a data-quality flag, not a value break.
+// duplicate is a data-quality flag, not a value break. All 5 canonical
+// categories are always returned (zero-filled if a reason has no rows this
+// run) once there's at least one real break to categorize, so e.g. "Others"
+// still shows up at 0/0% rather than silently disappearing — but a report
+// with zero breaks at all still returns [] so the empty-state UI still
+// applies.
 export async function getBreakBreakdown(userId, reportId) {
   await assertReportAccess(userId, reportId);
   const grouped = await prisma.reportRow.groupBy({
@@ -714,16 +740,26 @@ export async function getBreakBreakdown(userId, reportId) {
     where: { reportId, breakReason: { not: null, notIn: ['duplicate'] } },
     _sum: { amountDiff: true, amountA: true, amountB: true },
   });
+  if (grouped.length === 0) return [];
 
+  // date_mismatch/other (currency) rows can only get that breakReason when
+  // amountOk was already true (matchingEngine.js's evaluateMatch) — their
+  // amountDiff is a tiny within-tolerance leftover, not the actual break, so
+  // summing it would understate (often to ~$0) categories whose real issue
+  // isn't the amount at all. Use the transaction's face value instead, same
+  // idea as missing_counterparty/missing_internal using amountA/amountB
+  // rather than a diff.
   const amountForGroup = (g) => {
     if (g.breakReason === 'missing_counterparty') return Math.abs(toNum(g._sum.amountA));
     if (g.breakReason === 'missing_internal') return Math.abs(toNum(g._sum.amountB));
+    if (g.breakReason === 'date_mismatch' || g.breakReason === 'other') return Math.abs(toNum(g._sum.amountA));
     return Math.abs(toNum(g._sum.amountDiff));
   };
 
-  const buckets = grouped.map((g) => ({
-    category: BREAK_REASON_CATEGORY_LABELS[g.breakReason] ?? 'Others',
-    amount: amountForGroup(g),
+  const amountByReason = new Map(grouped.map((g) => [g.breakReason, amountForGroup(g)]));
+  const buckets = Object.entries(BREAK_REASON_CATEGORY_LABELS).map(([reason, category]) => ({
+    category,
+    amount: amountByReason.get(reason) ?? 0,
   }));
   const total = buckets.reduce((sum, b) => sum + b.amount, 0);
 
@@ -994,14 +1030,14 @@ export async function getMappingPreview(userId, reportId) {
   return {
     fileA: {
       filename: draft.fileAName,
-      previewRows: fileA.rows.slice(0, 6),
+      previewRows: fileA.rows.slice(0, 7),
       mappings: suggestedA,
       ...validationA,
       ...fileASummary,
     },
     fileB: {
       filename: draft.fileBName,
-      previewRows: fileB.rows.slice(0, 6),
+      previewRows: fileB.rows.slice(0, 7),
       mappings: suggestedB,
       ...validationB,
       ...fileBSummary,

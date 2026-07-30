@@ -34,6 +34,7 @@ jest.unstable_mockModule('../../services/reportExportService.js', () => ({
 }));
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: jest.fn().mockResolvedValue(undefined),
+  logResultsViewedOnce: jest.fn().mockResolvedValue(undefined),
 }));
 
 const { reportsRouter } = await import('../../routes/reports.js');

@@ -1,16 +1,22 @@
 import { jest } from '@jest/globals';
 
 const mockPrisma = {
-  auditLog: { create: jest.fn(), findMany: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
+  auditLog: { create: jest.fn(), findMany: jest.fn(), findFirst: jest.fn(), count: jest.fn(), groupBy: jest.fn() },
   user: { findMany: jest.fn() },
   member: { findFirst: jest.fn() },
 };
 
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
 
-const { createAuditLog, listAuditLogs, logAuditSafely, getAuditLogStats, getTopActions, getTopUsers } = await import(
-  '../../services/auditLogService.js'
-);
+const {
+  createAuditLog,
+  listAuditLogs,
+  logAuditSafely,
+  logResultsViewedOnce,
+  getAuditLogStats,
+  getTopActions,
+  getTopUsers,
+} = await import('../../services/auditLogService.js');
 
 const USER_ID = 'user-1';
 const ORG_ID = 'org-1';
@@ -328,6 +334,69 @@ describe('logAuditSafely', () => {
       logAuditSafely(USER_ID, { action: 'report.create', entityId: 'r1' }),
     ).resolves.toBeUndefined();
     expect(consoleError).toHaveBeenCalled();
+
+    consoleError.mockRestore();
+  });
+});
+
+describe('logResultsViewedOnce', () => {
+  it('writes a new report.results.viewed entry when there is no recent one for this user+report', async () => {
+    mockPrisma.auditLog.findFirst.mockResolvedValue(null);
+    mockPrisma.auditLog.create.mockResolvedValue({ id: 'log-1' });
+
+    await logResultsViewedOnce(USER_ID, 'r1', { status: 'info', ip: '10.0.0.1', metadata: { reportName: 'Bank Q2' } });
+
+    expect(mockPrisma.auditLog.findFirst).toHaveBeenCalledWith({
+      where: {
+        userId: USER_ID,
+        entityType: 'report',
+        entityId: 'r1',
+        action: 'report.results.viewed',
+        ts: { gte: expect.any(Date) },
+      },
+      select: { id: true },
+    });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        action: 'report.results.viewed',
+        entityType: 'report',
+        entityId: 'r1',
+        status: 'info',
+        ip: '10.0.0.1',
+        metadata: { reportName: 'Bank Q2' },
+      }),
+    });
+  });
+
+  it('skips writing when a recent entry already exists for this user+report', async () => {
+    mockPrisma.auditLog.findFirst.mockResolvedValue({ id: 'existing-log' });
+
+    await logResultsViewedOnce(USER_ID, 'r1', { status: 'info', ip: '10.0.0.1' });
+
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it("doesn't dedupe across different users or different reports", async () => {
+    mockPrisma.auditLog.findFirst.mockResolvedValue(null);
+    mockPrisma.auditLog.create.mockResolvedValue({ id: 'log-1' });
+
+    await logResultsViewedOnce('user-2', 'r2', { status: 'info', ip: null });
+
+    expect(mockPrisma.auditLog.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ userId: 'user-2', entityId: 'r2' }) }),
+    );
+    expect(mockPrisma.auditLog.create).toHaveBeenCalled();
+  });
+
+  it('swallows and logs the error instead of throwing when the dedup check fails', async () => {
+    mockPrisma.auditLog.findFirst.mockRejectedValue(new Error('db unavailable'));
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(logResultsViewedOnce(USER_ID, 'r1', { status: 'info', ip: null })).resolves.toBeUndefined();
+    expect(consoleError).toHaveBeenCalled();
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
 
     consoleError.mockRestore();
   });

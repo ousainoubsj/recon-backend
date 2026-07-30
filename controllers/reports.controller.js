@@ -1,7 +1,7 @@
 import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
-import { logAuditSafely } from '../services/auditLogService.js';
+import { logAuditSafely, logResultsViewedOnce } from '../services/auditLogService.js';
 import { resolveSections } from '../services/reportTemplateService.js';
 import { recordExport, listExports as listReportExports } from '../services/reportExportService.js';
 import * as scheduledReportService from '../services/scheduledReportService.js';
@@ -99,14 +99,15 @@ export const getReport = async (req, res) => {
   // Only completed reports count as "viewing reconciliation results" — a
   // draft being reopened for editing isn't that. Not logged from
   // reportService.getReport itself since export/email/bulk-export also call
-  // it internally and shouldn't each register as a "view".
+  // it internally and shouldn't each register as a "view". Deduped (see
+  // logResultsViewedOnce) since this same GET fires far more often than a
+  // deliberate view — the wizard, the sidebar's summary widget, and even
+  // AuditSidebar resolving a report name all call it too.
   if (report.status === 'completed') {
-    await logAuditSafely(req.session.user.id, {
-      action: 'report.results.viewed',
-      entityType: 'report',
-      entityId: report.id,
+    await logResultsViewedOnce(req.session.user.id, report.id, {
       status: 'info',
       ip: req.ip,
+      metadata: { reportName: report.name ?? 'Untitled Reconciliation' },
     });
   }
 };

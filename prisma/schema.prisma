@@ -268,6 +268,9 @@ model AuditLog {
   @@index([userId, ts(sort: Desc)], map: "idx_audit_user_ts")
   @@index([organizationId], map: "idx_audit_organization_id")
   @@index([organizationId, status], map: "idx_audit_organization_status")
+  // Backs getReport's run-duration lookup (report.run.started/completed
+  // pair for a given report), which filters on entityType+entityId directly.
+  @@index([entityType, entityId], map: "idx_audit_entity")
   @@map("audit_logs")
 }
 

@@ -31,6 +31,9 @@ const mockPrisma = {
   member: {
     findFirst: jest.fn(),
   },
+  auditLog: {
+    findMany: jest.fn().mockResolvedValue([]),
+  },
 };
 
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
@@ -360,11 +363,12 @@ describe('getReport', () => {
 
     const result = await getReport(USER_ID, 'r1');
 
-    expect(result).toEqual({ ...report, priorRun: null });
+    expect(result).toEqual({ ...report, priorRun: null, runDurationMs: null });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
       include: { rows: true },
     });
+    expect(mockPrisma.auditLog.findMany).not.toHaveBeenCalled();
   });
 
   it('resolves priorRun from the linked sourceReportId', async () => {
@@ -393,7 +397,49 @@ describe('getReport', () => {
     const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [], sourceReportId: null };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
-    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, progress: 0, priorRun: null });
+    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, progress: 0, priorRun: null, runDurationMs: null });
+  });
+
+  it('computes runDurationMs from the started/completed audit-log pair for a completed report', async () => {
+    const report = { id: 'r1', status: 'completed', rows: [], sourceReportId: null };
+    mockPrisma.report.findFirst.mockResolvedValue(report);
+    mockPrisma.auditLog.findMany.mockResolvedValue([
+      { action: 'report.run.started', ts: new Date('2026-07-30T10:00:00.000Z') },
+      { action: 'report.run.completed', ts: new Date('2026-07-30T10:00:04.500Z') },
+    ]);
+
+    const result = await getReport(USER_ID, 'r1');
+
+    expect(result.runDurationMs).toBe(4500);
+    expect(mockPrisma.auditLog.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { entityType: 'report', entityId: 'r1', action: { in: ['report.run.started', 'report.run.completed'] } },
+      }),
+    );
+  });
+
+  it('pairs the latest completed event with the latest started event before it, so a retried run only measures the successful attempt', async () => {
+    const report = { id: 'r1', status: 'completed', rows: [], sourceReportId: null };
+    mockPrisma.report.findFirst.mockResolvedValue(report);
+    mockPrisma.auditLog.findMany.mockResolvedValue([
+      { action: 'report.run.started', ts: new Date('2026-07-30T10:00:00.000Z') },
+      { action: 'report.run.started', ts: new Date('2026-07-30T10:05:00.000Z') },
+      { action: 'report.run.completed', ts: new Date('2026-07-30T10:05:02.000Z') },
+    ]);
+
+    const result = await getReport(USER_ID, 'r1');
+
+    expect(result.runDurationMs).toBe(2000);
+  });
+
+  it('returns runDurationMs: null when a completed report has no matching audit-log pair', async () => {
+    const report = { id: 'r1', status: 'completed', rows: [], sourceReportId: null };
+    mockPrisma.report.findFirst.mockResolvedValue(report);
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+
+    const result = await getReport(USER_ID, 'r1');
+
+    expect(result.runDurationMs).toBeNull();
   });
 });
 
@@ -1260,7 +1306,7 @@ describe('getBreakBreakdown', () => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
   });
 
-  it('sums the correct amount column per break reason and sorts descending by amount', async () => {
+  it('sums the correct amount column per break reason and sorts descending by amount, zero-filling untriggered categories', async () => {
     mockPrisma.reportRow.groupBy.mockResolvedValue([
       { breakReason: 'amount_mismatch', _sum: { amountDiff: 50, amountA: null, amountB: null } },
       { breakReason: 'missing_counterparty', _sum: { amountDiff: null, amountA: 200, amountB: null } },
@@ -1274,9 +1320,36 @@ describe('getBreakBreakdown', () => {
       'Missing in Counterparty File',
       'Amount Mismatch',
       'Missing in Internal Ledger',
+      'Date Mismatch',
+      'Others',
     ]);
+    expect(breakdown.find((b) => b.category === 'Others')).toEqual({ category: 'Others', amount: 0, percent: 0 });
     const totalPercent = breakdown.reduce((sum, b) => sum + b.percent, 0);
     expect(totalPercent).toBeCloseTo(100, 0);
+  });
+
+  it('uses the transaction face value (amountA), not the near-zero amountDiff, for date_mismatch and other', async () => {
+    mockPrisma.reportRow.groupBy.mockResolvedValue([
+      { breakReason: 'date_mismatch', _sum: { amountDiff: 0.5, amountA: 1000, amountB: 999.5 } },
+      { breakReason: 'other', _sum: { amountDiff: 0, amountA: 500, amountB: 500 } },
+    ]);
+
+    const breakdown = await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(breakdown.find((b) => b.category === 'Date Mismatch')).toEqual(
+      expect.objectContaining({ category: 'Date Mismatch', amount: 1000 }),
+    );
+    expect(breakdown.find((b) => b.category === 'Others')).toEqual(
+      expect.objectContaining({ category: 'Others', amount: 500 }),
+    );
+  });
+
+  it('returns an empty array (not 5 zero-filled buckets) when the report has no breaks at all', async () => {
+    mockPrisma.reportRow.groupBy.mockResolvedValue([]);
+
+    const breakdown = await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(breakdown).toEqual([]);
   });
 
   it('excludes duplicate from the groupBy query', async () => {

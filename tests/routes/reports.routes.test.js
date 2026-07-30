@@ -65,8 +65,10 @@ jest.unstable_mockModule('../../services/scheduledReportService.js', () => ({
 }));
 
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+const mockLogResultsViewedOnce = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
+  logResultsViewedOnce: mockLogResultsViewedOnce,
 }));
 
 const { reportsRouter } = await import('../../routes/reports.js');
@@ -816,18 +818,28 @@ describe('GET /api/reports/:id', () => {
     expect(res.body).toEqual({ id: 'r1', rows: [] });
   });
 
-  it('logs report.results.viewed for a completed report', async () => {
-    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'completed', rows: [] });
+  it('logs report.results.viewed (deduped) for a completed report, with the report name as metadata', async () => {
+    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'completed', name: 'Bank Reconciliation Q2', rows: [] });
 
     await request(app).get('/api/reports/r1');
 
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
-      action: 'report.results.viewed',
-      entityType: 'report',
-      entityId: 'r1',
+    expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(USER_ID, 'r1', {
       status: 'info',
       ip: expect.any(String),
+      metadata: { reportName: 'Bank Reconciliation Q2' },
     });
+  });
+
+  it('falls back to a placeholder name when the report has none', async () => {
+    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'completed', name: null, rows: [] });
+
+    await request(app).get('/api/reports/r1');
+
+    expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(
+      USER_ID,
+      'r1',
+      expect.objectContaining({ metadata: { reportName: 'Untitled Reconciliation' } }),
+    );
   });
 
   it('does not log report.results.viewed for a draft', async () => {
@@ -835,7 +847,7 @@ describe('GET /api/reports/:id', () => {
 
     await request(app).get('/api/reports/r1');
 
-    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+    expect(mockLogResultsViewedOnce).not.toHaveBeenCalled();
   });
 
   it('returns an RFC 7807 404 when not found or not owned', async () => {

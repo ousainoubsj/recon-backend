@@ -163,3 +163,32 @@ export async function logAuditSafely(userId, entry) {
     console.error('Failed to write audit log', entry.action, entry.entityId, err);
   }
 }
+
+// "Viewed reconciliation results" is logged from GET /reports/:id itself —
+// which fires far more often than a deliberate "I looked at this" moment
+// (window-focus refetches, the sidebar's Reconciliation Summary widget,
+// AuditSidebar resolving a report's name for an unrelated log entry, dev
+// hot-reload remounts...). Logging one on every call would flood the feed
+// with noise that isn't really "views." A recent entry for this exact
+// user+report within the window means it's the same visit — skip it; past
+// the window, treat it as a genuine new view.
+const RESULTS_VIEWED_DEDUP_MS = 30 * 60 * 1000;
+
+export async function logResultsViewedOnce(userId, reportId, entry) {
+  try {
+    const recent = await prisma.auditLog.findFirst({
+      where: {
+        userId,
+        entityType: 'report',
+        entityId: reportId,
+        action: 'report.results.viewed',
+        ts: { gte: new Date(Date.now() - RESULTS_VIEWED_DEDUP_MS) },
+      },
+      select: { id: true },
+    });
+    if (recent) return;
+    await createAuditLog(userId, { ...entry, action: 'report.results.viewed', entityType: 'report', entityId: reportId });
+  } catch (err) {
+    console.error('Failed to write audit log', 'report.results.viewed', reportId, err);
+  }
+}

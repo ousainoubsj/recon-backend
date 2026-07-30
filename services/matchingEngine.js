@@ -18,7 +18,7 @@ const BREAK_REASON_TYPE_LABELS = {
 // the 4 required canonical fields are mapped) — this is a best-effort
 // heuristic over whatever original columns survived into rawA/rawB, not a
 // user-configured mapping.
-const DESCRIPTION_KEY_PATTERN = /desc|narrat|memo|detail|particular/i;
+const DESCRIPTION_KEY_PATTERN = /desc|narrat|memo|detail|particular|note|comment|remark/i;
 
 export function deriveDescription(row) {
   for (const raw of [row.rawA, row.rawB]) {
@@ -339,7 +339,7 @@ export function buildRecommendedAction(row) {
     case 'other':
       return 'Currency mismatch detected — confirm the correct currency before treating this as a break.';
     default:
-      return 'No action required.';
+      return 'No action required. Just mark as reviewed.';
   }
 }
 
