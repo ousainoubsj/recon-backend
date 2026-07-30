@@ -392,7 +392,7 @@ describe('getReport', () => {
     const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [], sourceReportId: null };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
-    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, priorRun: null });
+    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, progress: 0, priorRun: null });
   });
 });
 
@@ -657,17 +657,63 @@ describe('updateDraft', () => {
 });
 
 describe('listDrafts', () => {
-  it("lists only the caller's own drafts, most recently updated first", async () => {
-    const drafts = [{ id: 'draft-1' }, { id: 'draft-2' }];
+  it("lists only the caller's own drafts, most recently updated first, with derived progress", async () => {
+    const drafts = [
+      { id: 'draft-1', status: 'draft', fileAKey: null, fileBKey: null, columnMapping: null, config: null },
+      { id: 'draft-2', status: 'draft', fileAKey: 'a', fileBKey: 'b', columnMapping: null, config: null },
+    ];
     mockPrisma.report.findMany.mockResolvedValue(drafts);
 
     const result = await listDrafts(USER_ID);
 
-    expect(result).toBe(drafts);
+    expect(result).toEqual([
+      { ...drafts[0], progress: 0 },
+      { ...drafts[1], progress: 33 },
+    ]);
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { userId: USER_ID, organizationId: ORG_ID, status: 'draft' },
       orderBy: { updatedAt: 'desc' },
     });
+  });
+});
+
+describe('withDraftProgress (via getReport/listDrafts)', () => {
+  const base = { id: 'r1', userId: USER_ID, status: 'draft', fileAKey: null, fileBKey: null, columnMapping: null, config: null, rows: [], sourceReportId: null };
+
+  it('is 0% with no files uploaded yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(base);
+    const result = await getReport(USER_ID, 'r1');
+    expect(result.progress).toBe(0);
+  });
+
+  it('is 33% once both files are uploaded but before mapping is saved', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...base, fileAKey: 'a', fileBKey: 'b' });
+    const result = await getReport(USER_ID, 'r1');
+    expect(result.progress).toBe(33);
+  });
+
+  it('is 66% once mapping is saved but before rules are saved', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...base, fileAKey: 'a', fileBKey: 'b', columnMapping: {} });
+    const result = await getReport(USER_ID, 'r1');
+    expect(result.progress).toBe(66);
+  });
+
+  it('is 90% once files, mapping, and rules are all saved', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...base, fileAKey: 'a', fileBKey: 'b', columnMapping: {}, config: {} });
+    const result = await getReport(USER_ID, 'r1');
+    expect(result.progress).toBe(90);
+  });
+
+  it('does not touch progress for a non-draft report', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...base, status: 'completed', progress: 100 });
+    const result = await getReport(USER_ID, 'r1');
+    expect(result.progress).toBe(100);
+  });
+
+  it('leaves progress at 0% for a template-created draft with config but no files yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...base, config: { amountTolerance: 0.5 } });
+    const result = await getReport(USER_ID, 'r1');
+    expect(result.progress).toBe(0);
   });
 });
 

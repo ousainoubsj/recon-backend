@@ -81,6 +81,22 @@ function computeValueBreakdown(rows) {
   };
 }
 
+// The frontend wizard never PATCHes a `progress` value at any step (files
+// uploaded, mapping saved, rules saved) — deriving it here from which
+// fields are actually populated means it can never drift out of sync with
+// reality, unlike trusting the client to report an arbitrary number.
+// Completed/failed reports keep whatever's already stored (100, by the
+// column's default) — this only overrides the value for still-in-progress
+// drafts.
+function withDraftProgress(report) {
+  if (report.status !== 'draft') return report;
+  const hasFiles = Boolean(report.fileAKey && report.fileBKey);
+  const hasMapping = Boolean(report.columnMapping);
+  const hasConfig = Boolean(report.config);
+  const progress = hasFiles && hasMapping && hasConfig ? 90 : hasFiles && hasMapping ? 66 : hasFiles ? 33 : 0;
+  return { ...report, progress };
+}
+
 function reportRowsForInsert(reportId, rows) {
   return rows.map((r) => ({
     reportId,
@@ -530,7 +546,7 @@ export async function getReport(userId, reportId) {
     }
   }
 
-  return { ...report, priorRun };
+  return { ...withDraftProgress(report), priorRun };
 }
 
 // Lighter-weight than getReport's own access check (no rows include) — used
@@ -789,10 +805,11 @@ export async function updateDraft(userId, reportId, dto, { ip } = {}) {
 
 export async function listDrafts(userId) {
   const { organizationId } = await getUserMembership(userId);
-  return prisma.report.findMany({
+  const drafts = await prisma.report.findMany({
     where: { userId, organizationId, status: 'draft' },
     orderBy: { updatedAt: 'desc' },
   });
+  return drafts.map(withDraftProgress);
 }
 
 // Promotes a draft into a completed report: same shape as a fresh saveReport,
