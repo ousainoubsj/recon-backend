@@ -277,7 +277,16 @@ export async function saveReport(userId, dto, { ip } = {}) {
     return report;
   });
 
-  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id, ip });
+  await logAuditSafely(userId, {
+    action: 'report.create',
+    entityType: 'report',
+    entityId: report.id,
+    ip,
+    metadata: {
+      filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
+      matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+    },
+  });
 
   return report.id;
 }
@@ -908,7 +917,16 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
     }),
   );
 
-  await logAuditSafely(userId, { action: 'report.create', entityType: 'report', entityId: report.id, ip });
+  await logAuditSafely(userId, {
+    action: 'report.create',
+    entityType: 'report',
+    entityId: report.id,
+    ip,
+    metadata: {
+      filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
+      matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+    },
+  });
 
   return report.id;
 }
@@ -941,6 +959,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     entityId: reportId,
     status: 'info',
     ip,
+    metadata: { filePair: `${draft.fileAName ?? 'File A'} vs ${draft.fileBName ?? 'File B'}` },
   });
 
   let summary, rows;
@@ -980,7 +999,16 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     }),
   );
 
-  await logAuditSafely(userId, { action: 'report.run.completed', entityType: 'report', entityId: report.id, ip });
+  await logAuditSafely(userId, {
+    action: 'report.run.completed',
+    entityType: 'report',
+    entityId: report.id,
+    ip,
+    metadata: {
+      matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+      totalBreakValue: toNum(report.totalBreakValue),
+    },
+  });
 
   return report.id;
 }
@@ -1079,7 +1107,10 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
   // Read first to know the original owner (needed for the notification
   // below) — the actual delete stays a single permission-scoped deleteMany,
   // so a report that no longer matches still correctly 404s either way.
-  const existing = await prisma.report.findFirst({ where: { id: reportId, organizationId }, select: { userId: true } });
+  const existing = await prisma.report.findFirst({
+    where: { id: reportId, organizationId },
+    select: { userId: true, name: true, fileAName: true, fileBName: true },
+  });
   if (!existing) throw new NotFoundError();
 
   const { count } = await prisma.report.deleteMany({
@@ -1094,6 +1125,10 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
     entityId: reportId,
     status: isAdminActingOnAnother ? 'warning' : 'success',
     ip,
+    metadata: {
+      reportName: existing.name ?? 'Untitled Reconciliation',
+      filePair: `${existing.fileAName ?? 'File A'} vs ${existing.fileBName ?? 'File B'}`,
+    },
   });
 
   if (isAdminActingOnAnother) {

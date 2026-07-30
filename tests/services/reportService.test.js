@@ -152,7 +152,13 @@ beforeEach(() => {
 
 describe('saveReport', () => {
   it('inserts the report summary (including totalBreakValue) then bulk-inserts rows in a single transaction, returning the report id', async () => {
-    mockTx.report.create.mockResolvedValue({ id: 'report-1' });
+    mockTx.report.create.mockResolvedValue({
+      id: 'report-1',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+      totalRows: 2,
+      matchedCount: 1,
+    });
 
     const id = await saveReport(USER_ID, dto);
 
@@ -211,6 +217,7 @@ describe('saveReport', () => {
       entityType: 'report',
       entityId: 'report-1',
       ip: undefined,
+      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%' },
     });
   });
 });
@@ -446,7 +453,12 @@ describe('getReport', () => {
 describe('deleteReport', () => {
   it('scopes deletion to the report creator when the role is not admin', async () => {
     mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
-    mockPrisma.report.findFirst.mockResolvedValue({ userId: USER_ID });
+    mockPrisma.report.findFirst.mockResolvedValue({
+      userId: USER_ID,
+      name: 'June Bank Reconciliation',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+    });
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
 
     await expect(deleteReport(USER_ID, 'r1', { ip: '10.0.0.1' })).resolves.toBeUndefined();
@@ -459,13 +471,14 @@ describe('deleteReport', () => {
       entityId: 'r1',
       status: 'success',
       ip: '10.0.0.1',
+      metadata: { reportName: 'June Bank Reconciliation', filePair: 'a.csv vs b.csv' },
     });
     expect(mockCreateNotification).not.toHaveBeenCalled();
   });
 
   it("lets an admin delete any report in the org, notifying the original owner when it isn't their own", async () => {
     mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin' });
-    mockPrisma.report.findFirst.mockResolvedValue({ userId: OTHER_USER_ID });
+    mockPrisma.report.findFirst.mockResolvedValue({ userId: OTHER_USER_ID, name: null, fileAName: null, fileBName: null });
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
 
     await expect(deleteReport(USER_ID, 'r1')).resolves.toBeUndefined();
@@ -813,7 +826,13 @@ describe('withDraftProgress (via getReport/listDrafts)', () => {
 describe('completeDraft', () => {
   it('promotes a draft to completed, inserts rows, and audit-logs report.create', async () => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
-    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+    mockTx.report.update.mockResolvedValue({
+      id: 'draft-1',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+      totalRows: 2,
+      matchedCount: 1,
+    });
 
     const id = await completeDraft(USER_ID, 'draft-1', dto);
 
@@ -838,6 +857,7 @@ describe('completeDraft', () => {
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
+      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%' },
     });
   });
 
@@ -915,7 +935,14 @@ describe('runReconciliation', () => {
       summary: { total: 0, matched: 0, mismatched: 0, unmatchedA: 0, unmatchedB: 0, duplicates: 0, totalBreakValue: 0 },
       rows: [],
     });
-    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+    mockTx.report.update.mockResolvedValue({
+      id: 'draft-1',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+      totalRows: 2,
+      matchedCount: 1,
+      totalBreakValue: 50,
+    });
   });
 
   it('downloads+parses both files fresh, runs the match, and persists a completed report', async () => {
@@ -943,12 +970,14 @@ describe('runReconciliation', () => {
       entityId: 'draft-1',
       status: 'info',
       ip: undefined,
+      metadata: { filePair: 'a.csv vs b.csv' },
     });
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.run.completed',
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
+      metadata: { matchRate: '50.00%', totalBreakValue: 50 },
     });
   });
 
