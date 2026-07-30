@@ -601,10 +601,14 @@ export async function getReport(userId, reportId) {
   // unlike a completed report which is shared org-wide.
   if (report.status === 'draft' && report.userId !== userId) throw new NotFoundError();
 
+  // "vs last run" compares against the most recent completed run in the org
+  // overall — not scoped to this report's file pair — matching the "All
+  // Reconciliations" default used elsewhere (getFilePairTrend's 'overall' scope).
   let priorRun = null;
-  if (report.sourceReportId) {
+  if (report.status === 'completed') {
     const prior = await prisma.report.findFirst({
-      where: { id: report.sourceReportId },
+      where: { organizationId, status: 'completed', id: { not: reportId }, runDate: { lt: report.runDate } },
+      orderBy: { runDate: 'desc' },
       select: { matchedCount: true, totalRows: true, totalBreakValue: true },
     });
     if (prior) {

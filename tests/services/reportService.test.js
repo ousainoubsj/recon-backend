@@ -364,8 +364,8 @@ describe('listReports', () => {
 });
 
 describe('getReport', () => {
-  it('returns the report with rows when found within the org, plus a null priorRun when there is no source report', async () => {
-    const report = { id: 'r1', rows: [], sourceReportId: null };
+  it('returns the report with rows when found within the org', async () => {
+    const report = { id: 'r1', rows: [] };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
     const result = await getReport(USER_ID, 'r1');
@@ -378,14 +378,29 @@ describe('getReport', () => {
     expect(mockPrisma.auditLog.findMany).not.toHaveBeenCalled();
   });
 
-  it('resolves priorRun from the linked sourceReportId', async () => {
+  it('resolves priorRun from the most recent other completed report in the org, regardless of file pair', async () => {
+    const report = { id: 'r1', status: 'completed', rows: [], runDate: new Date('2026-07-15T00:00:00.000Z') };
     mockPrisma.report.findFirst
-      .mockResolvedValueOnce({ id: 'r1', rows: [], sourceReportId: 'prior-1' })
+      .mockResolvedValueOnce(report)
       .mockResolvedValueOnce({ matchedCount: 45, totalRows: 50, totalBreakValue: 12.5 });
 
     const result = await getReport(USER_ID, 'r1');
 
     expect(result.priorRun).toEqual({ matchRate: 90, totalBreakValue: 12.5 });
+    expect(mockPrisma.report.findFirst).toHaveBeenNthCalledWith(2, {
+      where: { organizationId: ORG_ID, status: 'completed', id: { not: 'r1' }, runDate: { lt: report.runDate } },
+      orderBy: { runDate: 'desc' },
+      select: { matchedCount: true, totalRows: true, totalBreakValue: true },
+    });
+  });
+
+  it('returns a null priorRun when no other completed report exists in the org', async () => {
+    const report = { id: 'r1', status: 'completed', rows: [], runDate: new Date('2026-07-15T00:00:00.000Z') };
+    mockPrisma.report.findFirst.mockResolvedValueOnce(report).mockResolvedValueOnce(null);
+
+    const result = await getReport(USER_ID, 'r1');
+
+    expect(result.priorRun).toBeNull();
   });
 
   it('throws NotFoundError when the report does not exist or is not in the org', async () => {
@@ -400,11 +415,12 @@ describe('getReport', () => {
     await expect(getReport(USER_ID, 'r1')).rejects.toBeInstanceOf(NotFoundError);
   });
 
-  it("returns the caller's own draft", async () => {
-    const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [], sourceReportId: null };
+  it("returns the caller's own draft with a null priorRun, without even attempting the priorRun lookup since the report isn't completed", async () => {
+    const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [] };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
     await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, progress: 0, priorRun: null, runDurationMs: null });
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledTimes(1);
   });
 
   it('computes runDurationMs from the started/completed audit-log pair for a completed report', async () => {
