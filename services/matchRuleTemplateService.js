@@ -30,3 +30,13 @@ export async function deleteTemplate(userId, templateId) {
   const { count } = await prisma.matchRuleTemplate.deleteMany({ where: { id: templateId, userId } });
   if (count === 0) throw new NotFoundError();
 }
+
+// Called when a template is selected to start a new reconciliation (not
+// gated on that reconciliation later completing — see schema comment).
+export async function recordUsage(userId, templateId) {
+  const { count } = await prisma.matchRuleTemplate.updateMany({
+    where: { id: templateId, userId },
+    data: { lastUsedAt: new Date(), useCount: { increment: 1 } },
+  });
+  if (count === 0) throw new NotFoundError();
+}

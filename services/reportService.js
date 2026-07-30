@@ -66,6 +66,21 @@ function getAllTimeCompletedReports(organizationId) {
 // amountDiff is computed here rather than via a Postgres GENERATED column —
 // see the note at the top of prisma/schema.prisma. Shared by saveReport and
 // completeDraft since both bulk-insert rows the same way.
+// Per-status dollar sums for Results' stat tiles (Matched/Unmatched/
+// Duplicates each show a count + a value) — computed once here from the
+// match engine's in-memory row output, since summing per-status amounts
+// from persisted rows on every Results page load would mean scanning
+// potentially 100k+ rows each time.
+function computeValueBreakdown(rows) {
+  const sum = (predicate) =>
+    rows.filter(predicate).reduce((total, r) => total + (r.amountA ?? r.amountB ?? 0), 0);
+  return {
+    matchedValue: sum((r) => r.status === 'matched'),
+    unmatchedValue: sum((r) => r.status === 'unmatched_a' || r.status === 'unmatched_b'),
+    duplicateValue: sum((r) => r.status === 'duplicate'),
+  };
+}
+
 function reportRowsForInsert(reportId, rows) {
   return rows.map((r) => ({
     reportId,
@@ -135,6 +150,7 @@ async function persistCompletedRun(tx, reportId, dto) {
       // files have been re-parsed for the real result.
       fileASampleRows: null,
       fileBSampleRows: null,
+      valueBreakdown: computeValueBreakdown(dto.rows),
       ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
     },
   });
@@ -899,9 +915,16 @@ export async function getMappingPreview(userId, reportId) {
   const validationA = computeValidationSummary(fileA.rows, mappingA);
   const validationB = computeValidationSummary(fileB.rows, mappingB);
 
+  const fileASummary = { rows: fileA.rows.length, columns: fileA.headers.length, fileSizeBytes: fileABuffer.length };
+  const fileBSummary = { rows: fileB.rows.length, columns: fileB.headers.length, fileSizeBytes: fileBBuffer.length };
+
   const data = {
     fileASampleRows: { totalRows: fileA.rows.length, rows: fileA.rows.slice(0, SAMPLE_ROW_CAP) },
     fileBSampleRows: { totalRows: fileB.rows.length, rows: fileB.rows.slice(0, SAMPLE_ROW_CAP) },
+    // Unlike the sample-rows cache above, these are NOT cleared at
+    // completion — Results' File Summary cards read them long after.
+    fileASummary,
+    fileBSummary,
   };
   if (!draft.columnMapping) {
     data.columnMapping = { fileA: mappingA, fileB: mappingB };
@@ -911,21 +934,17 @@ export async function getMappingPreview(userId, reportId) {
   return {
     fileA: {
       filename: draft.fileAName,
-      rows: fileA.rows.length,
-      columns: fileA.headers.length,
-      fileSizeBytes: fileABuffer.length,
       previewRows: fileA.rows.slice(0, 5),
       mappings: suggestedA,
       ...validationA,
+      ...fileASummary,
     },
     fileB: {
       filename: draft.fileBName,
-      rows: fileB.rows.length,
-      columns: fileB.headers.length,
-      fileSizeBytes: fileBBuffer.length,
       previewRows: fileB.rows.slice(0, 5),
       mappings: suggestedB,
       ...validationB,
+      ...fileBSummary,
     },
   };
 }

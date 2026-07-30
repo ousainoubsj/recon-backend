@@ -5,13 +5,14 @@ const mockPrisma = {
     findMany: jest.fn(),
     create: jest.fn(),
     deleteMany: jest.fn(),
+    updateMany: jest.fn(),
   },
   member: { findFirst: jest.fn() },
 };
 
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
 
-const { listTemplates, createTemplate, deleteTemplate } = await import('../../services/matchRuleTemplateService.js');
+const { listTemplates, createTemplate, deleteTemplate, recordUsage } = await import('../../services/matchRuleTemplateService.js');
 const { NotFoundError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
@@ -62,5 +63,26 @@ describe('deleteTemplate', () => {
     mockPrisma.matchRuleTemplate.deleteMany.mockResolvedValue({ count: 0 });
 
     await expect(deleteTemplate(USER_ID, 'not-mine')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('recordUsage', () => {
+  it("bumps lastUsedAt and useCount on the caller's own template", async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-29T12:00:00Z'));
+    mockPrisma.matchRuleTemplate.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(recordUsage(USER_ID, 't1')).resolves.toBeUndefined();
+
+    expect(mockPrisma.matchRuleTemplate.updateMany).toHaveBeenCalledWith({
+      where: { id: 't1', userId: USER_ID },
+      data: { lastUsedAt: new Date('2026-07-29T12:00:00Z'), useCount: { increment: 1 } },
+    });
+    jest.useRealTimers();
+  });
+
+  it("throws NotFoundError for another user's template", async () => {
+    mockPrisma.matchRuleTemplate.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(recordUsage(USER_ID, 'not-mine')).rejects.toBeInstanceOf(NotFoundError);
   });
 });

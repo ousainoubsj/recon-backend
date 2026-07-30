@@ -688,6 +688,7 @@ describe('completeDraft', () => {
         fileAName: 'a.csv',
         fileBName: 'b.csv',
         totalRows: 2,
+        valueBreakdown: { matchedValue: 100, unmatchedValue: 50, duplicateValue: 0 },
       }),
     });
     expect(mockTx.reportRow.createMany).toHaveBeenCalledWith({
@@ -933,6 +934,21 @@ describe('getMappingPreview', () => {
         fileASampleRows: { totalRows: 1, rows: [{ Ref: 'R1' }] },
         fileBSampleRows: { totalRows: 1, rows: [{ Ref: 'R1' }] },
         columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Ref' } },
+      }),
+    });
+  });
+
+  it('persists per-file summaries (rows/columns/fileSizeBytes) that survive completion, unlike the sample-rows cache', async () => {
+    const preview = await getMappingPreview(USER_ID, 'draft-1');
+
+    expect(preview.fileA).toEqual(
+      expect.objectContaining({ rows: 1, columns: 1, fileSizeBytes: 4 }),
+    );
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: expect.objectContaining({
+        fileASummary: { rows: 1, columns: 1, fileSizeBytes: 4 },
+        fileBSummary: { rows: 1, columns: 1, fileSizeBytes: 4 },
       }),
     });
   });

@@ -159,6 +159,17 @@ model Report {
   // full file each time. Cleared once /run completes.
   fileASampleRows Json?    @map("file_a_sample_rows")
   fileBSampleRows Json?    @map("file_b_sample_rows")
+  // {rows, columns, fileSizeBytes} — also computed at mapping-preview time,
+  // but unlike fileASampleRows/fileBSampleRows above, deliberately NOT
+  // cleared at completion: Results' File Summary cards need this data on an
+  // already-completed report, long after mapping-preview last ran.
+  fileASummary    Json?    @map("file_a_summary")
+  fileBSummary    Json?    @map("file_b_summary")
+  // {matchedValue, unmatchedValue, duplicateValue} — per-status dollar sums
+  // Results' stat tiles need alongside their counts; computed once from the
+  // match engine's row output at completion time (rows themselves are
+  // paginated/queried per-status, not cheaply summable per stat tile).
+  valueBreakdown  Json?    @map("value_breakdown")
   // Auto-detected at /run time: the most recent completed report in the org
   // with the same case-insensitive file-pair name, for "vs prior run" deltas
   // and the match-rate trend. Not a user-facing "compare against" picker.
@@ -313,6 +324,12 @@ model MatchRuleTemplate {
   // Full MatchRuleConfig — see routes/reports.js's matchRuleConfigSchema.
   config         Json
   createdAt      DateTime     @default(now()) @map("created_at")
+  // Bumped each time this template is selected to start a new
+  // reconciliation (ReconciliationOptions' "Saved Template" flow) — not
+  // gated on that reconciliation later succeeding, since there's no
+  // Report->template link to check completion against.
+  lastUsedAt     DateTime?    @map("last_used_at")
+  useCount       Int          @default(0) @map("use_count")
 
   @@index([organizationId])
   @@map("match_rule_templates")

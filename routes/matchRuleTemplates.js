@@ -50,3 +50,10 @@ matchRuleTemplatesRouter.delete(
   catchAsync(requirePermission('report', 'delete')),
   catchAsync(matchRuleTemplateController.deleteTemplate),
 );
+
+matchRuleTemplatesRouter.post(
+  '/:id/use',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  catchAsync(matchRuleTemplateController.recordUsage),
+);

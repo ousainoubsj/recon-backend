@@ -20,6 +20,7 @@ const mockMatchRuleTemplateService = {
   listTemplates: jest.fn(),
   createTemplate: jest.fn(),
   deleteTemplate: jest.fn(),
+  recordUsage: jest.fn(),
 };
 jest.unstable_mockModule('../../services/matchRuleTemplateService.js', () => mockMatchRuleTemplateService);
 
@@ -107,6 +108,26 @@ describe('DELETE /api/match-rule-templates/:id', () => {
     mockMatchRuleTemplateService.deleteTemplate.mockRejectedValue(new NotFoundError());
 
     const res = await request(app).delete('/api/match-rule-templates/not-mine');
+
+    expect(res.status).toBe(404);
+    expect(res.body.type).toBe('https://recon.app/errors/not-found');
+  });
+});
+
+describe('POST /api/match-rule-templates/:id/use', () => {
+  it('records usage and returns 204', async () => {
+    mockMatchRuleTemplateService.recordUsage.mockResolvedValue(undefined);
+
+    const res = await request(app).post('/api/match-rule-templates/t1/use');
+
+    expect(res.status).toBe(204);
+    expect(mockMatchRuleTemplateService.recordUsage).toHaveBeenCalledWith(USER_ID, 't1');
+  });
+
+  it("returns a 404 RFC 7807 error for another user's template", async () => {
+    mockMatchRuleTemplateService.recordUsage.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).post('/api/match-rule-templates/not-mine/use');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
