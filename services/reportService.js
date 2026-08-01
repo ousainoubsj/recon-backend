@@ -380,26 +380,39 @@ export async function getReportsSummary(userId) {
   const currentMonthStats = aggregatePeriod(currentMonthReports);
   const previousMonthStats = aggregatePeriod(previousMonthReports);
 
+  // Before this month's first completed run, currentMonthStats is all
+  // zeros, which against any nonzero prior-month baseline would compute as
+  // a flat -100% on every card — a misleading "everything cratered" signal
+  // when really nothing has run yet this month. Suppress the trend instead
+  // of reporting it.
+  const hasCurrentMonthActivity = currentMonthStats.count > 0;
+
   return {
     totalReconciliations: {
       current: allTimeStats.count,
       previous: previousMonthStats.count,
-      deltaPercent: deltaPercent(currentMonthStats.count, previousMonthStats.count),
+      deltaPercent: hasCurrentMonthActivity ? deltaPercent(currentMonthStats.count, previousMonthStats.count) : null,
     },
     avgMatchRate: {
       current: allTimeStats.avgMatchRate,
       previous: previousMonthStats.avgMatchRate,
-      deltaPercent: deltaPercent(currentMonthStats.avgMatchRate, previousMonthStats.avgMatchRate),
+      deltaPercent: hasCurrentMonthActivity
+        ? deltaPercent(currentMonthStats.avgMatchRate, previousMonthStats.avgMatchRate)
+        : null,
     },
     unmatchedTransactions: {
       current: allTimeStats.unmatchedTransactions,
       previous: previousMonthStats.unmatchedTransactions,
-      deltaPercent: deltaPercent(currentMonthStats.unmatchedTransactions, previousMonthStats.unmatchedTransactions),
+      deltaPercent: hasCurrentMonthActivity
+        ? deltaPercent(currentMonthStats.unmatchedTransactions, previousMonthStats.unmatchedTransactions)
+        : null,
     },
     totalBreakValue: {
       current: allTimeStats.totalBreakValue,
       previous: previousMonthStats.totalBreakValue,
-      deltaPercent: deltaPercent(currentMonthStats.totalBreakValue, previousMonthStats.totalBreakValue),
+      deltaPercent: hasCurrentMonthActivity
+        ? deltaPercent(currentMonthStats.totalBreakValue, previousMonthStats.totalBreakValue)
+        : null,
     },
     totalTransactions: allTimeStats.totalTransactions,
   };

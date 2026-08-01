@@ -610,6 +610,21 @@ describe('getReportsSummary', () => {
 
     expect(summary.totalReconciliations).toEqual({ current: 1, previous: 0, deltaPercent: null });
   });
+
+  it('suppresses deltaPercent when the current month has no completed reports yet, even with a nonzero prior month', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      // Last month (June 2026) only — nothing has run yet this July.
+      { runDate: new Date('2026-06-15T00:00:00Z'), totalRows: 100, matchedCount: 50, unmatchedCount: 50, mismatchedCount: 0, totalBreakValue: 1000 },
+    ]);
+
+    const summary = await getReportsSummary(USER_ID);
+
+    // All-time current totals still reflect June's report, untouched.
+    expect(summary.totalReconciliations).toEqual({ current: 1, previous: 1, deltaPercent: null });
+    expect(summary.avgMatchRate).toEqual({ current: 50, previous: 50, deltaPercent: null });
+    expect(summary.unmatchedTransactions).toEqual({ current: 50, previous: 50, deltaPercent: null });
+    expect(summary.totalBreakValue).toEqual({ current: 1000, previous: 1000, deltaPercent: null });
+  });
 });
 
 describe('getReportsTrend', () => {
