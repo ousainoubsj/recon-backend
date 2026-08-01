@@ -144,7 +144,7 @@ describe('listExports', () => {
       where: { organizationId: ORG_ID },
       include: {
         report: { select: { name: true, fileAName: true, fileBName: true } },
-        user: { select: { name: true } },
+        user: { select: { name: true, image: true } },
         template: { select: { name: true } },
       },
       orderBy: { createdAt: 'desc' },
