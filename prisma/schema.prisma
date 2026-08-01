@@ -360,6 +360,11 @@ model ReportExport {
   errorMessage   String?            @map("error_message")
   // Null when status is 'failed' — no file was ever produced.
   fileSizeBytes  Int?               @map("file_size_bytes")
+  // R2 object key for the generated file, so a later redownload can serve
+  // the stored bytes instead of regenerating (and recording a duplicate
+  // export). Null for rows created before this existed, and for failed
+  // exports — both fall back to regenerating on download.
+  fileKey        String?            @map("file_key")
   createdAt      DateTime           @default(now()) @map("created_at")
 
   @@index([organizationId, createdAt(sort: Desc)], map: "idx_report_exports_org_created")

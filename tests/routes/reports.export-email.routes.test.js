@@ -37,9 +37,20 @@ jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
 
 const mockRecordExport = jest.fn().mockResolvedValue(undefined);
 const mockListExports = jest.fn();
+const mockUploadExportFile = jest.fn().mockResolvedValue(undefined);
+const mockGetExportForDownload = jest.fn();
+const mockDeleteExport = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/reportExportService.js', () => ({
   recordExport: mockRecordExport,
   listExports: mockListExports,
+  uploadExportFile: mockUploadExportFile,
+  getExportForDownload: mockGetExportForDownload,
+  deleteExport: mockDeleteExport,
+}));
+
+const mockDownloadFromR2 = jest.fn();
+jest.unstable_mockModule('../../utils/fileParser.js', () => ({
+  downloadFromR2: mockDownloadFromR2,
 }));
 
 jest.unstable_mockModule('../../services/scheduledReportService.js', () => ({
@@ -205,6 +216,94 @@ describe('POST /api/reports/:id/export', () => {
       .send({ templateId: '123e4567-e89b-12d3-a456-426614174000' });
 
     expect(res.status).toBe(404);
+  });
+
+  it('persists the generated file to R2 and passes the resulting key to recordExport', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+
+    await request(app).post('/api/reports/r1/export').send({});
+
+    expect(mockUploadExportFile).toHaveBeenCalledWith(
+      expect.stringMatching(/^exports\/org-1\/r1\/.+\.xlsx$/),
+      expect.any(Buffer),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+    expect(mockRecordExport).toHaveBeenCalledWith(
+      expect.objectContaining({ fileKey: expect.stringMatching(/^exports\/org-1\/r1\/.+\.xlsx$/) }),
+    );
+  });
+
+  it('still returns the file and records a null fileKey when persisting to R2 fails', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+    mockUploadExportFile.mockRejectedValueOnce(new Error('R2 unreachable'));
+
+    const res = await request(app).post('/api/reports/r1/export').send({});
+
+    expect(res.status).toBe(200);
+    expect(mockRecordExport).toHaveBeenCalledWith(expect.objectContaining({ fileKey: null, status: 'success' }));
+  });
+});
+
+describe('GET /api/reports/exports/:exportId/download', () => {
+  it('serves the stored file straight from R2 when the export has a fileKey', async () => {
+    mockGetExportForDownload.mockResolvedValue({
+      reportId: 'r1',
+      format: 'xlsx',
+      templateId: null,
+      fileKey: 'exports/org-1/r1/abc.xlsx',
+    });
+    mockDownloadFromR2.mockResolvedValue(Buffer.from('cached bytes'));
+
+    const res = await request(app).get('/api/reports/exports/exp-1/download');
+
+    expect(res.status).toBe(200);
+    expect(mockDownloadFromR2).toHaveBeenCalledWith('exports/org-1/r1/abc.xlsx');
+    expect(mockReportService.getReport).not.toHaveBeenCalled();
+    expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.xlsx');
+  });
+
+  it('regenerates without persisting a new row when the export has no fileKey', async () => {
+    mockGetExportForDownload.mockResolvedValue({
+      reportId: 'r1',
+      format: 'pdf',
+      templateId: null,
+      fileKey: null,
+    });
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+
+    const res = await request(app).get('/api/reports/exports/exp-1/download');
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(mockDownloadFromR2).not.toHaveBeenCalled();
+    expect(mockRecordExport).not.toHaveBeenCalled();
+  });
+
+  it('returns a 404 RFC 7807 error when the export does not exist or is not in the org', async () => {
+    mockGetExportForDownload.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).get('/api/reports/exports/missing/download');
+
+    expect(res.status).toBe(404);
+    expect(res.body.type).toBe('https://recon.app/errors/not-found');
+  });
+});
+
+describe('DELETE /api/reports/exports/:exportId', () => {
+  it('deletes the export and returns 204', async () => {
+    const res = await request(app).delete('/api/reports/exports/exp-1');
+
+    expect(res.status).toBe(204);
+    expect(mockDeleteExport).toHaveBeenCalledWith(USER_ID, 'exp-1');
+  });
+
+  it('returns a 404 RFC 7807 error when the export does not exist or is not in the org', async () => {
+    mockDeleteExport.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app).delete('/api/reports/exports/missing');
+
+    expect(res.status).toBe(404);
+    expect(res.body.type).toBe('https://recon.app/errors/not-found');
   });
 });
 

@@ -50,8 +50,12 @@ jest.unstable_mockModule('../../services/reportService.js', () => mockReportServ
 const mockReportExportService = {
   recordExport: jest.fn().mockResolvedValue(undefined),
   listExports: jest.fn(),
+  uploadExportFile: jest.fn().mockResolvedValue(undefined),
+  getExportForDownload: jest.fn(),
+  deleteExport: jest.fn().mockResolvedValue(undefined),
 };
 jest.unstable_mockModule('../../services/reportExportService.js', () => mockReportExportService);
+jest.unstable_mockModule('../../utils/fileParser.js', () => ({ downloadFromR2: jest.fn() }));
 
 jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
   resolveSections: jest.fn(),

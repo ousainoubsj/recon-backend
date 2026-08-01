@@ -141,6 +141,20 @@ reportsRouter.get(
 );
 
 reportsRouter.get(
+  '/exports/:exportId/download',
+  authenticate,
+  catchAsync(requirePermission('report', 'export')),
+  catchAsync(reportsController.downloadExport),
+);
+
+reportsRouter.delete(
+  '/exports/:exportId',
+  authenticate,
+  catchAsync(requirePermission('report', 'delete')),
+  catchAsync(reportsController.deleteExport),
+);
+
+reportsRouter.get(
   '/schedules',
   authenticate,
   catchAsync(requirePermission('report', 'read')),

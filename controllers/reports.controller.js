@@ -1,12 +1,20 @@
+import { randomUUID } from 'node:crypto';
 import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
 import { logAuditSafely, logResultsViewedOnce } from '../services/auditLogService.js';
 import { resolveSections } from '../services/reportTemplateService.js';
-import { recordExport, listExports as listReportExports } from '../services/reportExportService.js';
+import {
+  recordExport,
+  listExports as listReportExports,
+  uploadExportFile,
+  getExportForDownload,
+  deleteExport as deleteReportExport,
+} from '../services/reportExportService.js';
 import * as scheduledReportService from '../services/scheduledReportService.js';
 import { buildXlsxReport } from '../utils/xlsxReport.js';
 import { buildPdfReport } from '../utils/pdfReport.js';
+import { downloadFromR2 } from '../utils/fileParser.js';
 import { parsePositiveInt } from '../utils/queryParams.js';
 
 export const listReports = async (req, res) => {
@@ -302,6 +310,19 @@ export const exportReport = async (req, res) => {
     metadata: { format, templateId: templateId ?? null },
   });
 
+  // Best-effort, like recordExport right below — persisting lets a later
+  // redownload of this exact row serve the stored file instead of
+  // regenerating (which would otherwise record a confusing duplicate export
+  // every time someone re-downloads the same row).
+  let fileKey = null;
+  try {
+    fileKey = `exports/${report.organizationId}/${report.id}/${randomUUID()}.${format}`;
+    await uploadExportFile(fileKey, buffer, CONTENT_TYPE_BY_FORMAT[format]);
+  } catch (err) {
+    fileKey = null;
+    console.error('Failed to persist export file to R2', report.id, format, err);
+  }
+
   await recordExport({
     reportId: report.id,
     userId: req.session.user.id,
@@ -311,7 +332,30 @@ export const exportReport = async (req, res) => {
     source: 'manual',
     status: 'success',
     fileSizeBytes: buffer.length,
+    fileKey,
   });
+};
+
+// GET /reports/exports/:exportId/download — serves the stored file from an
+// earlier export where possible; falls back to regenerating (without
+// persisting a new row) for exports that predate fileKey or never got one.
+export const downloadExport = async (req, res) => {
+  const exportRow = await getExportForDownload(req.session.user.id, req.params.exportId);
+
+  const buffer = exportRow.fileKey
+    ? await downloadFromR2(exportRow.fileKey)
+    : await (async () => {
+        const report = await reportService.getReport(req.session.user.id, exportRow.reportId);
+        const sections = await resolveSections({
+          organizationId: report.organizationId,
+          templateId: exportRow.templateId ?? undefined,
+        });
+        return exportRow.format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+      })();
+
+  res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[exportRow.format]);
+  res.setHeader('Content-Disposition', `attachment; filename="reconciliation_report_${exportRow.reportId}.${exportRow.format}"`);
+  res.send(buffer);
 };
 
 export const listExports = async (req, res) => {
@@ -319,6 +363,11 @@ export const listExports = async (req, res) => {
   const offset = parsePositiveInt(req.query.offset);
   const exports = await listReportExports(req.session.user.id, { limit, offset, q: req.query.q });
   res.json(exports);
+};
+
+export const deleteExport = async (req, res) => {
+  await deleteReportExport(req.session.user.id, req.params.exportId);
+  res.status(204).send();
 };
 
 export const createSchedule = async (req, res) => {

@@ -31,7 +31,11 @@ jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({ res
 jest.unstable_mockModule('../../services/reportExportService.js', () => ({
   recordExport: jest.fn().mockResolvedValue(undefined),
   listExports: jest.fn(),
+  uploadExportFile: jest.fn().mockResolvedValue(undefined),
+  getExportForDownload: jest.fn(),
+  deleteExport: jest.fn().mockResolvedValue(undefined),
 }));
+jest.unstable_mockModule('../../utils/fileParser.js', () => ({ downloadFromR2: jest.fn() }));
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: jest.fn().mockResolvedValue(undefined),
   logResultsViewedOnce: jest.fn().mockResolvedValue(undefined),
