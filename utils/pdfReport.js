@@ -143,10 +143,10 @@ function SectionHeader({ title }) {
 
 // icon + value + label (+ optional real "vs previous run" delta) — matches
 // the dashboard's stat-tile visual language (StatsOverview.tsx).
-function StatTile({ icon = 'dot', color, value, label, delta, deltaGood, width }) {
+function StatTile({ icon = 'dot', color, value, label, delta, deltaGood, width, last }) {
   return h(
     View,
-    { style: [styles.tile, { width }] },
+    { style: [styles.tile, { width }, last && { marginRight: 0 }] },
     h(View, { style: styles.tileIconWrap }, h(SvgIcon, { variant: icon, color, size: 20 })),
     h(
       View,
@@ -157,7 +157,9 @@ function StatTile({ icon = 'dot', color, value, label, delta, deltaGood, width }
         h(
           Text,
           { style: [styles.tileDelta, { color: deltaGood ? STATUS_GREEN : '#DC2626' }] },
-          `${delta >= 0 ? '▲' : '▼'} ${Math.abs(delta).toFixed(1)}% vs previous run`,
+          // Standard Helvetica has no ▲/▼ glyphs (outside WinAnsiEncoding) —
+          // a plain +/- prefix renders reliably everywhere.
+          `${delta >= 0 ? '+' : '-'}${Math.abs(delta).toFixed(1)}% vs previous run`,
         ),
     ),
   );
@@ -166,7 +168,25 @@ function StatTile({ icon = 'dot', color, value, label, delta, deltaGood, width }
 function StatTileGrid({ tiles, columns = 3 }) {
   const gap = 10;
   const width = (CONTENT_WIDTH - gap * (columns - 1)) / columns;
-  return h(View, { style: styles.tileGrid }, ...tiles.map((tile, i) => h(StatTile, { key: i, width, ...tile })));
+  // Chunked into explicit row Views rather than relying on flexWrap — every
+  // tile (including the last in a row) carries a trailing marginRight, so a
+  // full row's total width is (columns * width) + (columns * gap), which
+  // overflows the container by one gap and wraps early under Yoga's own
+  // flexWrap math. Explicit rows sidestep that arithmetic entirely.
+  const rows = [];
+  for (let i = 0; i < tiles.length; i += columns) rows.push(tiles.slice(i, i + columns));
+
+  return h(
+    View,
+    null,
+    ...rows.map((row, ri) =>
+      h(
+        View,
+        { key: ri, style: { flexDirection: 'row' } },
+        ...row.map((tile, i) => h(StatTile, { key: i, width, last: i === row.length - 1, ...tile })),
+      ),
+    ),
+  );
 }
 
 function Table({ columns, rows, emptyLabel }) {
