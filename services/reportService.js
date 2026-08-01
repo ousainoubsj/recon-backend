@@ -405,28 +405,32 @@ export async function getReportsSummary(userId) {
   };
 }
 
-// Monthly-bucketed series for the dashboard's charts: match-rate trend,
-// reconciliation volume, and a category breakdown for the current month
-// (matches ChartsOverview.tsx's "Breakdown by Category (This Month)").
-// unmatchedCount already merges unmatched_a + unmatched_b at save time (see
-// saveReport above), so the category breakdown here is a 4-way split
-// (Matched / Mismatched / Unmatched / Duplicates), not the 5-way split that
-// would need a per-ReportRow query.
+// Monthly-bucketed series for the dashboard's charts: match-rate trend and
+// reconciliation volume over the selected window, plus an all-time category
+// breakdown (matches ChartsOverview.tsx's "Breakdown by Category (All
+// Time)") that's independent of the months selector. unmatchedCount already
+// merges unmatched_a + unmatched_b at save time (see saveReport above), so
+// the category breakdown here is a 4-way split (Matched / Mismatched /
+// Unmatched / Duplicates), not the 5-way split that would need a
+// per-ReportRow query.
 export async function getReportsTrend(userId, { months = 6 } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const { start } = monthRange(months - 1);
 
-  const reports = await prisma.report.findMany({
-    where: { organizationId, status: 'completed', runDate: { gte: start } },
-    select: {
-      runDate: true,
-      totalRows: true,
-      matchedCount: true,
-      unmatchedCount: true,
-      mismatchedCount: true,
-      duplicateCount: true,
-    },
-  });
+  const [reports, allTimeReports] = await Promise.all([
+    prisma.report.findMany({
+      where: { organizationId, status: 'completed', runDate: { gte: start } },
+      select: {
+        runDate: true,
+        totalRows: true,
+        matchedCount: true,
+        unmatchedCount: true,
+        mismatchedCount: true,
+        duplicateCount: true,
+      },
+    }),
+    getAllTimeCompletedReports(organizationId),
+  ]);
 
   const buckets = new Map();
   for (let i = months - 1; i >= 0; i--) {
@@ -448,12 +452,11 @@ export async function getReportsTrend(userId, { months = 6 } = {}) {
     volumeSeries.push({ month, value: stats.count });
   }
 
-  const currentMonthReports = buckets.get([...buckets.keys()].at(-1)) ?? [];
   const categoryBreakdown = {
-    matched: currentMonthReports.reduce((sum, r) => sum + r.matchedCount, 0),
-    mismatched: currentMonthReports.reduce((sum, r) => sum + r.mismatchedCount, 0),
-    unmatched: currentMonthReports.reduce((sum, r) => sum + r.unmatchedCount, 0),
-    duplicates: currentMonthReports.reduce((sum, r) => sum + r.duplicateCount, 0),
+    matched: allTimeReports.reduce((sum, r) => sum + r.matchedCount, 0),
+    mismatched: allTimeReports.reduce((sum, r) => sum + r.mismatchedCount, 0),
+    unmatched: allTimeReports.reduce((sum, r) => sum + r.unmatchedCount, 0),
+    duplicates: allTimeReports.reduce((sum, r) => sum + r.duplicateCount, 0),
   };
 
   return { matchRateSeries, volumeSeries, categoryBreakdown };

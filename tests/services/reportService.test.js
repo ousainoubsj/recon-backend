@@ -621,7 +621,11 @@ describe('getReportsTrend', () => {
     jest.useRealTimers();
   });
 
-  it('buckets reports by month and computes the current month category breakdown', async () => {
+  it('buckets reports by month and computes an all-time category breakdown', async () => {
+    // Same rows serve both queries here (getAllTimeCompletedReports has no
+    // runDate filter, so it happens to return everything the month-range
+    // query does too) — categoryBreakdown sums across both months, not just
+    // the most recent bucket.
     mockPrisma.report.findMany.mockResolvedValue([
       { runDate: new Date('2026-06-10T00:00:00Z'), totalRows: 100, matchedCount: 80, unmatchedCount: 15, mismatchedCount: 5, duplicateCount: 0 },
       { runDate: new Date('2026-07-05T00:00:00Z'), totalRows: 50, matchedCount: 40, unmatchedCount: 5, mismatchedCount: 3, duplicateCount: 2 },
@@ -637,7 +641,7 @@ describe('getReportsTrend', () => {
       { month: '2026-06', value: 1 },
       { month: '2026-07', value: 1 },
     ]);
-    expect(trend.categoryBreakdown).toEqual({ matched: 40, mismatched: 3, unmatched: 5, duplicates: 2 });
+    expect(trend.categoryBreakdown).toEqual({ matched: 120, mismatched: 8, unmatched: 20, duplicates: 2 });
   });
 
   it('defaults to 6 months and includes empty buckets for months with no reports', async () => {
