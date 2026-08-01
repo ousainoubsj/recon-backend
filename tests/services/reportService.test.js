@@ -547,7 +547,11 @@ describe('getReportsSummary', () => {
     jest.useRealTimers();
   });
 
-  it('aggregates current vs previous calendar month and computes deltas', async () => {
+  it('reports all-time totals with a deltaPercent trend from current vs previous calendar month', async () => {
+    // Same 3 reports serve both queries here (getAllTimeCompletedReports has
+    // no runDate filter, so it happens to return everything the month-range
+    // query does too) — `current` totals reflect all 3, while previous/delta
+    // are still derived from just the July-vs-June split.
     mockPrisma.report.findMany.mockResolvedValue([
       // This month (July 2026): 2 reports
       { runDate: new Date('2026-07-01T00:00:00Z'), totalRows: 100, matchedCount: 90, unmatchedCount: 8, mismatchedCount: 2, totalBreakValue: 500 },
@@ -558,7 +562,21 @@ describe('getReportsSummary', () => {
 
     const summary = await getReportsSummary(USER_ID);
 
-    expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
+    expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(1, {
+      where: { organizationId: ORG_ID, status: 'completed' },
+      select: {
+        runDate: true,
+        totalRows: true,
+        matchedCount: true,
+        unmatchedCount: true,
+        mismatchedCount: true,
+        duplicateCount: true,
+        totalBreakValue: true,
+        fileAName: true,
+        fileBName: true,
+      },
+    });
+    expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(2, {
       where: {
         organizationId: ORG_ID,
         status: 'completed',
@@ -574,12 +592,13 @@ describe('getReportsSummary', () => {
       },
     });
 
-    expect(summary.totalReconciliations).toEqual({ current: 2, previous: 1, deltaPercent: 100 });
-    expect(summary.avgMatchRate.current).toBeCloseTo(95); // (90+100)/(100+100)*100
+    expect(summary.totalReconciliations).toEqual({ current: 3, previous: 1, deltaPercent: 100 });
+    expect(summary.avgMatchRate.current).toBeCloseTo(80); // (90+100+50)/(100+100+100)*100
     expect(summary.avgMatchRate.previous).toBeCloseTo(50);
-    expect(summary.unmatchedTransactions).toEqual({ current: 10, previous: 50, deltaPercent: -80 });
-    expect(summary.totalBreakValue).toEqual({ current: 500, previous: 1000, deltaPercent: -50 });
-    expect(summary.totalTransactions).toBe(200);
+    expect(summary.avgMatchRate.deltaPercent).toBeCloseTo(90); // (95-50)/50*100
+    expect(summary.unmatchedTransactions).toEqual({ current: 60, previous: 50, deltaPercent: -80 });
+    expect(summary.totalBreakValue).toEqual({ current: 1500, previous: 1000, deltaPercent: -50 });
+    expect(summary.totalTransactions).toBe(300);
   });
 
   it('returns null deltaPercent when there is no prior-period baseline', async () => {

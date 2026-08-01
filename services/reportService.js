@@ -347,56 +347,61 @@ export async function listReports(
   return reports.map(({ favorites, ...report }) => ({ ...report, isFavorited: favorites.length > 0 }));
 }
 
-// Current vs previous calendar month, for the dashboard's headline stat
-// cards (Total Reconciliations, Avg Match Rate, Unmatched Transactions,
-// Total Break Value) — aggregated in JS over Report rows (one per run, so
-// cheap) rather than a SQL-side aggregate, matching this codebase's existing
-// preference for JS-side math (see amountDiff in saveReport above).
+// All-time totals for the dashboard's headline stat cards (Total
+// Reconciliations, Avg Match Rate, Unmatched Transactions, Total Break
+// Value), each paired with a deltaPercent trend still measured current vs
+// previous calendar month — aggregated in JS over Report rows (one per run,
+// so cheap) rather than a SQL-side aggregate, matching this codebase's
+// existing preference for JS-side math (see amountDiff in saveReport above).
 export async function getReportsSummary(userId) {
   const { organizationId } = await getUserMembership(userId);
   const current = monthRange(0);
   const previous = monthRange(1);
 
-  const reports = await prisma.report.findMany({
-    where: { organizationId, status: 'completed', runDate: { gte: previous.start, lt: current.end } },
-    select: {
-      runDate: true,
-      totalRows: true,
-      matchedCount: true,
-      unmatchedCount: true,
-      mismatchedCount: true,
-      totalBreakValue: true,
-    },
-  });
+  const [allTimeReports, monthReports] = await Promise.all([
+    getAllTimeCompletedReports(organizationId),
+    prisma.report.findMany({
+      where: { organizationId, status: 'completed', runDate: { gte: previous.start, lt: current.end } },
+      select: {
+        runDate: true,
+        totalRows: true,
+        matchedCount: true,
+        unmatchedCount: true,
+        mismatchedCount: true,
+        totalBreakValue: true,
+      },
+    }),
+  ]);
 
-  const currentReports = reports.filter((r) => r.runDate >= current.start);
-  const previousReports = reports.filter((r) => r.runDate >= previous.start && r.runDate < previous.end);
+  const currentMonthReports = monthReports.filter((r) => r.runDate >= current.start);
+  const previousMonthReports = monthReports.filter((r) => r.runDate >= previous.start && r.runDate < previous.end);
 
-  const currentStats = aggregatePeriod(currentReports);
-  const previousStats = aggregatePeriod(previousReports);
+  const allTimeStats = aggregatePeriod(allTimeReports);
+  const currentMonthStats = aggregatePeriod(currentMonthReports);
+  const previousMonthStats = aggregatePeriod(previousMonthReports);
 
   return {
     totalReconciliations: {
-      current: currentStats.count,
-      previous: previousStats.count,
-      deltaPercent: deltaPercent(currentStats.count, previousStats.count),
+      current: allTimeStats.count,
+      previous: previousMonthStats.count,
+      deltaPercent: deltaPercent(currentMonthStats.count, previousMonthStats.count),
     },
     avgMatchRate: {
-      current: currentStats.avgMatchRate,
-      previous: previousStats.avgMatchRate,
-      deltaPercent: deltaPercent(currentStats.avgMatchRate, previousStats.avgMatchRate),
+      current: allTimeStats.avgMatchRate,
+      previous: previousMonthStats.avgMatchRate,
+      deltaPercent: deltaPercent(currentMonthStats.avgMatchRate, previousMonthStats.avgMatchRate),
     },
     unmatchedTransactions: {
-      current: currentStats.unmatchedTransactions,
-      previous: previousStats.unmatchedTransactions,
-      deltaPercent: deltaPercent(currentStats.unmatchedTransactions, previousStats.unmatchedTransactions),
+      current: allTimeStats.unmatchedTransactions,
+      previous: previousMonthStats.unmatchedTransactions,
+      deltaPercent: deltaPercent(currentMonthStats.unmatchedTransactions, previousMonthStats.unmatchedTransactions),
     },
     totalBreakValue: {
-      current: currentStats.totalBreakValue,
-      previous: previousStats.totalBreakValue,
-      deltaPercent: deltaPercent(currentStats.totalBreakValue, previousStats.totalBreakValue),
+      current: allTimeStats.totalBreakValue,
+      previous: previousMonthStats.totalBreakValue,
+      deltaPercent: deltaPercent(currentMonthStats.totalBreakValue, previousMonthStats.totalBreakValue),
     },
-    totalTransactions: currentStats.totalTransactions,
+    totalTransactions: allTimeStats.totalTransactions,
   };
 }
 
