@@ -50,7 +50,7 @@ async function runSchedule(schedule, now) {
 
     const buffer =
       schedule.format === 'pdf'
-        ? await buildPdfReport(schedule.report, sections)
+        ? await buildPdfReport(schedule.report, sections, { generatedByName: 'Automated (Scheduled Report)' })
         : buildXlsxReport(schedule.report, sections);
 
     await recordExport({

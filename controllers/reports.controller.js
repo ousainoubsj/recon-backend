@@ -212,7 +212,10 @@ export const bulkExportReports = async (req, res) => {
   const built = [];
   for (const report of reports) {
     try {
-      const buffer = format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+      const buffer =
+        format === 'pdf'
+          ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
+          : buildXlsxReport(report, sections);
       built.push({ report, buffer });
     } catch (err) {
       await recordExport({
@@ -282,7 +285,10 @@ export const exportReport = async (req, res) => {
 
   let buffer;
   try {
-    buffer = format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+    buffer =
+      format === 'pdf'
+        ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
+        : buildXlsxReport(report, sections);
   } catch (err) {
     await recordExport({
       reportId: report.id,
@@ -350,7 +356,9 @@ export const downloadExport = async (req, res) => {
           organizationId: report.organizationId,
           templateId: exportRow.templateId ?? undefined,
         });
-        return exportRow.format === 'pdf' ? await buildPdfReport(report, sections) : buildXlsxReport(report, sections);
+        return exportRow.format === 'pdf'
+          ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
+          : buildXlsxReport(report, sections);
       })();
 
   res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[exportRow.format]);
