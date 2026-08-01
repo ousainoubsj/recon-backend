@@ -275,7 +275,7 @@ const CONTENT_TYPE_BY_FORMAT = {
 
 export const exportReport = async (req, res) => {
   const report = await reportService.getReport(req.session.user.id, req.params.id);
-  const { format = 'xlsx', templateId, sections: overrideSections } = req.body ?? {};
+  const { format = 'xlsx', templateId, sections: overrideSections, preview = false } = req.body ?? {};
 
   const sections = await resolveSections({
     organizationId: report.organizationId,
@@ -290,22 +290,30 @@ export const exportReport = async (req, res) => {
         ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
         : buildXlsxReport(report, sections);
   } catch (err) {
-    await recordExport({
-      reportId: report.id,
-      userId: req.session.user.id,
-      organizationId: report.organizationId,
-      templateId,
-      format,
-      source: 'manual',
-      status: 'failed',
-      errorMessage: err.message,
-    });
+    if (!preview) {
+      await recordExport({
+        reportId: report.id,
+        userId: req.session.user.id,
+        organizationId: report.organizationId,
+        templateId,
+        format,
+        source: 'manual',
+        status: 'failed',
+        errorMessage: err.message,
+      });
+    }
     throw err;
   }
 
   res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[format]);
   res.setHeader('Content-Disposition', `attachment; filename="reconciliation_report_${report.id}.${format}"`);
   res.send(buffer);
+
+  // Preview requests (ReportPreviewCard's "Preview Full Report" dialog)
+  // generate the exact same file but skip every side effect below — no
+  // audit log, no R2 persistence, no ReportExport row — so opening a
+  // preview doesn't spawn a phantom row in RecentExports every time.
+  if (preview) return;
 
   await logAuditSafely(req.session.user.id, {
     action: 'report.export',

@@ -365,6 +365,11 @@ const exportSchema = z.object({
   format: z.enum(['xlsx', 'pdf']).default('xlsx'),
   templateId: z.string().uuid().optional(),
   sections: sectionsSchema.optional(),
+  // Set by ReportPreviewCard's "Preview Full Report" dialog — same file
+  // generation, but not tracked as a real export (no R2 persistence, no
+  // ReportExport row, no audit log), so opening a preview doesn't spawn a
+  // phantom row in RecentExports every time.
+  preview: z.boolean().optional(),
 });
 
 reportsRouter.post(

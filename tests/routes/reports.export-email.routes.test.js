@@ -198,6 +198,27 @@ describe('POST /api/reports/:id/export', () => {
     expect(mockReportService.getReport).not.toHaveBeenCalled();
   });
 
+  it('returns the file but skips audit log, R2 upload, and recordExport when preview is true', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+
+    const res = await request(app).post('/api/reports/r1/export').send({ format: 'pdf', preview: true });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+    expect(mockUploadExportFile).not.toHaveBeenCalled();
+    expect(mockRecordExport).not.toHaveBeenCalled();
+  });
+
+  it('does not record a failed export when preview is true and building the file throws', async () => {
+    mockReportService.getReport.mockResolvedValue({ ...sampleReport, rows: undefined });
+
+    const res = await request(app).post('/api/reports/r1/export').send({ preview: true });
+
+    expect(res.status).toBe(500);
+    expect(mockRecordExport).not.toHaveBeenCalled();
+  });
+
   it('returns a 404 RFC 7807 error when the report is not found', async () => {
     mockReportService.getReport.mockRejectedValue(new NotFoundError());
 
