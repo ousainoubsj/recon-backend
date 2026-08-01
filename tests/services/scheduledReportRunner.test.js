@@ -98,7 +98,7 @@ describe('runDueScheduledReports', () => {
 
     await runDueScheduledReports(NOW);
 
-    expect(mockBuildPdfReport).toHaveBeenCalledWith(schedule.report, { summary: true });
+    expect(mockBuildPdfReport).toHaveBeenCalledWith(schedule.report, { summary: true }, { generatedByName: 'Automated (Scheduled Report)' });
     expect(mockBuildXlsxReport).not.toHaveBeenCalled();
   });
 

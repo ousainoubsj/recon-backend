@@ -354,10 +354,19 @@ function ReportFooter({ reference }) {
   );
 }
 
+// Same relative-percent-change formula as the dashboard's own deltaPercent
+// (recon-backend/services/reportService.js) — kept as a local copy rather
+// than an import so this stays dependency-free from reportService.js's
+// Prisma coupling (see formatReportReference's move to reportReference.js).
+function deltaPercent(current, previous) {
+  if (!previous) return null;
+  return ((current - previous) / previous) * 100;
+}
+
 function ReportDocument({ report, sections, generatedByName }) {
   const reference = formatReportReference(report.sequenceYear, report.sequenceNumber) ?? report.id.slice(0, 8).toUpperCase();
   const matchPercent = report.totalRows > 0 ? (report.matchedCount / report.totalRows) * 100 : 0;
-  const priorMatchDelta = report.priorRun ? matchPercent - report.priorRun.matchRate : null;
+  const priorMatchDelta = report.priorRun ? deltaPercent(matchPercent, report.priorRun.matchRate) : null;
   const stats = computeCategoryStats(report);
 
   const children = [
@@ -406,13 +415,16 @@ function ReportDocument({ report, sections, generatedByName }) {
           { color: CATEGORY_COLORS.Unmatched, value: String(report.unmatchedCount), label: 'Unmatched' },
           { color: CATEGORY_COLORS.Duplicates, value: String(report.duplicateCount), label: 'Duplicates' },
           { color: TEXT_DARK, value: String(report.totalRows), label: 'Total Rows' },
-          {
-            color: TEXT_DARK,
-            value: Number(report.totalBreakValue).toFixed(2),
-            label: 'Total Break Value',
-            delta: report.priorRun ? Number(report.totalBreakValue) - report.priorRun.totalBreakValue : null,
-            deltaGood: report.priorRun ? Number(report.totalBreakValue) <= report.priorRun.totalBreakValue : true,
-          },
+          (() => {
+            const breakValueDelta = report.priorRun ? deltaPercent(Number(report.totalBreakValue), report.priorRun.totalBreakValue) : null;
+            return {
+              color: TEXT_DARK,
+              value: Number(report.totalBreakValue).toFixed(2),
+              label: 'Total Break Value',
+              delta: breakValueDelta,
+              deltaGood: (breakValueDelta ?? 0) <= 0,
+            };
+          })(),
         ],
       }),
     );
