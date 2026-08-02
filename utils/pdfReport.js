@@ -38,6 +38,9 @@ const STATUS_GREEN = '#059669';
 const PAGE_PADDING_X = 20;
 const CONTENT_WIDTH = 612 - PAGE_PADDING_X * 2; // Letter width minus left/right page padding
 
+const SIGNATURE_GAP = 20;
+const SIGNATURE_COL_WIDTH = (CONTENT_WIDTH - SIGNATURE_GAP * 2) / 3;
+
 const currencyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
 function formatCurrency(value) {
   return currencyFormatter.format(Number(value));
@@ -113,6 +116,21 @@ const styles = StyleSheet.create({
   barFill: { height: 12, borderRadius: 3 },
   barLabel: { fontSize: 7.5, color: TEXT_DARK, marginLeft: 8, width: 130 },
 
+  // Sign-off — three side-by-side blocks (Prepared/Reviewed/Approved By),
+  // each a blank line to sign above (pre-filled with the exporting user's
+  // name for Prepared By only, per buildReportMeta) plus a blank date line.
+  // No reviewer/approver identity exists in the data model, so those two
+  // are intentionally left blank for physical/manual sign-off.
+  signatureRow: { flexDirection: 'row' },
+  signatureCol: { width: SIGNATURE_COL_WIDTH, marginRight: SIGNATURE_GAP },
+  signatureColLast: { marginRight: 0 },
+  signatureNameLine: { borderBottomWidth: 1, borderBottomColor: TEXT_DARK, paddingBottom: 4, minHeight: 22, justifyContent: 'flex-end' },
+  signatureName: { fontSize: 9, color: TEXT_DARK },
+  signatureRoleLabel: { fontSize: 7, fontFamily: 'Helvetica-Bold', color: BRAND_INDIGO, letterSpacing: 0.4, marginTop: 4 },
+  signatureDateRow: { flexDirection: 'row', alignItems: 'flex-end', marginTop: 10 },
+  signatureDateLabel: { fontSize: 7, color: TEXT_GRAY, marginRight: 4 },
+  signatureDateLine: { flex: 1, borderBottomWidth: 1, borderBottomColor: BORDER, height: 10 },
+
   footer: { position: 'absolute', bottom: 12, left: PAGE_PADDING_X, right: PAGE_PADDING_X, borderTopWidth: 0.5, borderTopColor: BORDER, paddingTop: 6 },
   footerRow: { flexDirection: 'row', justifyContent: 'space-between' },
   footerText: { fontSize: 6.5, color: TEXT_LIGHT_GRAY, marginTop: 2 },
@@ -120,6 +138,37 @@ const styles = StyleSheet.create({
 
 function SectionHeader({ title }) {
   return h(View, { style: styles.sectionHeaderRow }, h(View, { style: styles.sectionAccent }), h(Text, { style: styles.sectionTitle }, title));
+}
+
+// Prepared By is pre-filled with the exporting user's name (same identity
+// as the header's "PREPARED BY" metadata field); Reviewed/Approved By are
+// blank lines — no reviewer/approver concept exists in the data model, so
+// those are for physical/manual sign-off.
+function SignatureSection({ generatedByName }) {
+  const entries = [
+    { label: 'PREPARED BY', name: generatedByName ?? '' },
+    { label: 'REVIEWED BY', name: '' },
+    { label: 'APPROVED BY', name: '' },
+  ];
+
+  return h(
+    View,
+    { style: styles.signatureRow, wrap: false },
+    ...entries.map((entry, i) =>
+      h(
+        View,
+        { key: i, style: [styles.signatureCol, i === entries.length - 1 && styles.signatureColLast] },
+        h(View, { style: styles.signatureNameLine }, h(Text, { style: styles.signatureName }, entry.name)),
+        h(Text, { style: styles.signatureRoleLabel }, entry.label),
+        h(
+          View,
+          { style: styles.signatureDateRow },
+          h(Text, { style: styles.signatureDateLabel }, 'Date:'),
+          h(View, { style: styles.signatureDateLine }),
+        ),
+      ),
+    ),
+  );
 }
 
 // value + label (+ optional real "vs previous run" delta, inline before the
@@ -550,6 +599,10 @@ function ReportDocument({ report, sections, generatedByName, organizationName, o
       }),
     );
   }
+
+  // Always shown, regardless of template/customize toggles — same as the
+  // org header, not one of the optional sections.
+  children.push(h(SectionHeader, { key: 'signature-header', title: 'Sign-off' }), h(SignatureSection, { key: 'signature-section', generatedByName }));
 
   return h(
     Document,

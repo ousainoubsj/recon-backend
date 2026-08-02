@@ -260,6 +260,59 @@ function writeTable(ws, startRow, columns, rows, emptyLabel) {
   return row + 1;
 }
 
+// Sign-off — three side-by-side blocks (Prepared/Reviewed/Approved By),
+// each a blank line to sign above (pre-filled with the exporting user's
+// name for Prepared By only, per buildReportMeta) plus a blank date line.
+// No reviewer/approver identity exists in the data model, so those two are
+// intentionally left blank for physical/manual sign-off. Mirrors
+// pdfReport.js's SignatureSection.
+function writeSignatureSection(ws, startRow, meta) {
+  const cols = 3;
+  const span = TOTAL_COLS / cols;
+  const entries = [
+    { label: 'PREPARED BY', name: meta.generatedByName ?? '' },
+    { label: 'REVIEWED BY', name: '' },
+    { label: 'APPROVED BY', name: '' },
+  ];
+
+  const nameRow = startRow;
+  const labelRow = startRow + 1;
+  const dateRow = startRow + 2;
+
+  entries.forEach((entry, idx) => {
+    const s = idx * span + 1;
+    const e = s + span - 1;
+
+    ws.mergeCells(nameRow, s, nameRow, e);
+    const nameCell = ws.getCell(nameRow, s);
+    nameCell.value = entry.name;
+    nameCell.font = { size: 10, color: { argb: TEXT_DARK } };
+    nameCell.alignment = { vertical: 'bottom', indent: 1 };
+    nameCell.border = { bottom: { style: 'thin', color: { argb: TEXT_DARK } } };
+
+    ws.mergeCells(labelRow, s, labelRow, e);
+    const labelCell = ws.getCell(labelRow, s);
+    labelCell.value = entry.label;
+    labelCell.font = { bold: true, size: 7, color: { argb: BRAND_INDIGO } };
+    labelCell.alignment = { indent: 1 };
+
+    ws.mergeCells(dateRow, s, dateRow, s + 1);
+    const dateLabelCell = ws.getCell(dateRow, s);
+    dateLabelCell.value = 'Date:';
+    dateLabelCell.font = { size: 8, color: { argb: TEXT_GRAY } };
+    dateLabelCell.alignment = { indent: 1 };
+
+    ws.mergeCells(dateRow, s + 2, dateRow, e);
+    ws.getCell(dateRow, s + 2).border = { bottom: { style: 'thin', color: { argb: BORDER } } };
+  });
+
+  ws.getRow(nameRow).height = 26;
+  ws.getRow(labelRow).height = 12;
+  ws.getRow(dateRow).height = 16;
+
+  return dateRow + 2;
+}
+
 // No native chart API in ExcelJS (same limitation the old code's comment
 // noted for the xlsx/SheetJS free tier) — a colored swatch + block-character
 // bar is a lightweight, dependency-free stand-in for pdfReport.js's
@@ -493,7 +546,11 @@ async function buildOverviewSheet(wb, report, sections, meta) {
     );
   }
 
-  row += 1;
+  // Always shown, regardless of template/customize toggles — same as the
+  // org header, not one of the optional sections.
+  row = writeSectionHeader(ws, row, 'Sign-off');
+  row = writeSignatureSection(ws, row, meta);
+
   mergeText(ws, row, 1, TOTAL_COLS, 'This report is confidential and intended solely for authorized use.', { size: 7, color: TEXT_LIGHT_GRAY });
   row += 1;
   mergeText(ws, row, 1, TOTAL_COLS, `Reconcil — Transaction Reconciliation Platform  ·  Report ID: ${reference}`, {
