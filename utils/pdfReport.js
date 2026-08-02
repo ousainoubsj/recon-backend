@@ -315,12 +315,12 @@ function ReportHeader({ report, reference, generatedByName, organizationName, or
       ),
     ),
 
-    // Section 3 — this reconciliation's name + the template used to generate it, left-aligned.
+    // Section 3 — the template used to generate this report + the reconciliation's own name, left-aligned.
     h(
       View,
       { style: styles.reconTitleSection },
-      h(Text, { style: styles.title }, report.name || 'Reconciliation Report'),
-      h(Text, { style: styles.subtitle }, templateName ?? 'Custom Report'),
+      h(Text, { style: styles.title }, templateName ?? 'Custom Report'),
+      h(Text, { style: styles.subtitle }, report.name || 'Reconciliation Report'),
     ),
 
     // Section 4 — metadata, all on one row, left-aligned.

@@ -109,6 +109,7 @@ describe('runDueScheduledReports', () => {
       generatedByName: 'Automated (Scheduled Report)',
       organizationName: 'Test Org',
       organizationLogo: null,
+      organizationType: null,
       templateName: null,
     });
     expect(mockBuildXlsxReport).not.toHaveBeenCalled();
