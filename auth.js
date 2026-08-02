@@ -49,7 +49,7 @@ export const auth = betterAuth({
       clientSecret: process.env.APPLE_CLIENT_SECRET,
     },
   },
-  trustedOrigins: [process.env.FRONTEND_URL],
+  trustedOrigins: [process.env.FRONTEND_URL, process.env.BETTER_AUTH_URL],
   session: {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
     updateAge: 60 * 60 * 24, // refresh if older than 1 day
