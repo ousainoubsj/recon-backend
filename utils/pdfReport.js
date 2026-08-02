@@ -147,7 +147,7 @@ function StatTile({ value, label, delta, deltaGood, width, last }) {
   );
 }
 
-function StatTileGrid({ tiles, columns = 3 }) {
+function StatTileGrid({ tiles, columns = 4 }) {
   const gap = 10;
   const width = (CONTENT_WIDTH - gap * (columns - 1)) / columns;
   // Chunked into explicit row Views rather than relying on flexWrap — every
@@ -408,7 +408,7 @@ function ReportDocument({ report, sections, generatedByName, organizationName, o
       h(SectionHeader, { key: 'summary-header', title: 'Summary' }),
       h(StatTileGrid, {
         key: 'summary-tiles',
-        columns: 3,
+        columns: 4,
         tiles: [
           { value: String(report.matchedCount), label: 'Matched' },
           { value: String(report.mismatchedCount), label: 'Mismatched' },

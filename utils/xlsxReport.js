@@ -106,12 +106,12 @@ async function loadLogoForEmbed(url) {
   }
 }
 
-function mergeText(ws, row, startCol, endCol, value, { bold, italic, size, color } = {}) {
+function mergeText(ws, row, startCol, endCol, value, { bold, italic, size, color, valign } = {}) {
   if (endCol > startCol) ws.mergeCells(row, startCol, row, endCol);
   const cell = ws.getCell(row, startCol);
   cell.value = value;
   cell.font = { bold, italic, size, color: { argb: color ?? TEXT_DARK } };
-  cell.alignment = { vertical: 'middle' };
+  cell.alignment = { vertical: valign ?? 'middle' };
   return cell;
 }
 
@@ -319,18 +319,21 @@ async function buildOverviewSheet(wb, report, sections, meta) {
     cell.alignment = { horizontal: 'center', vertical: 'middle' };
   }
   ws.getRow(row).height = 26;
-  mergeText(ws, row, 2, TOTAL_COLS, meta.organizationName ?? 'Your Organization', { bold: true, size: 14, color: TEXT_DARK });
+  // Bottom/top-aligned rather than each row's default middle — middle
+  // alignment left equal padding above *and* below every line, which read
+  // as a gap between the name and the type line sitting right under it.
+  mergeText(ws, row, 2, TOTAL_COLS, meta.organizationName ?? 'Your Organization', { bold: true, size: 14, color: TEXT_DARK, valign: 'bottom' });
   row += 1;
-  if (meta.organizationType) mergeText(ws, row, 2, TOTAL_COLS, meta.organizationType, { size: 9, color: TEXT_GRAY });
+  if (meta.organizationType) mergeText(ws, row, 2, TOTAL_COLS, meta.organizationType, { size: 9, color: TEXT_GRAY, valign: 'top' });
   row += 2;
 
   // Section 2 — Reconcil brand mark, logo-sym.png beside the wordmark.
   const reconLogoId = wb.addImage({ buffer: RECONCIL_LOGO_BUFFER, extension: 'png' });
   ws.addImage(reconLogoId, { tl: { col: 0, row: row - 1 }, ext: { width: 24, height: 24 } });
   ws.getRow(row).height = 20;
-  mergeText(ws, row, 2, TOTAL_COLS, 'Reconcil', { bold: true, size: 14, color: BRAND_TEAL });
+  mergeText(ws, row, 2, TOTAL_COLS, 'Reconcil', { bold: true, size: 14, color: BRAND_TEAL, valign: 'bottom' });
   row += 1;
-  mergeText(ws, row, 2, TOTAL_COLS, 'TRANSACTION RECONCILIATION', { size: 7, color: TEXT_LIGHT_GRAY });
+  mergeText(ws, row, 2, TOTAL_COLS, 'TRANSACTION RECONCILIATION', { size: 7, color: TEXT_LIGHT_GRAY, valign: 'top' });
   row += 2;
 
   // Section 3 — the template used to generate this report + the
