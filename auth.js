@@ -50,6 +50,21 @@ export const auth = betterAuth({
     },
   },
   trustedOrigins: [process.env.FRONTEND_URL, process.env.BETTER_AUTH_URL],
+  // Frontend (recon-cil.com) and backend (api.recon-cil.com) are different
+  // hostnames in production, so a host-only session cookie set by the
+  // backend is invisible to requests hitting the frontend's own server
+  // (e.g. proxy.ts's optimistic session check) even though it's still sent
+  // fine on direct API calls. Scoping it to the shared parent domain fixes
+  // that. Unset in dev — localhost has no subdomain to share, and cookies
+  // there are already visible across ports regardless.
+  advanced: process.env.COOKIE_DOMAIN
+    ? {
+        crossSubDomainCookies: {
+          enabled: true,
+          domain: process.env.COOKIE_DOMAIN,
+        },
+      }
+    : undefined,
   session: {
     expiresIn: 60 * 60 * 24 * 7, // 7 days
     updateAge: 60 * 60 * 24, // refresh if older than 1 day
