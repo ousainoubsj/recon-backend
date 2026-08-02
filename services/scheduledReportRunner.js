@@ -49,22 +49,22 @@ async function runSchedule(schedule, now) {
       overrideSections: schedule.sections,
     });
 
-    let pdfMeta;
-    if (schedule.format === 'pdf') {
-      const [org, templateName] = await Promise.all([
-        getOrganizationBrand(schedule.organizationId),
-        getTemplateName(schedule.organizationId, schedule.templateId),
-      ]);
-      pdfMeta = {
-        generatedByName: 'Automated (Scheduled Report)',
-        organizationName: org?.name ?? null,
-        organizationLogo: org?.logo ?? null,
-        organizationType: org?.orgType ?? null,
-        templateName,
-      };
-    }
+    const [org, templateName] = await Promise.all([
+      getOrganizationBrand(schedule.organizationId),
+      getTemplateName(schedule.organizationId, schedule.templateId),
+    ]);
+    const reportMeta = {
+      generatedByName: 'Automated (Scheduled Report)',
+      organizationName: org?.name ?? null,
+      organizationLogo: org?.logo ?? null,
+      organizationType: org?.orgType ?? null,
+      templateName,
+    };
 
-    const buffer = schedule.format === 'pdf' ? await buildPdfReport(schedule.report, sections, pdfMeta) : buildXlsxReport(schedule.report, sections);
+    const buffer =
+      schedule.format === 'pdf'
+        ? await buildPdfReport(schedule.report, sections, reportMeta)
+        : await buildXlsxReport(schedule.report, sections, reportMeta);
 
     await recordExport({
       reportId: schedule.reportId,

@@ -76,7 +76,13 @@ describe('runDueScheduledReports', () => {
     const count = await runDueScheduledReports(NOW);
 
     expect(count).toBe(1);
-    expect(mockBuildXlsxReport).toHaveBeenCalledWith(schedule.report, { summary: true });
+    expect(mockBuildXlsxReport).toHaveBeenCalledWith(schedule.report, { summary: true }, {
+      generatedByName: 'Automated (Scheduled Report)',
+      organizationName: 'Test Org',
+      organizationLogo: null,
+      organizationType: null,
+      templateName: null,
+    });
     expect(mockBuildPdfReport).not.toHaveBeenCalled();
     expect(mockRecordExport).toHaveBeenCalledWith({
       reportId: 'r1',

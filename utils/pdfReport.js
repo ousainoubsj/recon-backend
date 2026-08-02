@@ -3,7 +3,7 @@ import path from 'node:path';
 import React from 'react';
 import { Circle, Document, Image, Page, Path, StyleSheet, Svg, Text, View, renderToBuffer } from '@react-pdf/renderer';
 import { formatReportReference } from './reportReference.js';
-import { computeCategoryStats, getBreakRows, getNonMatchedRows } from './reportSections.js';
+import { BREAK_REASON_LABELS, MAX_DETAIL_ROWS, computeCategoryStats, getBreakRows, getNonMatchedRows } from './reportSections.js';
 
 // No JSX transform is configured for this backend (plain Node ESM, no
 // build step) — React.createElement directly, same component model minus
@@ -15,8 +15,6 @@ const h = React.createElement;
 // separately-deployable services.
 const LOGO_SYM_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../assets/logo-sym.png');
 
-const MAX_DETAIL_ROWS = 200; // keep the PDF a sane length for very large runs
-
 // Matches the app's canonical category palette (ChartsOverview.tsx,
 // ReportPreviewCard.tsx) so a category reads the same color whether you're
 // looking at the dashboard or a generated PDF.
@@ -25,14 +23,6 @@ const CATEGORY_COLORS = {
   Mismatched: '#6366F1',
   Unmatched: '#3B82F6',
   Duplicates: '#F43F5E',
-};
-const BREAK_REASON_LABELS = {
-  amount_mismatch: 'Amount Mismatch',
-  missing_counterparty: 'Missing in Counterparty',
-  missing_internal: 'Missing Internally',
-  date_mismatch: 'Date Mismatch',
-  duplicate: 'Duplicate',
-  other: 'Other',
 };
 
 const BRAND_TEAL = '#0D9488';

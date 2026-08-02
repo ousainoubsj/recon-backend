@@ -18,10 +18,11 @@ import { buildPdfReport } from '../utils/pdfReport.js';
 import { downloadFromR2 } from '../utils/fileParser.js';
 import { parsePositiveInt } from '../utils/queryParams.js';
 
-// Shared by every buildPdfReport call site (manual export, bulk export,
-// download-fallback regenerate) so the PDF header's org branding/template
-// name stay consistent regardless of which flow generated the file.
-async function buildPdfMeta({ organizationId, templateId, generatedByName }) {
+// Shared by every buildPdfReport/buildXlsxReport call site (manual export,
+// bulk export, download-fallback regenerate) so the report header's org
+// branding/template name stay consistent regardless of format or which flow
+// generated the file.
+async function buildReportMeta({ organizationId, templateId, generatedByName }) {
   const [org, templateName] = await Promise.all([getOrganizationBrand(organizationId), getTemplateName(organizationId, templateId)]);
   return {
     generatedByName,
@@ -122,11 +123,12 @@ export const getReport = async (req, res) => {
   // Only completed reports count as "viewing reconciliation results" — a
   // draft being reopened for editing isn't that. Not logged from
   // reportService.getReport itself since export/email/bulk-export also call
-  // it internally and shouldn't each register as a "view". Deduped (see
-  // logResultsViewedOnce) since this same GET fires far more often than a
-  // deliberate view — the wizard, the sidebar's summary widget, and even
-  // AuditSidebar resolving a report name all call it too.
-  if (report.status === 'completed') {
+  // it internally and shouldn't each register as a "view". Callers that
+  // fetch report data incidentally (ReportPreviewCard's summary widget,
+  // AuditSidebar resolving a report name) pass ?preview=true to opt out,
+  // mirroring the export endpoint's `preview` body flag.
+  const preview = req.query.preview === 'true';
+  if (report.status === 'completed' && !preview) {
     await logResultsViewedOnce(req.session.user.id, report.id, {
       status: 'info',
       ip: req.ip,
@@ -223,15 +225,16 @@ export const bulkExportReports = async (req, res) => {
     templateId,
     overrideSections,
   });
-  const pdfMeta =
-    format === 'pdf'
-      ? await buildPdfMeta({ organizationId: reports[0].organizationId, templateId, generatedByName: req.session.user.name })
-      : null;
+  const reportMeta = await buildReportMeta({
+    organizationId: reports[0].organizationId,
+    templateId,
+    generatedByName: req.session.user.name,
+  });
 
   const built = [];
   for (const report of reports) {
     try {
-      const buffer = format === 'pdf' ? await buildPdfReport(report, sections, pdfMeta) : buildXlsxReport(report, sections);
+      const buffer = format === 'pdf' ? await buildPdfReport(report, sections, reportMeta) : await buildXlsxReport(report, sections, reportMeta);
       built.push({ report, buffer });
     } catch (err) {
       await recordExport({
@@ -301,14 +304,8 @@ export const exportReport = async (req, res) => {
 
   let buffer;
   try {
-    buffer =
-      format === 'pdf'
-        ? await buildPdfReport(
-            report,
-            sections,
-            await buildPdfMeta({ organizationId: report.organizationId, templateId, generatedByName: req.session.user.name }),
-          )
-        : buildXlsxReport(report, sections);
+    const reportMeta = await buildReportMeta({ organizationId: report.organizationId, templateId, generatedByName: req.session.user.name });
+    buffer = format === 'pdf' ? await buildPdfReport(report, sections, reportMeta) : await buildXlsxReport(report, sections, reportMeta);
   } catch (err) {
     if (!preview) {
       await recordExport({
@@ -384,13 +381,12 @@ export const downloadExport = async (req, res) => {
           organizationId: report.organizationId,
           templateId: exportRow.templateId ?? undefined,
         });
-        return exportRow.format === 'pdf'
-          ? await buildPdfReport(
-              report,
-              sections,
-              await buildPdfMeta({ organizationId: report.organizationId, templateId: exportRow.templateId, generatedByName: req.session.user.name }),
-            )
-          : buildXlsxReport(report, sections);
+        const reportMeta = await buildReportMeta({
+          organizationId: report.organizationId,
+          templateId: exportRow.templateId,
+          generatedByName: req.session.user.name,
+        });
+        return exportRow.format === 'pdf' ? await buildPdfReport(report, sections, reportMeta) : await buildXlsxReport(report, sections, reportMeta);
       })();
 
   res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[exportRow.format]);
