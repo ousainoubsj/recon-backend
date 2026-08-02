@@ -18,6 +18,11 @@ import { errorHandler } from './middleware/errorHandler.js';
 
 export const app = express();
 
+// Sits behind a reverse proxy (nginx) in production — trust its
+// X-Forwarded-For so req.ip and express-rate-limit see the real client IP
+// instead of the proxy's.
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(cookieParser());
