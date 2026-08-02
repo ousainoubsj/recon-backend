@@ -1,5 +1,5 @@
 import { DeleteObjectCommand, PutObjectCommand } from '@aws-sdk/client-s3';
-import { prisma } from '../db/index.js';
+import { prisma } from '../config/prisma.config.js';
 import { NotFoundError } from '../errors.js';
 import { r2 } from '../utils/r2Client.js';
 import { getUserMembership } from './organizationService.js';

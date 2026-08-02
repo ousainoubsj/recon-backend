@@ -3,7 +3,7 @@ import { jest } from '@jest/globals';
 const mockPrisma = {
   scheduledReport: { findMany: jest.fn(), update: jest.fn().mockResolvedValue(undefined) },
 };
-jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
+jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
 const mockResolveSections = jest.fn();
 const mockGetTemplateName = jest.fn().mockResolvedValue(null);

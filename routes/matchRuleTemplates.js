@@ -10,9 +10,9 @@ export const matchRuleTemplatesRouter = Router();
 
 // Deliberately duplicated from routes/reports.js's matchRuleConfigSchema
 // rather than imported — importing from reports.js would transitively pull
-// in its entire controller chain (reportService.js, db/index.js, etc.) into
-// every test that touches this router, forcing a much heavier mock surface
-// for no real benefit.
+// in its entire controller chain (reportService.js, config/prisma.config.js,
+// etc.) into every test that touches this router, forcing a much heavier
+// mock surface for no real benefit.
 const matchRuleConfigSchema = z.object({
   amountTolerance: z.number().min(0, 'amount_tolerance must be a non-negative number').max(1),
   dateToleranceDays: z.number().int().min(0).max(3).optional(),

@@ -3,7 +3,7 @@ import { createAuthMiddleware } from 'better-auth/api';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { organization, emailOTP } from 'better-auth/plugins';
 import { createAccessControl } from 'better-auth/plugins/access';
-import { prisma } from './db/index.js';
+import { prisma } from './config/prisma.config.js';
 import { ROLE_PERMISSIONS } from './services/permissions.js';
 import { handleUserCreated } from './services/signupHookService.js';
 import { repairActiveOrganization } from './services/sessionHookService.js';

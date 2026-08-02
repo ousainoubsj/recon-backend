@@ -8,10 +8,10 @@ dotenv.config();
 // module spec, so it's loaded dynamically here instead, after .env is read.
 const { app } = await import('./server.js');
 // Same dynamic-import reasoning as server.js above — this transitively
-// reads DATABASE_URL at module-evaluation time via db/index.js.
+// reads DATABASE_URL at module-evaluation time via config/prisma.config.js.
 const { startScheduledReportCron } = await import('./services/scheduledReportRunner.js');
 
-const { prisma } = await import('./db/index.js');
+const { prisma } = await import('./config/prisma.config.js');
 
 const port = process.env.PORT ?? 3001;
 

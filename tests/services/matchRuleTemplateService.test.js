@@ -10,7 +10,7 @@ const mockPrisma = {
   member: { findFirst: jest.fn() },
 };
 
-jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
+jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
 const { listTemplates, createTemplate, deleteTemplate, recordUsage } = await import('../../services/matchRuleTemplateService.js');
 const { NotFoundError } = await import('../../errors.js');

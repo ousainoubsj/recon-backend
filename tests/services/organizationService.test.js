@@ -4,7 +4,7 @@ const mockPrisma = {
   member: { findFirst: jest.fn(), updateMany: jest.fn() },
 };
 
-jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
+jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
 const { getUserMembership, touchLastActive } = await import('../../services/organizationService.js');
 const { NotFoundError } = await import('../../errors.js');

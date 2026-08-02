@@ -1,4 +1,4 @@
-import { prisma } from '../db/index.js';
+import { prisma } from '../config/prisma.config.js';
 import { getUserMembership } from './organizationService.js';
 
 const RESULT_LIMIT = 5;

@@ -5,7 +5,7 @@ import { jest } from '@jest/globals';
 // These tests only confirm our config is shaped the way we think, so a typo
 // or misconfigured option surfaces immediately instead of only at runtime.
 const mockPrisma = { member: { findFirst: jest.fn() } };
-jest.unstable_mockModule('../db/index.js', () => ({ prisma: mockPrisma }));
+jest.unstable_mockModule('../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
 const mockSend = jest.fn();
 class MockResend {

@@ -1,4 +1,4 @@
-import { prisma } from '../db/index.js';
+import { prisma } from '../config/prisma.config.js';
 import { NotFoundError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
 

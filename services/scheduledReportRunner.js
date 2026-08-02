@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { prisma } from '../db/index.js';
+import { prisma } from '../config/prisma.config.js';
 import { resolveSections, getTemplateName } from './reportTemplateService.js';
 import { recordExport } from './reportExportService.js';
 import { computeNextRunAt } from './scheduledReportService.js';

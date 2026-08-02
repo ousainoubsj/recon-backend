@@ -5,7 +5,7 @@ const mockPrisma = {
   member: { findMany: jest.fn(), findFirst: jest.fn() },
 };
 
-jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
+jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
 const { search } = await import('../../services/searchService.js');
 

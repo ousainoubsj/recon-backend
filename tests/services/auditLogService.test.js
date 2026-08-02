@@ -6,7 +6,7 @@ const mockPrisma = {
   member: { findFirst: jest.fn() },
 };
 
-jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
+jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
 const {
   createAuditLog,
