@@ -520,7 +520,13 @@ function appendStatusSheet(wb, report, status) {
     { header: 'Break Reason', key: 'breakReasonLabel', width: 22 },
     { header: 'Reviewed', key: 'reviewedLabel', width: 12 },
   ];
-  ws.columns = columns.map(({ header, key, width, numFmt }) => ({ header, key, width, numFmt }));
+  ws.columns = columns.map(({ header, key, width }) => ({ header, key, width }));
+  // `numFmt` in the columns array above is silently ignored by ExcelJS for
+  // cells added later via addRow — it only takes effect set directly on the
+  // column object, so each formatted column needs it applied here instead.
+  columns.forEach((c, i) => {
+    if (c.numFmt) ws.getColumn(i + 1).numFmt = c.numFmt;
+  });
 
   const headerRow = ws.getRow(1);
   headerRow.height = 18;
