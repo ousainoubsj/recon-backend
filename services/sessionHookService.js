@@ -17,7 +17,7 @@
  * stale cached snapshot.
  *
  * @param {{id: string, userId: string, activeOrganizationId?: string|null}|null} session
- * @param {{prisma: import('../generated/prisma/client.ts').PrismaClient}} deps
+ * @param {{prisma: import('@prisma/client').PrismaClient}} deps
  */
 export async function repairActiveOrganization(session, { prisma }) {
   if (!session || session.activeOrganizationId) return;

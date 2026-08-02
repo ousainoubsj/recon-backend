@@ -1,6 +1,6 @@
 /**
  * @param {{id: string, email: string}} user
- * @param {{prisma: import('../generated/prisma/client.ts').PrismaClient, createOrganization: Function}} deps
+ * @param {{prisma: import('@prisma/client').PrismaClient, createOrganization: Function}} deps
  */
 export async function handleUserCreated(user, { prisma, createOrganization }) {
   const pendingInvite = await prisma.invitation.findFirst({

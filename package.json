@@ -6,8 +6,8 @@
   "description": "Transaction Reconciliation — backend (auth, file relay, report persistence)",
   "main": "app.js",
   "scripts": {
-    "dev": "nodemon --exec tsx app.js",
-    "start": "tsx app.js",
+    "dev": "nodemon app.js",
+    "start": "node app.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
@@ -39,7 +39,6 @@
     "pino-http": "^10.2.0",
     "react": "^19.2.8",
     "resend": "^4.0.0",
-    "tsx": "^4.23.4",
     "xlsx": "^0.18.5",
     "zod": "^3.23.8"
   },
@@ -52,7 +51,6 @@
   "allowScripts": {
     "@prisma/engines@7.8.0": true,
     "fsevents@2.3.3": true,
-    "prisma@7.8.0": true,
-    "esbuild@0.28.1": true
+    "prisma@7.8.0": true
   }
 }
