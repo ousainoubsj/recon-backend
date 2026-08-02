@@ -12,6 +12,8 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
+    "migrate:to-prod": "node scripts/migrate-to-production.js",
+    "migrate:r2-to-prod": "node scripts/migrate-r2-to-production.js",
     "test": "NODE_OPTIONS=--experimental-vm-modules jest"
   },
   "dependencies": {
