@@ -35,7 +35,7 @@ const TINT_GRAY = '#F9FAFB';
 const TINT_INDIGO = '#EEF2FF';
 const STATUS_GREEN = '#059669';
 
-const PAGE_PADDING_X = 30;
+const PAGE_PADDING_X = 20;
 const CONTENT_WIDTH = 612 - PAGE_PADDING_X * 2; // Letter width minus left/right page padding
 
 const currencyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
@@ -47,17 +47,22 @@ const styles = StyleSheet.create({
   page: { paddingTop: 24, paddingBottom: 28, paddingHorizontal: PAGE_PADDING_X, fontSize: 9, fontFamily: 'Helvetica', color: TEXT_DARK },
   topBand: { position: 'absolute', top: 0, left: 0, right: 0, height: 6, backgroundColor: BRAND_INDIGO },
 
-  // Section 1 — org logo + org name + org type, centered.
-  orgHeaderBlock: { alignItems: 'center', marginBottom: 10 },
-  orgLogo: { width: 40, height: 40, borderRadius: 8 },
-  orgLogoFallback: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#9CA3AF', alignItems: 'center', justifyContent: 'center' },
-  orgLogoFallbackText: { color: '#FFFFFF', fontFamily: 'Helvetica-Bold', fontSize: 16 },
-  orgName: { fontSize: 11, fontFamily: 'Helvetica-Bold', color: TEXT_DARK, marginTop: 6 },
+  // Section 1 — org block (left) and Reconcil brand block (right), same
+  // row, each following the identical logo-beside-text layout: image on
+  // the left, name on top + secondary line below on the right.
+  headerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+
+  orgSection: { flexDirection: 'row', alignItems: 'center' },
+  orgLogo: { width: 30, height: 30, borderRadius: 6, marginRight: 8 },
+  orgLogoFallback: { width: 30, height: 30, borderRadius: 6, marginRight: 8, backgroundColor: '#9CA3AF', alignItems: 'center', justifyContent: 'center' },
+  orgLogoFallbackText: { color: '#FFFFFF', fontFamily: 'Helvetica-Bold', fontSize: 13 },
+  orgTextBlock: {},
+  orgName: { fontSize: 11, fontFamily: 'Helvetica-Bold', color: TEXT_DARK },
   orgType: { fontSize: 7.5, color: TEXT_GRAY, marginTop: 2 },
 
-  // Section 2 — Reconcil brand, logo-sym.png beside the text (not stacked
-  // behind/under it — that made the wordmark unreadable), left-aligned.
-  brandSection: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  // Reconcil brand, logo-sym.png beside the text (not stacked behind/under
+  // it — that made the wordmark unreadable), left-aligned.
+  brandSection: { flexDirection: 'row', alignItems: 'center', marginRight: 24 },
   brandLogoImage: { width: 30, height: 30, marginRight: 8 },
   brandTextBlock: {},
   brandName: { fontSize: 14, fontFamily: 'Helvetica-Bold', color: BRAND_TEAL },
@@ -281,27 +286,36 @@ function ReportHeader({ report, reference, generatedByName, organizationName, or
     View,
     null,
 
-    // Section 1 — the reconciling org's own logo + name + org type, centered.
+    // Section 1 — Reconcil brand block and org block, same row: the
+    // Reconcil wordmark on the left, the org's logo + name + org type on
+    // the right, both following the same logo-beside-text layout, with a
+    // small gap (not a spread-out justify-between) between them.
     h(
       View,
-      { style: styles.orgHeaderBlock },
-      organizationLogo
-        ? h(Image, { src: organizationLogo, style: styles.orgLogo })
-        : h(View, { style: styles.orgLogoFallback }, h(Text, { style: styles.orgLogoFallbackText }, (organizationName ?? '?').charAt(0).toUpperCase())),
-      h(Text, { style: styles.orgName }, organizationName ?? 'Your Organization'),
-      organizationType && h(Text, { style: styles.orgType }, organizationType),
-    ),
-
-    // Section 2 — Reconcil brand mark, left-aligned: logo image beside the wordmark, not stacked under it.
-    h(
-      View,
-      { style: styles.brandSection },
-      h(Image, { src: LOGO_SYM_PATH, style: styles.brandLogoImage }),
+      { style: styles.headerRow },
       h(
         View,
-        { style: styles.brandTextBlock },
-        h(Text, { style: styles.brandName }, 'Reconcil'),
-        h(Text, { style: styles.brandTagline }, 'TRANSACTION RECONCILIATION'),
+        { style: styles.brandSection },
+        h(Image, { src: LOGO_SYM_PATH, style: styles.brandLogoImage }),
+        h(
+          View,
+          { style: styles.brandTextBlock },
+          h(Text, { style: styles.brandName }, 'Reconcil'),
+          h(Text, { style: styles.brandTagline }, 'TRANSACTION RECONCILIATION'),
+        ),
+      ),
+      h(
+        View,
+        { style: styles.orgSection },
+        organizationLogo
+          ? h(Image, { src: organizationLogo, style: styles.orgLogo })
+          : h(View, { style: styles.orgLogoFallback }, h(Text, { style: styles.orgLogoFallbackText }, (organizationName ?? '?').charAt(0).toUpperCase())),
+        h(
+          View,
+          { style: styles.orgTextBlock },
+          h(Text, { style: styles.orgName }, organizationName ?? 'Your Organization'),
+          organizationType && h(Text, { style: styles.orgType }, organizationType),
+        ),
       ),
     ),
 
