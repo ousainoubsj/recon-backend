@@ -1,9 +1,10 @@
 import cron from 'node-cron';
 import { prisma } from '../db/index.js';
-import { resolveSections } from './reportTemplateService.js';
+import { resolveSections, getTemplateName } from './reportTemplateService.js';
 import { recordExport } from './reportExportService.js';
 import { computeNextRunAt } from './scheduledReportService.js';
 import { sendScheduledReportEmail } from './emailService.js';
+import { getOrganizationBrand } from './organizationService.js';
 import { buildXlsxReport } from '../utils/xlsxReport.js';
 import { buildPdfReport } from '../utils/pdfReport.js';
 
@@ -48,10 +49,22 @@ async function runSchedule(schedule, now) {
       overrideSections: schedule.sections,
     });
 
-    const buffer =
-      schedule.format === 'pdf'
-        ? await buildPdfReport(schedule.report, sections, { generatedByName: 'Automated (Scheduled Report)' })
-        : buildXlsxReport(schedule.report, sections);
+    let pdfMeta;
+    if (schedule.format === 'pdf') {
+      const [org, templateName] = await Promise.all([
+        getOrganizationBrand(schedule.organizationId),
+        getTemplateName(schedule.organizationId, schedule.templateId),
+      ]);
+      pdfMeta = {
+        generatedByName: 'Automated (Scheduled Report)',
+        organizationName: org?.name ?? null,
+        organizationLogo: org?.logo ?? null,
+        organizationType: org?.orgType ?? null,
+        templateName,
+      };
+    }
+
+    const buffer = schedule.format === 'pdf' ? await buildPdfReport(schedule.report, sections, pdfMeta) : buildXlsxReport(schedule.report, sections);
 
     await recordExport({
       reportId: schedule.reportId,

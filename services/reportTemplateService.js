@@ -57,3 +57,16 @@ export async function resolveSections({ organizationId, templateId, overrideSect
 
   return sections;
 }
+
+// For display only (e.g. the PDF report header) — same visibility rule as
+// resolveSections, but a missing/invisible template quietly resolves to
+// null here rather than 404ing (resolveSections already validates this
+// exact templateId earlier in the same request; this is presentational).
+export async function getTemplateName(organizationId, templateId) {
+  if (!templateId) return null;
+  const template = await prisma.reportTemplate.findFirst({
+    where: { id: templateId, OR: [{ organizationId: null }, { organizationId }] },
+    select: { name: true },
+  });
+  return template?.name ?? null;
+}

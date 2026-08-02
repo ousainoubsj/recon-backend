@@ -15,6 +15,13 @@ export async function getUserMembership(userId) {
   return member;
 }
 
+// Org-scoped, not user-scoped (no getUserMembership call) — needed by
+// contexts with no "current session user" at all, like the scheduled-report
+// cron runner, which only has organizationId off the schedule row.
+export async function getOrganizationBrand(organizationId) {
+  return prisma.organization.findFirst({ where: { id: organizationId }, select: { name: true, logo: true, orgType: true } });
+}
+
 const LAST_ACTIVE_THROTTLE_MS = 5 * 60 * 1000;
 
 // Best-effort, like logAuditSafely — recording activity must never break a

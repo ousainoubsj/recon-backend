@@ -1,5 +1,7 @@
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import React from 'react';
-import { Circle, Document, Line, Page, Path, StyleSheet, Svg, Text, View, renderToBuffer } from '@react-pdf/renderer';
+import { Circle, Document, Image, Page, Path, StyleSheet, Svg, Text, View, renderToBuffer } from '@react-pdf/renderer';
 import { formatReportReference } from './reportReference.js';
 import { computeCategoryStats, getBreakRows, getNonMatchedRows } from './reportSections.js';
 
@@ -7,6 +9,11 @@ import { computeCategoryStats, getBreakRows, getNonMatchedRows } from './reportS
 // build step) — React.createElement directly, same component model minus
 // the JSX sugar.
 const h = React.createElement;
+
+// Copied into this repo (rather than referenced from recon-frontend/public)
+// so PDF generation doesn't depend on a shared filesystem between the two
+// separately-deployable services.
+const LOGO_SYM_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '../assets/logo-sym.png');
 
 const MAX_DETAIL_ROWS = 200; // keep the PDF a sane length for very large runs
 
@@ -37,51 +44,59 @@ const BORDER = '#E5E7EB';
 const TINT_GRAY = '#F9FAFB';
 const TINT_INDIGO = '#EEF2FF';
 const STATUS_GREEN = '#059669';
-const STATUS_GREEN_BG = '#ECFDF5';
-const STATUS_GREEN_BORDER = '#A7F3D0';
 
-const CONTENT_WIDTH = 612 - 40 * 2; // Letter width minus left/right page padding
+const PAGE_PADDING_X = 30;
+const CONTENT_WIDTH = 612 - PAGE_PADDING_X * 2; // Letter width minus left/right page padding
+
+const currencyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+function formatCurrency(value) {
+  return currencyFormatter.format(Number(value));
+}
 
 const styles = StyleSheet.create({
-  page: { paddingTop: 46, paddingBottom: 50, paddingHorizontal: 40, fontSize: 9, fontFamily: 'Helvetica', color: TEXT_DARK },
+  page: { paddingTop: 24, paddingBottom: 28, paddingHorizontal: PAGE_PADDING_X, fontSize: 9, fontFamily: 'Helvetica', color: TEXT_DARK },
   topBand: { position: 'absolute', top: 0, left: 0, right: 0, height: 6, backgroundColor: BRAND_INDIGO },
 
-  headerRow: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 },
-  brandBlock: { flexDirection: 'row', alignItems: 'center', width: 160 },
-  brandMarkText: { color: '#FFFFFF', fontFamily: 'Helvetica-Bold', fontSize: 15 },
-  brandTextBlock: { marginLeft: 8 },
+  // Section 1 — org logo + org name + org type, centered.
+  orgHeaderBlock: { alignItems: 'center', marginBottom: 10 },
+  orgLogo: { width: 40, height: 40, borderRadius: 8 },
+  orgLogoFallback: { width: 40, height: 40, borderRadius: 8, backgroundColor: '#9CA3AF', alignItems: 'center', justifyContent: 'center' },
+  orgLogoFallbackText: { color: '#FFFFFF', fontFamily: 'Helvetica-Bold', fontSize: 16 },
+  orgName: { fontSize: 11, fontFamily: 'Helvetica-Bold', color: TEXT_DARK, marginTop: 6 },
+  orgType: { fontSize: 7.5, color: TEXT_GRAY, marginTop: 2 },
+
+  // Section 2 — Reconcil brand, logo-sym.png beside the text (not stacked
+  // behind/under it — that made the wordmark unreadable), left-aligned.
+  brandSection: { flexDirection: 'row', alignItems: 'center', marginBottom: 10 },
+  brandLogoImage: { width: 30, height: 30, marginRight: 8 },
+  brandTextBlock: {},
   brandName: { fontSize: 14, fontFamily: 'Helvetica-Bold', color: BRAND_TEAL },
   brandTagline: { fontSize: 6, color: TEXT_LIGHT_GRAY, letterSpacing: 0.8, marginTop: 3 },
 
-  titleBlock: { width: 220 },
+  // Section 3 — reconciliation name + template name, left-aligned.
+  reconTitleSection: { marginBottom: 10 },
   title: { fontSize: 15, fontFamily: 'Helvetica-Bold', color: TEXT_DARK },
   subtitle: { fontSize: 8, color: TEXT_GRAY, marginTop: 3 },
 
-  metaBlock: { width: 150 },
-  metaRow: { marginBottom: 6 },
+  // Section 4 — metadata, single row, left-aligned.
+  metaSectionRow: { flexDirection: 'row', marginBottom: 10 },
+  metaCol: { marginRight: 30 },
   metaLabel: { fontSize: 6.5, fontFamily: 'Helvetica-Bold', color: BRAND_INDIGO, letterSpacing: 0.4 },
   metaValue: { fontSize: 8, color: TEXT_DARK, marginTop: 1 },
 
-  divider: { borderBottomWidth: 1, borderBottomColor: BORDER, marginBottom: 12 },
+  divider: { borderBottomWidth: 1, borderBottomColor: BORDER, marginBottom: 10 },
 
   sectionHeaderRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4, marginBottom: 8 },
   sectionAccent: { width: 3, height: 13, backgroundColor: BRAND_INDIGO, marginRight: 8 },
   sectionTitle: { fontSize: 12, fontFamily: 'Helvetica-Bold', color: TEXT_DARK },
 
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap' },
-  tile: { borderRadius: 5, borderWidth: 1, borderColor: BORDER, backgroundColor: TINT_GRAY, padding: 8, marginRight: 10, marginBottom: 10, flexDirection: 'row' },
-  tileIconWrap: { width: 22, height: 22, borderRadius: 11, alignItems: 'center', justifyContent: 'center', marginRight: 8 },
-  tileTextWrap: { flex: 1, justifyContent: 'center' },
+  tile: { borderRadius: 5, borderWidth: 1, borderColor: BORDER, backgroundColor: TINT_GRAY, padding: 8, marginRight: 10, marginBottom: 10 },
   tileValue: { fontSize: 14, fontFamily: 'Helvetica-Bold', color: TEXT_DARK },
-  tileLabel: { fontSize: 7, color: TEXT_GRAY, marginTop: 2 },
-  tileDelta: { fontSize: 6.5, fontFamily: 'Helvetica-Bold', marginTop: 2 },
+  tileLabel: { fontSize: 7, color: TEXT_GRAY },
+  tileDelta: { fontSize: 6.5, fontFamily: 'Helvetica-Bold' },
 
-  overviewRow: { flexDirection: 'row', marginBottom: 4 },
-  overviewText: { fontSize: 9.5, color: TEXT_DARK, lineHeight: 1.5, width: 340 },
-  statusBadge: { flex: 1, marginLeft: 20, borderRadius: 4, borderWidth: 1, borderColor: STATUS_GREEN_BORDER, backgroundColor: STATUS_GREEN_BG, padding: 8, flexDirection: 'row', alignItems: 'center' },
-  statusTextWrap: { marginLeft: 8 },
-  statusTitle: { fontSize: 9, fontFamily: 'Helvetica-Bold', color: STATUS_GREEN },
-  statusSubtitle: { fontSize: 6.5, color: STATUS_GREEN, marginTop: 2 },
+  overviewText: { fontSize: 9.5, color: TEXT_DARK, lineHeight: 1.5, marginBottom: 4 },
 
   table: { borderWidth: 1, borderColor: BORDER, borderRadius: 3, overflow: 'hidden' },
   tableHeaderRow: { flexDirection: 'row', backgroundColor: TINT_INDIGO },
@@ -103,64 +118,36 @@ const styles = StyleSheet.create({
   barFill: { height: 12, borderRadius: 3 },
   barLabel: { fontSize: 7.5, color: TEXT_DARK, marginLeft: 8, width: 130 },
 
-  footer: { position: 'absolute', bottom: 22, left: 40, right: 40, borderTopWidth: 0.5, borderTopColor: BORDER, paddingTop: 6 },
+  footer: { position: 'absolute', bottom: 12, left: PAGE_PADDING_X, right: PAGE_PADDING_X, borderTopWidth: 0.5, borderTopColor: BORDER, paddingTop: 6 },
   footerRow: { flexDirection: 'row', justifyContent: 'space-between' },
   footerText: { fontSize: 6.5, color: TEXT_LIGHT_GRAY, marginTop: 2 },
 });
-
-function SvgIcon({ variant, color, size = 20 }) {
-  const r = size / 2;
-  if (variant === 'check') {
-    return h(
-      Svg,
-      { width: size, height: size },
-      h(Circle, { cx: r, cy: r, r, fill: color }),
-      h(Path, {
-        d: `M ${r - r * 0.45} ${r} L ${r - r * 0.1} ${r + r * 0.35} L ${r + r * 0.5} ${r - r * 0.35}`,
-        stroke: '#FFFFFF',
-        strokeWidth: 1.6,
-        strokeLinecap: 'round',
-        strokeLinejoin: 'round',
-        fill: 'none',
-      }),
-    );
-  }
-  if (variant === 'cross') {
-    return h(
-      Svg,
-      { width: size, height: size },
-      h(Circle, { cx: r, cy: r, r, fill: color }),
-      h(Line, { x1: r - r * 0.35, y1: r - r * 0.35, x2: r + r * 0.35, y2: r + r * 0.35, stroke: '#FFFFFF', strokeWidth: 1.6, strokeLinecap: 'round' }),
-      h(Line, { x1: r + r * 0.35, y1: r - r * 0.35, x2: r - r * 0.35, y2: r + r * 0.35, stroke: '#FFFFFF', strokeWidth: 1.6, strokeLinecap: 'round' }),
-    );
-  }
-  return h(Svg, { width: size, height: size }, h(Circle, { cx: r, cy: r, r, fill: color }));
-}
 
 function SectionHeader({ title }) {
   return h(View, { style: styles.sectionHeaderRow }, h(View, { style: styles.sectionAccent }), h(Text, { style: styles.sectionTitle }, title));
 }
 
-// icon + value + label (+ optional real "vs previous run" delta) — matches
-// the dashboard's stat-tile visual language (StatsOverview.tsx).
-function StatTile({ icon = 'dot', color, value, label, delta, deltaGood, width, last }) {
+// value + label (+ optional real "vs previous run" delta, inline before the
+// label) — matches the dashboard's stat-tile visual language minus the icon
+// badge (StatsOverview.tsx).
+function StatTile({ value, label, delta, deltaGood, width, last }) {
   return h(
     View,
     { style: [styles.tile, { width }, last && { marginRight: 0 }] },
-    h(View, { style: styles.tileIconWrap }, h(SvgIcon, { variant: icon, color, size: 20 })),
+    h(Text, { style: styles.tileValue }, value),
     h(
       View,
-      { style: styles.tileTextWrap },
-      h(Text, { style: styles.tileValue }, value),
-      h(Text, { style: styles.tileLabel }, label),
+      { style: { flexDirection: 'row', alignItems: 'center', marginTop: 2 } },
+      // Delta comes first (in front of the label), not after it.
       delta != null &&
         h(
           Text,
-          { style: [styles.tileDelta, { color: deltaGood ? STATUS_GREEN : '#DC2626' }] },
+          { style: [styles.tileDelta, { color: deltaGood ? STATUS_GREEN : '#DC2626', marginRight: 4 }] },
           // Standard Helvetica has no ▲/▼ glyphs (outside WinAnsiEncoding) —
           // a plain +/- prefix renders reliably everywhere.
-          `${delta >= 0 ? '+' : '-'}${Math.abs(delta).toFixed(1)}% vs previous run`,
+          `${delta >= 0 ? '+' : '-'}${Math.abs(delta).toFixed(1)}%`,
         ),
+      h(Text, { style: styles.tileLabel }, label),
     ),
   );
 }
@@ -299,38 +286,57 @@ function CategoryBarChart({ stats }) {
   );
 }
 
-function ReportHeader({ report, reference, generatedByName }) {
+function ReportHeader({ report, reference, generatedByName, organizationName, organizationLogo, organizationType, templateName }) {
   return h(
     View,
     null,
+
+    // Section 1 — the reconciling org's own logo + name + org type, centered.
     h(
       View,
-      { style: styles.headerRow },
+      { style: styles.orgHeaderBlock },
+      organizationLogo
+        ? h(Image, { src: organizationLogo, style: styles.orgLogo })
+        : h(View, { style: styles.orgLogoFallback }, h(Text, { style: styles.orgLogoFallbackText }, (organizationName ?? '?').charAt(0).toUpperCase())),
+      h(Text, { style: styles.orgName }, organizationName ?? 'Your Organization'),
+      organizationType && h(Text, { style: styles.orgType }, organizationType),
+    ),
+
+    // Section 2 — Reconcil brand mark, left-aligned: logo image beside the wordmark, not stacked under it.
+    h(
+      View,
+      { style: styles.brandSection },
+      h(Image, { src: LOGO_SYM_PATH, style: styles.brandLogoImage }),
       h(
         View,
-        { style: styles.brandBlock },
-        h(View, { style: { width: 30, height: 30, borderRadius: 8, backgroundColor: BRAND_TEAL, alignItems: 'center', justifyContent: 'center' } }, h(Text, { style: styles.brandMarkText }, 'R')),
-        h(View, { style: styles.brandTextBlock }, h(Text, { style: styles.brandName }, 'Reconcil'), h(Text, { style: styles.brandTagline }, 'TRANSACTION RECONCILIATION')),
-      ),
-      h(
-        View,
-        { style: styles.titleBlock },
-        h(Text, { style: styles.title }, report.name || 'Reconciliation Report'),
-        h(Text, { style: styles.subtitle }, 'Reconciliation summary and analysis'),
-      ),
-      h(
-        View,
-        { style: styles.metaBlock },
-        [
-          ['Report ID', reference],
-          ['Generated On', new Date().toLocaleString()],
-          ['Run Date', new Date(report.runDate).toLocaleString()],
-          ['Prepared By', generatedByName ?? '—'],
-        ].map(([label, value], i) =>
-          h(View, { key: i, style: styles.metaRow }, h(Text, { style: styles.metaLabel }, label.toUpperCase()), h(Text, { style: styles.metaValue }, value)),
-        ),
+        { style: styles.brandTextBlock },
+        h(Text, { style: styles.brandName }, 'Reconcil'),
+        h(Text, { style: styles.brandTagline }, 'TRANSACTION RECONCILIATION'),
       ),
     ),
+
+    // Section 3 — this reconciliation's name + the template used to generate it, left-aligned.
+    h(
+      View,
+      { style: styles.reconTitleSection },
+      h(Text, { style: styles.title }, report.name || 'Reconciliation Report'),
+      h(Text, { style: styles.subtitle }, templateName ?? 'Custom Report'),
+    ),
+
+    // Section 4 — metadata, all on one row, left-aligned.
+    h(
+      View,
+      { style: styles.metaSectionRow },
+      ...[
+        ['Report ID', reference],
+        ['Generated On', new Date().toLocaleString()],
+        ['Run Date', new Date(report.runDate).toLocaleString()],
+        ['Prepared By', generatedByName ?? '—'],
+      ].map(([label, value], i) =>
+        h(View, { key: i, style: styles.metaCol }, h(Text, { style: styles.metaLabel }, label.toUpperCase()), h(Text, { style: styles.metaValue }, value)),
+      ),
+    ),
+
     h(View, { style: styles.divider }),
   );
 }
@@ -363,43 +369,33 @@ function deltaPercent(current, previous) {
   return ((current - previous) / previous) * 100;
 }
 
-function ReportDocument({ report, sections, generatedByName }) {
+function ReportDocument({ report, sections, generatedByName, organizationName, organizationLogo, organizationType, templateName }) {
   const reference = formatReportReference(report.sequenceYear, report.sequenceNumber) ?? report.id.slice(0, 8).toUpperCase();
   const matchPercent = report.totalRows > 0 ? (report.matchedCount / report.totalRows) * 100 : 0;
   const priorMatchDelta = report.priorRun ? deltaPercent(matchPercent, report.priorRun.matchRate) : null;
   const stats = computeCategoryStats(report);
 
   const children = [
-    h(ReportHeader, { key: 'header', report, reference, generatedByName }),
+    h(ReportHeader, { key: 'header', report, reference, generatedByName, organizationName, organizationLogo, organizationType, templateName }),
 
     h(SectionHeader, { key: 'exec-header', title: 'Executive Summary' }),
     h(StatTileGrid, {
       key: 'exec-tiles',
       tiles: [
-        { icon: 'dot', color: BRAND_INDIGO, value: `${matchPercent.toFixed(1)}%`, label: 'Match Rate', delta: priorMatchDelta, deltaGood: (priorMatchDelta ?? 0) >= 0 },
-        { icon: 'dot', color: TEXT_DARK, value: String(report.totalRows), label: 'Total Transactions' },
-        { icon: 'check', color: CATEGORY_COLORS.Matched, value: String(report.matchedCount), label: 'Matched Transactions' },
-        { icon: 'cross', color: CATEGORY_COLORS.Unmatched, value: String(report.unmatchedCount + report.mismatchedCount), label: 'Unmatched Transactions' },
+        { value: `${matchPercent.toFixed(1)}%`, label: 'Match Rate', delta: priorMatchDelta, deltaGood: (priorMatchDelta ?? 0) >= 0 },
+        { value: String(report.totalRows), label: 'Total Transactions' },
+        { value: String(report.matchedCount), label: 'Matched Transactions' },
+        { value: String(report.unmatchedCount + report.mismatchedCount), label: 'Unmatched Transactions' },
       ],
     }),
 
     h(SectionHeader, { key: 'overview-header', title: 'Reconciliation Overview' }),
     h(
-      View,
-      { key: 'overview', style: styles.overviewRow },
-      h(
-        Text,
-        { style: styles.overviewText },
-        `Out of ${report.totalRows} total transactions, ${report.matchedCount} (${matchPercent.toFixed(2)}%) were successfully matched. There ` +
-          `${report.unmatchedCount + report.mismatchedCount === 1 ? 'is' : 'are'} ${report.unmatchedCount + report.mismatchedCount} unmatched or mismatched ` +
-          `transaction${report.unmatchedCount + report.mismatchedCount === 1 ? '' : 's'} with a total break value of ${Number(report.totalBreakValue).toFixed(2)}.`,
-      ),
-      h(
-        View,
-        { style: styles.statusBadge },
-        h(SvgIcon, { variant: 'check', color: STATUS_GREEN, size: 18 }),
-        h(View, { style: styles.statusTextWrap }, h(Text, { style: styles.statusTitle }, 'Completed'), h(Text, { style: styles.statusSubtitle }, 'Reconciliation completed successfully')),
-      ),
+      Text,
+      { key: 'overview', style: styles.overviewText },
+      `Out of ${report.totalRows} total transactions, ${report.matchedCount} (${matchPercent.toFixed(2)}%) were successfully matched. There ` +
+        `${report.unmatchedCount + report.mismatchedCount === 1 ? 'is' : 'are'} ${report.unmatchedCount + report.mismatchedCount} unmatched or mismatched ` +
+        `transaction${report.unmatchedCount + report.mismatchedCount === 1 ? '' : 's'} with a total break value of ${formatCurrency(report.totalBreakValue)}.`,
     ),
   ];
 
@@ -410,16 +406,15 @@ function ReportDocument({ report, sections, generatedByName }) {
         key: 'summary-tiles',
         columns: 3,
         tiles: [
-          { color: CATEGORY_COLORS.Matched, value: String(report.matchedCount), label: 'Matched' },
-          { color: CATEGORY_COLORS.Mismatched, value: String(report.mismatchedCount), label: 'Mismatched' },
-          { color: CATEGORY_COLORS.Unmatched, value: String(report.unmatchedCount), label: 'Unmatched' },
-          { color: CATEGORY_COLORS.Duplicates, value: String(report.duplicateCount), label: 'Duplicates' },
-          { color: TEXT_DARK, value: String(report.totalRows), label: 'Total Rows' },
+          { value: String(report.matchedCount), label: 'Matched' },
+          { value: String(report.mismatchedCount), label: 'Mismatched' },
+          { value: String(report.unmatchedCount), label: 'Unmatched' },
+          { value: String(report.duplicateCount), label: 'Duplicates' },
+          { value: String(report.totalRows), label: 'Total Rows' },
           (() => {
             const breakValueDelta = report.priorRun ? deltaPercent(Number(report.totalBreakValue), report.priorRun.totalBreakValue) : null;
             return {
-              color: TEXT_DARK,
-              value: Number(report.totalBreakValue).toFixed(2),
+              value: formatCurrency(report.totalBreakValue),
               label: 'Total Break Value',
               delta: breakValueDelta,
               deltaGood: (breakValueDelta ?? 0) <= 0,
@@ -502,7 +497,7 @@ function ReportDocument({ report, sections, generatedByName }) {
         key: 'break-table',
         columns: [
           { key: 'ref', label: 'Reference', width: 300 },
-          { width: CONTENT_WIDTH - 300, label: 'Amount Difference', align: 'right', render: (row) => Number(row.amountDiff).toFixed(2) },
+          { width: CONTENT_WIDTH - 300, label: 'Amount Difference', align: 'right', render: (row) => formatCurrency(row.amountDiff) },
         ],
         rows: breakRows.slice(0, MAX_DETAIL_ROWS),
         emptyLabel: 'No amount breaks found.',
@@ -544,7 +539,7 @@ function ReportDocument({ report, sections, generatedByName }) {
         columns: [
           { key: 'ref', label: 'Reference', width: 260 },
           { width: 140, label: 'Status', render: (row) => row.status.replace('_', ' ') },
-          { width: CONTENT_WIDTH - 400, label: 'Amount', align: 'right', render: (row) => Number(row.amountA ?? row.amountB ?? 0).toFixed(2) },
+          { width: CONTENT_WIDTH - 400, label: 'Amount', align: 'right', render: (row) => formatCurrency(row.amountA ?? row.amountB ?? 0) },
         ],
         rows: sorted.slice(0, MAX_DETAIL_ROWS),
         emptyLabel: 'No unmatched rows.',
@@ -562,9 +557,9 @@ function ReportDocument({ report, sections, generatedByName }) {
 /**
  * @param {object} report - a Report row with its `rows` included, plus `priorRun`
  * @param {{summary: boolean, matchStatistics: boolean, breakAnalysis: boolean, unmatchedDetails: boolean, chartsAndGraphs: boolean}} sections
- * @param {{generatedByName?: string}} meta
+ * @param {{generatedByName?: string, organizationName?: string, organizationLogo?: string, organizationType?: string, templateName?: string}} meta
  * @returns {Promise<Buffer>}
  */
 export function buildPdfReport(report, sections, meta = {}) {
-  return renderToBuffer(h(ReportDocument, { report, sections, generatedByName: meta.generatedByName }));
+  return renderToBuffer(h(ReportDocument, { report, sections, ...meta }));
 }

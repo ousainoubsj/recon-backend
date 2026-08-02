@@ -3,7 +3,8 @@ import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
 import { logAuditSafely, logResultsViewedOnce } from '../services/auditLogService.js';
-import { resolveSections } from '../services/reportTemplateService.js';
+import { resolveSections, getTemplateName } from '../services/reportTemplateService.js';
+import { getOrganizationBrand } from '../services/organizationService.js';
 import {
   recordExport,
   listExports as listReportExports,
@@ -16,6 +17,20 @@ import { buildXlsxReport } from '../utils/xlsxReport.js';
 import { buildPdfReport } from '../utils/pdfReport.js';
 import { downloadFromR2 } from '../utils/fileParser.js';
 import { parsePositiveInt } from '../utils/queryParams.js';
+
+// Shared by every buildPdfReport call site (manual export, bulk export,
+// download-fallback regenerate) so the PDF header's org branding/template
+// name stay consistent regardless of which flow generated the file.
+async function buildPdfMeta({ organizationId, templateId, generatedByName }) {
+  const [org, templateName] = await Promise.all([getOrganizationBrand(organizationId), getTemplateName(organizationId, templateId)]);
+  return {
+    generatedByName,
+    organizationName: org?.name ?? null,
+    organizationLogo: org?.logo ?? null,
+    organizationType: org?.orgType ?? null,
+    templateName,
+  };
+}
 
 export const listReports = async (req, res) => {
   const limit = parsePositiveInt(req.query.limit, 100);
@@ -208,14 +223,15 @@ export const bulkExportReports = async (req, res) => {
     templateId,
     overrideSections,
   });
+  const pdfMeta =
+    format === 'pdf'
+      ? await buildPdfMeta({ organizationId: reports[0].organizationId, templateId, generatedByName: req.session.user.name })
+      : null;
 
   const built = [];
   for (const report of reports) {
     try {
-      const buffer =
-        format === 'pdf'
-          ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
-          : buildXlsxReport(report, sections);
+      const buffer = format === 'pdf' ? await buildPdfReport(report, sections, pdfMeta) : buildXlsxReport(report, sections);
       built.push({ report, buffer });
     } catch (err) {
       await recordExport({
@@ -287,7 +303,11 @@ export const exportReport = async (req, res) => {
   try {
     buffer =
       format === 'pdf'
-        ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
+        ? await buildPdfReport(
+            report,
+            sections,
+            await buildPdfMeta({ organizationId: report.organizationId, templateId, generatedByName: req.session.user.name }),
+          )
         : buildXlsxReport(report, sections);
   } catch (err) {
     if (!preview) {
@@ -365,7 +385,11 @@ export const downloadExport = async (req, res) => {
           templateId: exportRow.templateId ?? undefined,
         });
         return exportRow.format === 'pdf'
-          ? await buildPdfReport(report, sections, { generatedByName: req.session.user.name })
+          ? await buildPdfReport(
+              report,
+              sections,
+              await buildPdfMeta({ organizationId: report.organizationId, templateId: exportRow.templateId, generatedByName: req.session.user.name }),
+            )
           : buildXlsxReport(report, sections);
       })();
 

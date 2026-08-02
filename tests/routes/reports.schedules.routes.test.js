@@ -14,6 +14,7 @@ jest.unstable_mockModule('../../middleware/authenticate.js', () => ({
 const mockGetUserMembership = jest.fn();
 jest.unstable_mockModule('../../services/organizationService.js', () => ({
   getUserMembership: mockGetUserMembership,
+  getOrganizationBrand: jest.fn().mockResolvedValue({ name: 'Test Org', logo: null }),
 }));
 
 const mockReportService = { getReport: jest.fn() };
@@ -27,7 +28,10 @@ const mockScheduledReportService = {
 };
 jest.unstable_mockModule('../../services/scheduledReportService.js', () => mockScheduledReportService);
 
-jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({ resolveSections: jest.fn() }));
+jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
+  resolveSections: jest.fn(),
+  getTemplateName: jest.fn().mockResolvedValue(null),
+}));
 jest.unstable_mockModule('../../services/reportExportService.js', () => ({
   recordExport: jest.fn().mockResolvedValue(undefined),
   listExports: jest.fn(),

@@ -6,7 +6,14 @@ const mockPrisma = {
 jest.unstable_mockModule('../../db/index.js', () => ({ prisma: mockPrisma }));
 
 const mockResolveSections = jest.fn();
-jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({ resolveSections: mockResolveSections }));
+const mockGetTemplateName = jest.fn().mockResolvedValue(null);
+jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
+  resolveSections: mockResolveSections,
+  getTemplateName: mockGetTemplateName,
+}));
+
+const mockGetOrganizationBrand = jest.fn().mockResolvedValue({ name: 'Test Org', logo: null });
+jest.unstable_mockModule('../../services/organizationService.js', () => ({ getOrganizationBrand: mockGetOrganizationBrand }));
 
 const mockRecordExport = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/reportExportService.js', () => ({ recordExport: mockRecordExport }));
@@ -98,7 +105,12 @@ describe('runDueScheduledReports', () => {
 
     await runDueScheduledReports(NOW);
 
-    expect(mockBuildPdfReport).toHaveBeenCalledWith(schedule.report, { summary: true }, { generatedByName: 'Automated (Scheduled Report)' });
+    expect(mockBuildPdfReport).toHaveBeenCalledWith(schedule.report, { summary: true }, {
+      generatedByName: 'Automated (Scheduled Report)',
+      organizationName: 'Test Org',
+      organizationLogo: null,
+      templateName: null,
+    });
     expect(mockBuildXlsxReport).not.toHaveBeenCalled();
   });
 
