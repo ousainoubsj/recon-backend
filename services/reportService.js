@@ -21,6 +21,23 @@ const SAMPLE_ROW_CAP = 2000;
 
 const toNum = (decimal) => (decimal == null ? 0 : Number(decimal));
 
+// A report's own config always wins; this only fills in amountTolerance/
+// dateToleranceDays when the frontend hasn't set them yet (a brand-new draft
+// with no saved template applied) — the org's Reconciliation Defaults settings
+// exist specifically to seed this case, but nothing read them until now.
+async function withOrgToleranceDefaults(organizationId, config) {
+  if (config?.amountTolerance !== undefined && config?.dateToleranceDays !== undefined) return config;
+  const org = await prisma.organization.findFirst({
+    where: { id: organizationId },
+    select: { defaultAmountTolerance: true, defaultDateToleranceDays: true },
+  });
+  return {
+    ...config,
+    amountTolerance: config?.amountTolerance ?? org?.defaultAmountTolerance?.toNumber(),
+    dateToleranceDays: config?.dateToleranceDays ?? org?.defaultDateToleranceDays,
+  };
+}
+
 // Mirrors the frontend's formatReportReference (recon-frontend/lib/format.ts)
 // exactly — audit-log metadata should show the same human-readable
 // REC-YYYY-NNNNNN reference the UI does, not the raw UUID. Exported since
@@ -251,6 +268,7 @@ function aggregatePeriod(reports) {
  */
 export async function saveReport(userId, dto, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  const config = await withOrgToleranceDefaults(organizationId, dto.config);
 
   const report = await prisma.$transaction(async (tx) => {
     // This path always creates an already-'completed' report (the schema
@@ -273,9 +291,9 @@ export async function saveReport(userId, dto, { ip } = {}) {
         mismatchedCount: dto.summary.mismatched,
         duplicateCount: dto.summary.duplicates,
         totalBreakValue: dto.summary.totalBreakValue,
-        amountTolerance: dto.config.amountTolerance,
-        dateToleranceDays: dto.config.dateToleranceDays ?? null,
-        config: dto.config,
+        amountTolerance: config.amountTolerance,
+        dateToleranceDays: config.dateToleranceDays ?? null,
+        config,
         sequenceYear: year,
         sequenceNumber,
       },
@@ -869,6 +887,7 @@ export async function getFilePairTrend(userId, reportId, { scope = 'filePair', l
 // a progress percentage). Private to its creator, unlike a completed report.
 export async function saveDraft(userId, dto) {
   const { organizationId } = await getUserMembership(userId);
+  const config = await withOrgToleranceDefaults(organizationId, dto.config);
   const report = await prisma.report.create({
     data: {
       userId,
@@ -878,7 +897,7 @@ export async function saveDraft(userId, dto) {
       fileAName: dto.fileAName ?? null,
       fileBName: dto.fileBName ?? null,
       progress: dto.progress ?? 0,
-      config: dto.config ?? undefined,
+      config: config ?? undefined,
     },
   });
   return report;
@@ -952,6 +971,7 @@ export async function listDrafts(userId) {
 export async function completeDraft(userId, reportId, dto, { ip } = {}) {
   const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
   if (!draft) throw new NotFoundError();
+  const config = await withOrgToleranceDefaults(draft.organizationId, dto.config);
 
   const report = await prisma.$transaction((tx) =>
     persistCompletedRun(tx, reportId, {
@@ -960,7 +980,7 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
       fileBName: dto.fileBName,
       summary: dto.summary,
       rows: dto.rows,
-      config: dto.config,
+      config,
     }),
   );
 
@@ -999,6 +1019,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
   }
 
   const { organizationId } = await getUserMembership(userId);
+  const config = await withOrgToleranceDefaults(organizationId, dto.config);
 
   await logAuditSafely(userId, {
     action: 'report.run.started',
@@ -1017,7 +1038,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     ]);
     const fileA = parseTabularFile(fileABuffer, draft.fileAName);
     const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
-    ({ summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, dto.config));
+    ({ summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, config));
   } catch (err) {
     await prisma.report.update({ where: { id: reportId }, data: { status: 'failed', errorMessage: err.message } });
     await logAuditSafely(userId, {
@@ -1040,7 +1061,7 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
       fileBName: draft.fileBName,
       summary,
       rows,
-      config: dto.config,
+      config,
       columnMapping: dto.columnMapping,
       sourceReportId,
     }),

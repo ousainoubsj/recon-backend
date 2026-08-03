@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail } from '../services/emailService.js';
+import { filterEmailNotificationOptedIn } from '../services/settingsService.js';
 import { logAuditSafely, logResultsViewedOnce } from '../services/auditLogService.js';
 import { resolveSections, getTemplateName } from '../services/reportTemplateService.js';
 import { getOrganizationBrand } from '../services/organizationService.js';
@@ -407,8 +408,13 @@ export const deleteExport = async (req, res) => {
 
 export const emailReport = async (req, res) => {
   const report = await reportService.getReport(req.session.user.id, req.params.id);
-  await sendReportEmail(report, req.body.to);
-  res.status(202).json({ sent: true });
+  const recipients = await filterEmailNotificationOptedIn(req.body.to);
+  if (recipients.length === 0) {
+    res.status(202).json({ sent: false, reason: 'All recipients have opted out of email notifications' });
+  } else {
+    await sendReportEmail(report, recipients);
+    res.status(202).json({ sent: true });
+  }
 
   await logAuditSafely(req.session.user.id, {
     action: 'report.email',

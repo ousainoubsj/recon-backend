@@ -151,3 +151,17 @@ export async function updateNotificationPreferences(userId, dto, { ip } = {}) {
 
   return { emailNotificationsEnabled: user.emailNotificationsEnabled, weeklyDigestEnabled: user.weeklyDigestEnabled };
 }
+
+// Report-export recipients are free-typed addresses, most of which aren't
+// registered Users at all (external counterparties) — the toggle only means
+// something for the subset that are, so this only ever removes addresses that
+// match a registered, opted-out User and leaves everything else untouched.
+export async function filterEmailNotificationOptedIn(emails) {
+  const lower = emails.map((e) => e.toLowerCase());
+  const users = await prisma.user.findMany({
+    where: { email: { in: lower } },
+    select: { email: true, emailNotificationsEnabled: true },
+  });
+  const optedOut = new Set(users.filter((u) => !u.emailNotificationsEnabled).map((u) => u.email.toLowerCase()));
+  return emails.filter((e) => !optedOut.has(e.toLowerCase()));
+}
