@@ -50,6 +50,12 @@ export const auth = betterAuth({
     },
   },
   trustedOrigins: [process.env.FRONTEND_URL, process.env.BETTER_AUTH_URL],
+  // Without this, an OAuth error that isn't caught by a call-site
+  // errorCallbackURL falls back to {BETTER_AUTH_URL}/error, which redirects
+  // to this backend's own root and 404s there instead of reaching the user.
+  onAPIError: {
+    errorURL: `${process.env.FRONTEND_URL}/`,
+  },
   // Frontend (recon-cil.com) and backend (api.recon-cil.com) are different
   // hostnames in production, so a host-only session cookie set by the
   // backend is invisible to requests hitting the frontend's own server
