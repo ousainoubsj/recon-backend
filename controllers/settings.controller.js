@@ -9,6 +9,9 @@ import { FileTooLargeError, ValidationError } from '../errors.js';
 const LOGO_ALLOWED_CONTENT_TYPES = new Set(['image/png', 'image/svg+xml']);
 const LOGO_MAX_SIZE_BYTES = 2 * 1024 * 1024;
 
+const AVATAR_ALLOWED_CONTENT_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp']);
+const AVATAR_MAX_SIZE_BYTES = 2 * 1024 * 1024;
+
 export const getOrganizationInfo = async (req, res) => {
   const info = await settingsService.getOrganizationInfo(req.session.user.id);
   res.json(info);
@@ -73,6 +76,44 @@ export const createOrganizationLogoPresignedUpload = async (req, res) => {
     action: 'settings.organization_logo.presign_requested',
     entityType: 'organization',
     entityId: organizationId,
+    status: 'info',
+    ip: req.ip,
+    metadata: { filename, contentType },
+  });
+};
+
+// Same presign-only shape as the organization logo above, just per-user and
+// keyed under the user's own id — the frontend PUTs straight to R2, then
+// persists the resulting publicUrl via Better Auth's existing
+// authClient.updateUser({ image }), no separate confirm endpoint needed.
+export const createAvatarPresignedUpload = async (req, res) => {
+  const { filename, contentType, size } = req.body;
+
+  if (typeof size !== 'number' || size > AVATAR_MAX_SIZE_BYTES) {
+    throw new FileTooLargeError();
+  }
+  if (!AVATAR_ALLOWED_CONTENT_TYPES.has(contentType)) {
+    throw new ValidationError('Only PNG, JPEG, or WEBP files are accepted');
+  }
+
+  const userId = req.session.user.id;
+  const key = `user-avatars/${userId}/${Date.now()}-${filename}`;
+  const presignedUrl = await getSignedUrl(
+    r2,
+    new PutObjectCommand({
+      Bucket: process.env.R2_BUCKET_NAME,
+      Key: key,
+      ContentType: contentType,
+    }),
+    { expiresIn: 300 },
+  );
+
+  res.json({ url: presignedUrl, publicUrl: `${process.env.R2_PUBLIC_URL}/${key}` });
+
+  await logAuditSafely(userId, {
+    action: 'settings.avatar.presign_requested',
+    entityType: 'user',
+    entityId: userId,
     status: 'info',
     ip: req.ip,
     metadata: { filename, contentType },

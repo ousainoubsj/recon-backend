@@ -53,6 +53,12 @@ const organizationLogoPresignSchema = z.object({
   size: z.number().positive(),
 });
 
+const avatarPresignSchema = z.object({
+  filename: z.string().min(1),
+  contentType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+  size: z.number().positive(),
+});
+
 settingsRouter.get(
   '/organization-info',
   authenticate,
@@ -106,4 +112,12 @@ settingsRouter.post(
   catchAsync(requirePermission('organization', 'update')),
   validate(organizationLogoPresignSchema),
   catchAsync(settingsController.createOrganizationLogoPresignedUpload),
+);
+
+// Per-user, no RBAC resource needed — everyone may change their own avatar.
+settingsRouter.post(
+  '/avatar/presign',
+  authenticate,
+  validate(avatarPresignSchema),
+  catchAsync(settingsController.createAvatarPresignedUpload),
 );
