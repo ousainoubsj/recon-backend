@@ -1177,7 +1177,7 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
   // so a report that no longer matches still correctly 404s either way.
   const existing = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    select: { userId: true, name: true, fileAName: true, fileBName: true },
+    select: { userId: true, name: true, fileAName: true, fileBName: true, status: true },
   });
   if (!existing) throw new NotFoundError();
 
@@ -1196,6 +1196,7 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
     metadata: {
       reportName: existing.name ?? 'Untitled Reconciliation',
       filePair: `${existing.fileAName ?? 'File A'} vs ${existing.fileBName ?? 'File B'}`,
+      wasDraft: existing.status === 'draft',
     },
   });
 
