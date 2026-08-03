@@ -40,6 +40,37 @@ app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(cookieParser());
 app.use(pinoHttp());
 
+// Browsers that signed in before COOKIE_DOMAIN/crossSubDomainCookies was
+// enabled are stuck holding a host-only cookie (Domain=api.recon-cil.com)
+// alongside every new shared-domain one (Domain=.recon-cil.com) that
+// sign-in creates from now on. Both get sent on every request under the
+// same name — the `cookie` package keeps only the first (oldest-created,
+// per RFC 6265 ordering) value and silently drops the rest, so Better
+// Auth deterministically reads the dead host-only token, fails its DB
+// lookup, and clears the *working* shared-domain cookie as collateral.
+// Its own cleanup can't reach the host-only one since Domain scopes them
+// as different cookies — so it never self-heals without this.
+const LEGACY_AUTH_COOKIES = [
+  '__Secure-better-auth.session_token',
+  '__Secure-better-auth.session_data',
+  '__Secure-better-auth.dont_remember',
+];
+app.use('/api/auth', (req, res, next) => {
+  const counts = {};
+  for (const pair of (req.headers.cookie || '').split(';')) {
+    const i = pair.indexOf('=');
+    if (i === -1) continue;
+    const name = pair.slice(0, i).trim();
+    counts[name] = (counts[name] || 0) + 1;
+  }
+  for (const name of LEGACY_AUTH_COOKIES) {
+    if (counts[name] > 1) {
+      res.cookie(name, '', { maxAge: 0, path: '/', httpOnly: true, secure: true, sameSite: 'lax' });
+    }
+  }
+  next();
+});
+
 // Better Auth's own handler reads the raw body itself, so it's mounted
 // before express.json() and gets its own (tighter) rate limit.
 app.use('/api/auth', authRateLimiter, authRouter);
