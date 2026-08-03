@@ -23,7 +23,13 @@ export const app = express();
 // instead of the proxy's.
 app.set('trust proxy', 1);
 
-app.use(helmet());
+// Frontend and backend are separate subdomains of the same site
+// (recon-cil.com / api.recon-cil.com), so Helmet's default same-origin
+// CORP header blocks cross-subdomain fetches in Chrome (not enforced as
+// strictly by Safari) — relax it to same-site.
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'same-site' },
+}));
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(cookieParser());
 app.use(pinoHttp());
