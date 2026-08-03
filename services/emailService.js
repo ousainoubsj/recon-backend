@@ -137,6 +137,48 @@ export async function sendPasswordResetEmail(user, url) {
  * Wired into the `emailOTP` plugin's `sendVerificationOTP` option.
  * @param {{email: string, otp: string, type: 'sign-in' | 'email-verification' | 'forget-password' | 'change-email'}} data
  */
+function formatWeekRange(weekStart, weekEnd) {
+  const start = new Date(weekStart);
+  const end = new Date(new Date(weekEnd).getTime() - 1); // weekEnd is exclusive
+  return `${formatDate(start)} – ${formatDate(end)}`;
+}
+
+// Headline comparison line — mirrors the "no baseline yet" convention used
+// by dashboard's deltaPercent (null when there's nothing to compare against)
+// and StatsOverview's "No comparison yet" badge, just as a plain sentence
+// since this is plain-text-friendly email copy, not a UI badge.
+function buildComparisonLine(current, prior) {
+  if (prior.count === 0) return 'No prior week to compare against yet.';
+  const delta = current.avgMatchRate - prior.avgMatchRate;
+  if (Math.abs(delta) < 0.05) return 'Match rate was about the same as last week.';
+  const direction = delta > 0 ? 'better' : 'worse';
+  return `${Math.abs(delta).toFixed(1)}% ${direction} match rate than last week.`;
+}
+
+// Org-wide digest (not per-user) — sent to every active admin in an org that
+// has Weekly Digest enabled. `stats` is exactly reportService.js's
+// getWeeklyDigestStats(organizationId) return shape.
+export async function sendWeeklyDigestEmail(admin, organizationName, stats) {
+  const html = await renderEmailTemplate('email-weekly-digest', {
+    name: escapeHtmlForEmail(admin.name ?? 'there'),
+    organizationName: escapeHtmlForEmail(organizationName),
+    weekRangeFormatted: escapeHtmlForEmail(formatWeekRange(stats.weekStart, stats.weekEnd)),
+    reconciliationCount: stats.current.count,
+    avgMatchRate: `${stats.current.avgMatchRate.toFixed(1)}%`,
+    unmatchedCount: stats.current.unmatchedTransactions,
+    totalBreakValue: formatCurrency(stats.current.totalBreakValue),
+    comparisonLine: escapeHtmlForEmail(buildComparisonLine(stats.current, stats.prior)),
+    dashboardUrl: `${process.env.FRONTEND_URL}/dashboard`,
+  });
+
+  await sendEmail({
+    to: admin.email,
+    subject: `Weekly digest — ${organizationName}`,
+    html,
+    text: htmlToText(html),
+  });
+}
+
 export async function sendOtpEmail({ email, otp }) {
   const html = await renderEmailTemplate('email-otp', {
     otp,

@@ -152,69 +152,85 @@ describe('updateReconciliationDefaults', () => {
 });
 
 describe('getNotificationPreferences', () => {
-  it("reads the caller's own User row, not org-scoped", async () => {
-    const prefs = { emailNotificationsEnabled: true, weeklyDigestEnabled: false };
-    mockPrisma.user.findFirst.mockResolvedValue(prefs);
+  it("reads emailNotificationsEnabled from the caller's own User row and weeklyDigestEnabled from their org", async () => {
+    mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: true });
+    mockPrisma.organization.findFirst.mockResolvedValue({ weeklyDigestEnabled: false });
 
     const result = await getNotificationPreferences(USER_ID);
 
-    expect(result).toBe(prefs);
+    expect(result).toEqual({ emailNotificationsEnabled: true, weeklyDigestEnabled: false });
     expect(mockPrisma.user.findFirst).toHaveBeenCalledWith({
       where: { id: USER_ID },
-      select: { emailNotificationsEnabled: true, weeklyDigestEnabled: true },
+      select: { emailNotificationsEnabled: true },
     });
-    expect(mockPrisma.member.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.organization.findFirst).toHaveBeenCalledWith({
+      where: { id: ORG_ID },
+      select: { weeklyDigestEnabled: true },
+    });
   });
 });
 
 describe('updateNotificationPreferences', () => {
-  it("updates the caller's own User row and audit-logs a from/to diff as info", async () => {
-    mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: true, weeklyDigestEnabled: false });
-    mockPrisma.user.update.mockResolvedValue({
-      id: USER_ID,
-      emailNotificationsEnabled: false,
-      weeklyDigestEnabled: true,
-    });
+  it('updates emailNotificationsEnabled on User (self-service, no role check) and audit-logs against entityType user', async () => {
+    mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: true });
+    mockPrisma.user.update.mockResolvedValue({ emailNotificationsEnabled: false });
+    mockPrisma.organization.findFirst.mockResolvedValue({ weeklyDigestEnabled: false });
 
-    const result = await updateNotificationPreferences(USER_ID, {
-      emailNotificationsEnabled: false,
-      weeklyDigestEnabled: true,
-    });
+    const result = await updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false });
 
-    expect(result).toEqual({ emailNotificationsEnabled: false, weeklyDigestEnabled: true });
+    expect(result).toEqual({ emailNotificationsEnabled: false, weeklyDigestEnabled: false });
     expect(mockPrisma.user.update).toHaveBeenCalledWith({
       where: { id: USER_ID },
-      data: { emailNotificationsEnabled: false, weeklyDigestEnabled: true },
+      data: { emailNotificationsEnabled: false },
     });
+    expect(mockPrisma.organization.update).not.toHaveBeenCalled();
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'settings.notifications.update',
       entityType: 'user',
       entityId: USER_ID,
       status: 'info',
-      metadata: {
-        changes: {
-          emailNotificationsEnabled: { from: true, to: false },
-          weeklyDigestEnabled: { from: false, to: true },
-        },
-      },
+      metadata: { changes: { emailNotificationsEnabled: { from: true, to: false } } },
     });
   });
 
-  it('updates only the provided field', async () => {
+  it('updates weeklyDigestEnabled on Organization for an admin and audit-logs against entityType organization', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin' });
     mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: true });
-    mockPrisma.user.update.mockResolvedValue({ emailNotificationsEnabled: false, weeklyDigestEnabled: false });
+    mockPrisma.organization.findFirst.mockResolvedValue({ weeklyDigestEnabled: false });
+    mockPrisma.organization.update.mockResolvedValue({ weeklyDigestEnabled: true });
 
-    await updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false });
+    const result = await updateNotificationPreferences(USER_ID, { weeklyDigestEnabled: true });
 
-    expect(mockPrisma.user.update).toHaveBeenCalledWith({
-      where: { id: USER_ID },
-      data: { emailNotificationsEnabled: false },
+    expect(result).toEqual({ emailNotificationsEnabled: true, weeklyDigestEnabled: true });
+    expect(mockPrisma.organization.update).toHaveBeenCalledWith({
+      where: { id: ORG_ID },
+      data: { weeklyDigestEnabled: true },
     });
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'settings.notifications.update',
+      entityType: 'organization',
+      entityId: ORG_ID,
+      status: 'info',
+      metadata: { changes: { weeklyDigestEnabled: { from: false, to: true } } },
+    });
+  });
+
+  it('rejects a non-admin trying to set weeklyDigestEnabled, without touching emailNotificationsEnabled in the same call', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+
+    await expect(
+      updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false, weeklyDigestEnabled: true }),
+    ).rejects.toThrow('Valid session but insufficient role');
+
+    expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    expect(mockPrisma.organization.update).not.toHaveBeenCalled();
   });
 
   it('does not audit-log when the provided value matches the current one', async () => {
     mockPrisma.user.findFirst.mockResolvedValue({ emailNotificationsEnabled: false });
-    mockPrisma.user.update.mockResolvedValue({ emailNotificationsEnabled: false, weeklyDigestEnabled: false });
+    mockPrisma.user.update.mockResolvedValue({ emailNotificationsEnabled: false });
+    mockPrisma.organization.findFirst.mockResolvedValue({ weeklyDigestEnabled: false });
 
     await updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false });
 

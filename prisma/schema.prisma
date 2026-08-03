@@ -90,12 +90,11 @@ model User {
   members       Member[]
   invitations   Invitation[]
 
-  // Real, persisted preferences — but nothing in this codebase sends a
-  // notification email or a weekly digest yet, so these don't gate
-  // anything real today (schema forward-compatibility, same reasoning as
-  // ReportStatus.failed).
+  // Gates report-export recipients who are registered, opted-out org members
+  // (services/settingsService.js's filterEmailNotificationOptedIn) — external
+  // recipients are unaffected. Weekly Digest moved to Organization (below,
+  // org-level/admin-only), not a per-user preference.
   emailNotificationsEnabled Boolean @default(true) @map("email_notifications_enabled")
-  weeklyDigestEnabled       Boolean @default(false) @map("weekly_digest_enabled")
 
   @@map("users")
 }
@@ -438,6 +437,10 @@ model Organization {
   currency                 String?             @db.VarChar(10)
   defaultAmountTolerance   Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
   defaultDateToleranceDays Int?                @map("default_date_tolerance_days")
+  // Org-wide, admin-only (not a per-user preference) — when on, every active
+  // admin member gets a weekly email + in-app notification summarizing the
+  // org's reconciliation activity. See services/weeklyDigestService.js.
+  weeklyDigestEnabled      Boolean             @default(false) @map("weekly_digest_enabled")
   // Canonical list of department names admins can assign to members via
   // Member.department (still a plain freeform string, not a FK — this list
   // is a soft steer for the UI, not an enforced constraint on that column).

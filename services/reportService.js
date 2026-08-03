@@ -541,6 +541,32 @@ export async function getHistoryStats(userId) {
   };
 }
 
+// services/weeklyDigestService.js's per-org content — current-vs-prior 7-day
+// window, same "one query spanning both windows, filter in JS" shape as
+// getHistoryStats above. Takes organizationId directly (not userId +
+// getUserMembership) since the digest job already has every org's id
+// resolved before calling this — it isn't running inside a user request.
+export async function getWeeklyDigestStats(organizationId) {
+  const current = dayRange(0, 7);
+  const prior = dayRange(7, 7);
+  const reports = await prisma.report.findMany({
+    where: { organizationId, status: 'completed', runDate: { gte: prior.start, lt: current.end } },
+    select: {
+      runDate: true,
+      totalRows: true,
+      matchedCount: true,
+      unmatchedCount: true,
+      mismatchedCount: true,
+      totalBreakValue: true,
+    },
+  });
+
+  const currentStats = aggregatePeriod(reports.filter((r) => r.runDate >= current.start));
+  const priorStats = aggregatePeriod(reports.filter((r) => r.runDate >= prior.start && r.runDate < prior.end));
+
+  return { current: currentStats, prior: priorStats, weekStart: current.start, weekEnd: current.end };
+}
+
 // HistorySidebar's donut chart. The first 4 buckets split completed runs by
 // match rate; "Failed" is a 5th bucket alongside them (not a match-rate
 // bucket itself — a failed run never produced a match rate) counting failed

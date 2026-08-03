@@ -102,6 +102,7 @@ const {
   getBreakBreakdown,
   getFilePairTrend,
   getHistoryStats,
+  getWeeklyDigestStats,
   getMatchRateDistribution,
   getTopFilePairs,
   updateReportTag,
@@ -1623,6 +1624,56 @@ describe('getHistoryStats', () => {
     expect(stats.avgMatchRate).toEqual({ value: 80, deltaPercent: 80 });
     expect(stats.totalBreakValue).toEqual({ value: 1500, deltaPercent: -75 });
     expect(stats.totalTransactions).toEqual({ value: 300, deltaPercent: 0 });
+  });
+});
+
+describe('getWeeklyDigestStats', () => {
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-03T08:00:00Z'));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('takes organizationId directly (no getUserMembership call) and splits one query into current vs prior 7-day windows', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      // this week
+      { runDate: new Date('2026-08-01T00:00:00Z'), totalRows: 100, matchedCount: 95, unmatchedCount: 5, mismatchedCount: 0, totalBreakValue: 50 },
+      // prior week
+      { runDate: new Date('2026-07-26T00:00:00Z'), totalRows: 100, matchedCount: 80, unmatchedCount: 20, mismatchedCount: 0, totalBreakValue: 200 },
+    ]);
+
+    const stats = await getWeeklyDigestStats(ORG_ID);
+
+    expect(mockPrisma.member.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
+      where: {
+        organizationId: ORG_ID,
+        status: 'completed',
+        runDate: { gte: new Date('2026-07-20T08:00:00.000Z'), lt: new Date('2026-08-03T08:00:00.000Z') },
+      },
+      select: {
+        runDate: true,
+        totalRows: true,
+        matchedCount: true,
+        unmatchedCount: true,
+        mismatchedCount: true,
+        totalBreakValue: true,
+      },
+    });
+
+    expect(stats.current).toEqual({ count: 1, totalTransactions: 100, avgMatchRate: 95, unmatchedTransactions: 5, totalBreakValue: 50 });
+    expect(stats.prior).toEqual({ count: 1, totalTransactions: 100, avgMatchRate: 80, unmatchedTransactions: 20, totalBreakValue: 200 });
+  });
+
+  it('returns a zero-count current period when there were no completed reports this week', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    const stats = await getWeeklyDigestStats(ORG_ID);
+
+    expect(stats.current).toEqual({ count: 0, totalTransactions: 0, avgMatchRate: 0, unmatchedTransactions: 0, totalBreakValue: 0 });
+    expect(stats.prior).toEqual({ count: 0, totalTransactions: 0, avgMatchRate: 0, unmatchedTransactions: 0, totalBreakValue: 0 });
   });
 });
 

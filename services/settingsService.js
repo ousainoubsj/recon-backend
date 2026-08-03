@@ -1,6 +1,7 @@
 import { prisma } from '../config/prisma.config.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
+import { AuthorisationError } from '../errors.js';
 
 const ORG_INFO_FIELDS = ['orgType', 'country', 'timezone', 'dateFormat', 'currency'];
 const RECONCILIATION_DEFAULT_FIELDS = ['defaultAmountTolerance', 'defaultDateToleranceDays'];
@@ -114,42 +115,64 @@ export async function updateReconciliationDefaults(userId, dto, { ip } = {}) {
   return organization;
 }
 
-// Self-scoped to the caller's own User row — unlike the two above, these
-// aren't org-wide settings, mirroring notificationService.js's per-recipient
-// model rather than reportService.js's org-scoped one.
+// emailNotificationsEnabled is self-scoped to the caller's own User row (not
+// an org-wide setting, mirroring notificationService.js's per-recipient
+// model). weeklyDigestEnabled is org-wide/admin-only (Organization, not
+// User) — combined into one read/write pair here since the frontend still
+// presents them as a single Notifications settings panel.
 export async function getNotificationPreferences(userId) {
-  return prisma.user.findFirst({
-    where: { id: userId },
-    select: { emailNotificationsEnabled: true, weeklyDigestEnabled: true },
-  });
+  const { organizationId } = await getUserMembership(userId);
+  const [user, org] = await Promise.all([
+    prisma.user.findFirst({ where: { id: userId }, select: { emailNotificationsEnabled: true } }),
+    prisma.organization.findFirst({ where: { id: organizationId }, select: { weeklyDigestEnabled: true } }),
+  ]);
+  return { emailNotificationsEnabled: user.emailNotificationsEnabled, weeklyDigestEnabled: org.weeklyDigestEnabled };
 }
 
 export async function updateNotificationPreferences(userId, dto, { ip } = {}) {
-  const data = pickProvided(dto, ['emailNotificationsEnabled', 'weeklyDigestEnabled']);
+  const userData = pickProvided(dto, ['emailNotificationsEnabled']);
+  const orgData = pickProvided(dto, ['weeklyDigestEnabled']);
+  const { organizationId, role } = await getUserMembership(userId);
 
-  const before =
-    Object.keys(data).length > 0
-      ? await prisma.user.findFirst({
-          where: { id: userId },
-          select: Object.fromEntries(Object.keys(data).map((f) => [f, true])),
-        })
-      : null;
+  if (Object.keys(orgData).length > 0 && role !== 'admin') throw new AuthorisationError();
 
-  const user = await prisma.user.update({ where: { id: userId }, data });
+  const [userBefore, orgBefore] = await Promise.all([
+    prisma.user.findFirst({ where: { id: userId }, select: { emailNotificationsEnabled: true } }),
+    prisma.organization.findFirst({ where: { id: organizationId }, select: { weeklyDigestEnabled: true } }),
+  ]);
 
-  const changes = diffFields(before ?? {}, data);
-  if (Object.keys(changes).length > 0) {
+  const user =
+    Object.keys(userData).length > 0 ? await prisma.user.update({ where: { id: userId }, data: userData }) : userBefore;
+  const org =
+    Object.keys(orgData).length > 0
+      ? await prisma.organization.update({ where: { id: organizationId }, data: orgData })
+      : orgBefore;
+
+  const userChanges = diffFields(userBefore ?? {}, userData);
+  if (Object.keys(userChanges).length > 0) {
     await logAuditSafely(userId, {
       action: 'settings.notifications.update',
       entityType: 'user',
       entityId: userId,
       status: 'info',
       ip,
-      metadata: { changes },
+      metadata: { changes: userChanges },
     });
   }
 
-  return { emailNotificationsEnabled: user.emailNotificationsEnabled, weeklyDigestEnabled: user.weeklyDigestEnabled };
+  const orgChanges = diffFields(orgBefore ?? {}, orgData);
+  if (Object.keys(orgChanges).length > 0) {
+    await logAuditSafely(userId, {
+      action: 'settings.notifications.update',
+      entityType: 'organization',
+      entityId: organizationId,
+      status: 'info',
+      ip,
+      metadata: { changes: orgChanges },
+    });
+  }
+
+  return { emailNotificationsEnabled: user.emailNotificationsEnabled, weeklyDigestEnabled: org.weeklyDigestEnabled };
 }
 
 // Report-export recipients are free-typed addresses, most of which aren't
