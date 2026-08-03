@@ -33,11 +33,11 @@ describe('sendReportEmail', () => {
   it('sends an HTML email with a plain-text fallback, including an executive summary and full breakdown', async () => {
     mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
-    await sendReportEmail(report, 'analyst@example.com');
+    await sendReportEmail(report, ['analyst@example.com']);
 
     expect(mockSend).toHaveBeenCalledWith(
       expect.objectContaining({
-        to: 'analyst@example.com',
+        to: ['analyst@example.com'],
         from: process.env.EMAIL_FROM,
         subject: 'Reconciliation report — a.csv vs b.csv',
         html: expect.stringContaining('a.csv'),
@@ -54,10 +54,20 @@ describe('sendReportEmail', () => {
     expect(html).toContain('$543.21');
   });
 
+  it('sends to every recipient at once when given multiple addresses', async () => {
+    mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
+
+    await sendReportEmail(report, ['analyst@example.com', 'manager@example.com']);
+
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ to: ['analyst@example.com', 'manager@example.com'] }),
+    );
+  });
+
   it('falls back to a short id prefix when the report has no sequence number yet', async () => {
     mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
-    await sendReportEmail({ ...report, sequenceYear: null, sequenceNumber: null }, 'analyst@example.com');
+    await sendReportEmail({ ...report, sequenceYear: null, sequenceNumber: null }, ['analyst@example.com']);
 
     const { html } = mockSend.mock.calls[0][0];
     expect(html).toContain('REPORT-U');
@@ -66,7 +76,7 @@ describe('sendReportEmail', () => {
   it('throws when Resend reports an error, instead of silently succeeding', async () => {
     mockSend.mockResolvedValue({ data: null, error: { statusCode: 401, message: 'API key is invalid' } });
 
-    await expect(sendReportEmail(report, 'analyst@example.com')).rejects.toThrow('API key is invalid');
+    await expect(sendReportEmail(report, ['analyst@example.com'])).rejects.toThrow('API key is invalid');
   });
 });
 
