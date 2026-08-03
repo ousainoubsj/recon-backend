@@ -31,6 +31,9 @@ const mockPrisma = {
   member: {
     findFirst: jest.fn(),
   },
+  organization: {
+    findFirst: jest.fn().mockResolvedValue({ defaultAmountTolerance: null, defaultDateToleranceDays: null }),
+  },
   auditLog: {
     findMany: jest.fn().mockResolvedValue([]),
   },
@@ -686,7 +689,7 @@ describe('saveDraft', () => {
         fileAName: 'a.csv',
         fileBName: null,
         progress: 0,
-        config: undefined,
+        config: { amountTolerance: undefined, dateToleranceDays: null },
       },
     });
     expect(mockLogAuditSafely).not.toHaveBeenCalled();
@@ -706,7 +709,7 @@ describe('saveDraft', () => {
         fileAName: null,
         fileBName: null,
         progress: 0,
-        config: undefined,
+        config: { amountTolerance: undefined, dateToleranceDays: null },
       },
     });
   });
