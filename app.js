@@ -7,10 +7,6 @@ dotenv.config();
 // top of this file would be hoisted ahead of dotenv.config() per the ES
 // module spec, so it's loaded dynamically here instead, after .env is read.
 const { app } = await import('./server.js');
-// Same dynamic-import reasoning as server.js above — this transitively
-// reads DATABASE_URL at module-evaluation time via config/prisma.config.js.
-const { startScheduledReportCron } = await import('./services/scheduledReportRunner.js');
-
 const { prisma } = await import('./config/prisma.config.js');
 
 const port = process.env.PORT ?? 3001;
@@ -26,5 +22,3 @@ try {
 app.listen(port, () => {
   console.log(`recon-backend listening on :${port}`);
 });
-
-startScheduledReportCron();

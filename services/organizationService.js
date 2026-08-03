@@ -16,8 +16,7 @@ export async function getUserMembership(userId) {
 }
 
 // Org-scoped, not user-scoped (no getUserMembership call) — needed by
-// contexts with no "current session user" at all, like the scheduled-report
-// cron runner, which only has organizationId off the schedule row.
+// contexts with no "current session user" at all.
 export async function getOrganizationBrand(organizationId) {
   return prisma.organization.findFirst({ where: { id: organizationId }, select: { name: true, logo: true, orgType: true } });
 }

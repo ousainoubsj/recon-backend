@@ -12,7 +12,6 @@ import {
   getExportForDownload,
   deleteExport as deleteReportExport,
 } from '../services/reportExportService.js';
-import * as scheduledReportService from '../services/scheduledReportService.js';
 import { buildXlsxReport } from '../utils/xlsxReport.js';
 import { buildPdfReport } from '../utils/pdfReport.js';
 import { downloadFromR2 } from '../utils/fileParser.js';
@@ -404,26 +403,6 @@ export const listExports = async (req, res) => {
 export const deleteExport = async (req, res) => {
   await deleteReportExport(req.session.user.id, req.params.exportId);
   res.status(204).send();
-};
-
-export const createSchedule = async (req, res) => {
-  const schedule = await scheduledReportService.createSchedule(req.session.user.id, req.params.id, req.body);
-  res.status(201).json(schedule);
-};
-
-export const listSchedules = async (req, res) => {
-  const schedules = await scheduledReportService.listSchedules(req.session.user.id);
-  res.json(schedules);
-};
-
-export const updateSchedule = async (req, res) => {
-  const schedule = await scheduledReportService.updateSchedule(req.session.user.id, req.params.id, req.body);
-  res.json(schedule);
-};
-
-export const deleteSchedule = async (req, res) => {
-  await scheduledReportService.deleteSchedule(req.session.user.id, req.params.id);
-  res.status(204).end();
 };
 
 export const emailReport = async (req, res) => {

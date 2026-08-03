@@ -1,7 +1,13 @@
 import { Resend } from 'resend';
 import { renderEmailTemplate, escapeHtmlForEmail, htmlToText } from '../utils/emailTemplate.js';
+import { formatReportReference } from '../utils/reportReference.js';
 
 const resend = new Resend(process.env.RESEND_API_KEY);
+
+const currencyFormatter = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' });
+function formatCurrency(value) {
+  return currencyFormatter.format(Number(value ?? 0));
+}
 
 // The tracked .env ships RESEND_API_KEY=re_xxx as a placeholder — real
 // delivery is unverified until a real key is set (see backend-implementation
@@ -46,12 +52,36 @@ function formatDate(date) {
 }
 
 export async function sendReportEmail(report, to) {
+  const reference = formatReportReference(report.sequenceYear, report.sequenceNumber) ?? report.id?.slice(0, 8).toUpperCase();
+  const matchedCount = report.matchedCount ?? 0;
+  const mismatchedCount = report.mismatchedCount ?? 0;
+  const unmatchedCount = report.unmatchedCount ?? 0;
+  const duplicateCount = report.duplicateCount ?? 0;
+  const totalRows = report.totalRows ?? 0;
+  const matchPercent = totalRows > 0 ? (matchedCount / totalRows) * 100 : 0;
+  const unmatchedOrMismatched = unmatchedCount + mismatchedCount;
+
+  // Same phrasing as the PDF/XLSX exports' own Executive Summary section
+  // (utils/pdfReport.js, utils/xlsxReport.js) — the email, PDF, and XLSX
+  // should all describe a given report's outcome identically.
+  const executiveSummary =
+    `Out of ${totalRows} total transaction${totalRows === 1 ? '' : 's'}, ${matchedCount} (${matchPercent.toFixed(2)}%) were successfully matched. There ` +
+    `${unmatchedOrMismatched === 1 ? 'is' : 'are'} ${unmatchedOrMismatched} unmatched or mismatched ` +
+    `transaction${unmatchedOrMismatched === 1 ? '' : 's'} with a total break value of ${formatCurrency(report.totalBreakValue)}.`;
+
   const html = await renderEmailTemplate('email-report', {
+    reference: escapeHtmlForEmail(reference ?? ''),
     fileAName: escapeHtmlForEmail(report.fileAName),
     fileBName: escapeHtmlForEmail(report.fileBName),
-    matchedCount: report.matchedCount,
-    totalRows: report.totalRows,
     runDateFormatted: escapeHtmlForEmail(formatDate(report.runDate)),
+    executiveSummary: escapeHtmlForEmail(executiveSummary),
+    matchRate: `${matchPercent.toFixed(1)}%`,
+    totalRows,
+    matchedCount,
+    mismatchedCount,
+    unmatchedCount,
+    duplicateCount,
+    totalBreakValue: formatCurrency(report.totalBreakValue),
   });
 
   await sendEmail({
@@ -59,33 +89,6 @@ export async function sendReportEmail(report, to) {
     subject: `Reconciliation report — ${report.fileAName} vs ${report.fileBName}`,
     html,
     text: htmlToText(html),
-  });
-}
-
-/**
- * Fired by services/scheduledReportRunner.js after generating a scheduled
- * export — same template as sendReportEmail, but attaches the generated
- * file and can go to multiple recipients at once.
- * @param {object} report
- * @param {Buffer} buffer
- * @param {'xlsx'|'pdf'} format
- * @param {string[]} recipients
- */
-export async function sendScheduledReportEmail(report, buffer, format, recipients) {
-  const html = await renderEmailTemplate('email-report', {
-    fileAName: escapeHtmlForEmail(report.fileAName ?? ''),
-    fileBName: escapeHtmlForEmail(report.fileBName ?? ''),
-    matchedCount: report.matchedCount,
-    totalRows: report.totalRows,
-    runDateFormatted: escapeHtmlForEmail(formatDate(report.runDate)),
-  });
-
-  await sendEmail({
-    to: recipients,
-    subject: `Scheduled reconciliation report — ${report.fileAName ?? ''} vs ${report.fileBName ?? ''}`,
-    html,
-    text: htmlToText(html),
-    attachments: [{ filename: `reconciliation_report_${report.id}.${format}`, content: buffer }],
   });
 }
 

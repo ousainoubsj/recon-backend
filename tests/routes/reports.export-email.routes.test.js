@@ -57,13 +57,6 @@ jest.unstable_mockModule('../../utils/fileParser.js', () => ({
   downloadFromR2: mockDownloadFromR2,
 }));
 
-jest.unstable_mockModule('../../services/scheduledReportService.js', () => ({
-  createSchedule: jest.fn(),
-  listSchedules: jest.fn(),
-  updateSchedule: jest.fn(),
-  deleteSchedule: jest.fn(),
-}));
-
 const mockSend = jest.fn();
 class MockResend {
   constructor() {
@@ -400,18 +393,18 @@ describe('POST /api/reports/bulk-export', () => {
 });
 
 describe('POST /api/reports/:id/email', () => {
-  it('emails the report summary and returns 202', async () => {
+  it('emails the report summary to a single recipient and returns 202', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
     mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
     const res = await request(app)
       .post('/api/reports/r1/email')
-      .send({ to: 'analyst@example.com' });
+      .send({ to: ['analyst@example.com'] });
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ sent: true });
     expect(mockSend).toHaveBeenCalledWith(
-      expect.objectContaining({ to: 'analyst@example.com', from: process.env.EMAIL_FROM }),
+      expect.objectContaining({ to: ['analyst@example.com'], from: process.env.EMAIL_FROM }),
     );
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.email',
@@ -419,12 +412,33 @@ describe('POST /api/reports/:id/email', () => {
       entityId: 'r1',
       status: 'info',
       ip: expect.any(String),
-      metadata: { to: 'analyst@example.com' },
+      metadata: { to: ['analyst@example.com'] },
     });
   });
 
+  it('emails multiple recipients at once', async () => {
+    mockReportService.getReport.mockResolvedValue(sampleReport);
+    mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
+
+    const res = await request(app)
+      .post('/api/reports/r1/email')
+      .send({ to: ['analyst@example.com', 'manager@example.com'] });
+
+    expect(res.status).toBe(202);
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ to: ['analyst@example.com', 'manager@example.com'] }),
+    );
+  });
+
   it('rejects an invalid recipient address with a 422 and never calls Resend', async () => {
-    const res = await request(app).post('/api/reports/r1/email').send({ to: 'not-an-email' });
+    const res = await request(app).post('/api/reports/r1/email').send({ to: ['not-an-email'] });
+
+    expect(res.status).toBe(422);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty recipient list with a 422', async () => {
+    const res = await request(app).post('/api/reports/r1/email').send({ to: [] });
 
     expect(res.status).toBe(422);
     expect(mockSend).not.toHaveBeenCalled();
@@ -435,7 +449,7 @@ describe('POST /api/reports/:id/email', () => {
 
     const res = await request(app)
       .post('/api/reports/missing/email')
-      .send({ to: 'analyst@example.com' });
+      .send({ to: ['analyst@example.com'] });
 
     expect(res.status).toBe(404);
   });

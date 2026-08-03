@@ -28,15 +28,8 @@ enum ExportFormat {
   pdf
 }
 
-enum ScheduleCadence {
-  daily
-  weekly
-  monthly
-}
-
 enum ReportExportSource {
   manual
-  scheduled
 }
 
 enum ReportExportStatus {
@@ -85,7 +78,6 @@ model User {
   auditLogs          AuditLog[]
   notifications      Notification[]
   reportExports      ReportExport[]
-  scheduledReports   ScheduledReport[]
   favorites          ReportFavorite[]
   reviewedReportRows ReportRow[]         @relation("ReportRowReviewedBy")
   matchRuleTemplates MatchRuleTemplate[]
@@ -186,7 +178,6 @@ model Report {
 
   rows      ReportRow[]
   exports   ReportExport[]
-  schedules ScheduledReport[]
   favorites ReportFavorite[]
 
   @@unique([sequenceYear, sequenceNumber])
@@ -303,8 +294,7 @@ model ReportTemplate {
   isSystem       Boolean       @default(false) @map("is_system")
   createdAt      DateTime      @default(now()) @map("created_at")
 
-  exports   ReportExport[]
-  schedules ScheduledReport[]
+  exports ReportExport[]
 
   @@index([organizationId])
   @@map("report_templates")
@@ -349,10 +339,6 @@ model ReportExport {
   // it was generated from later being deleted.
   templateId     String?            @map("template_id") @db.Uuid
   template       ReportTemplate?    @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  // Nullable + SetNull: an export's history should survive the schedule
-  // that triggered it later being deleted.
-  scheduleId     String?            @map("schedule_id") @db.Uuid
-  schedule       ScheduledReport?   @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
   source         ReportExportSource @default(manual)
   format         ExportFormat
   status         ReportExportStatus @default(success)
@@ -382,36 +368,6 @@ model ReportFavorite {
   @@unique([userId, reportId])
   @@index([reportId])
   @@map("report_favorites")
-}
-
-model ScheduledReport {
-  id              String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  reportId        String          @map("report_id") @db.Uuid
-  report          Report          @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  organizationId  String          @map("organization_id")
-  organization    Organization    @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  userId          String          @map("user_id")
-  user            User            @relation(fields: [userId], references: [id], onDelete: Cascade)
-  cadence         ScheduleCadence
-  format          ExportFormat    @default(xlsx)
-  templateId      String?         @map("template_id") @db.Uuid
-  template        ReportTemplate? @relation(fields: [templateId], references: [id], onDelete: SetNull)
-  // Same shape as a one-off export's section overrides.
-  sections        Json?
-  // Nullable array of email strings — a schedule with none is valid: it
-  // just keeps a fresh tracked export on file periodically without
-  // emailing anyone.
-  recipientEmails Json?           @map("recipient_emails")
-  isActive        Boolean         @default(true) @map("is_active")
-  nextRunAt       DateTime        @map("next_run_at")
-  lastRunAt       DateTime?       @map("last_run_at")
-  createdAt       DateTime        @default(now()) @map("created_at")
-
-  exports ReportExport[]
-
-  @@index([nextRunAt, isActive], map: "idx_scheduled_reports_due")
-  @@index([organizationId])
-  @@map("scheduled_reports")
 }
 
 model Session {
@@ -493,7 +449,6 @@ model Organization {
   notifications            Notification[]
   reportTemplates          ReportTemplate[]
   reportExports            ReportExport[]
-  scheduledReports         ScheduledReport[]
   matchRuleTemplates       MatchRuleTemplate[]
 
   @@unique([slug])

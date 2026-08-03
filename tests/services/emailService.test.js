@@ -8,21 +8,29 @@ class MockResend {
 }
 jest.unstable_mockModule('resend', () => ({ Resend: MockResend }));
 
-const { sendReportEmail, sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail, sendScheduledReportEmail } =
-  await import('../../services/emailService.js');
+const { sendReportEmail, sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } = await import(
+  '../../services/emailService.js'
+);
 
 beforeEach(() => jest.clearAllMocks());
 
 const report = {
+  id: 'report-uuid-1234',
   fileAName: 'a.csv',
   fileBName: 'b.csv',
   matchedCount: 8,
+  mismatchedCount: 1,
+  unmatchedCount: 1,
+  duplicateCount: 2,
   totalRows: 10,
+  totalBreakValue: 543.21,
   runDate: new Date('2026-01-01T00:00:00Z'),
+  sequenceYear: 2026,
+  sequenceNumber: 7,
 };
 
 describe('sendReportEmail', () => {
-  it('sends an HTML email with a plain-text fallback', async () => {
+  it('sends an HTML email with a plain-text fallback, including an executive summary and full breakdown', async () => {
     mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
     await sendReportEmail(report, 'analyst@example.com');
@@ -36,6 +44,23 @@ describe('sendReportEmail', () => {
         text: expect.stringContaining('a.csv'),
       }),
     );
+
+    const { html } = mockSend.mock.calls[0][0];
+    expect(html).toContain('REC-2026-000007');
+    expect(html).toContain('Executive Summary');
+    expect(html).toContain('Out of 10 total transactions, 8 (80.00%) were successfully matched');
+    expect(html).toContain('2 unmatched or mismatched transactions with a total break value of $543.21');
+    expect(html).toContain('80.0%');
+    expect(html).toContain('$543.21');
+  });
+
+  it('falls back to a short id prefix when the report has no sequence number yet', async () => {
+    mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
+
+    await sendReportEmail({ ...report, sequenceYear: null, sequenceNumber: null }, 'analyst@example.com');
+
+    const { html } = mockSend.mock.calls[0][0];
+    expect(html).toContain('REPORT-U');
   });
 
   it('throws when Resend reports an error, instead of silently succeeding', async () => {
@@ -141,46 +166,6 @@ describe('sendOtpEmail', () => {
     mockSend.mockResolvedValue({ data: null, error: { message: 'boom' } });
 
     await expect(sendOtpEmail({ email: 'user@example.com', otp: '123456' })).rejects.toThrow('boom');
-  });
-});
-
-describe('sendScheduledReportEmail', () => {
-  const buffer = Buffer.from('xlsx-bytes');
-
-  it('sends the report email with the generated file attached, to every recipient', async () => {
-    mockSend.mockResolvedValue({ data: { id: 'email-6' }, error: null });
-
-    await sendScheduledReportEmail({ ...report, id: 'r1' }, buffer, 'xlsx', ['a@example.com', 'b@example.com']);
-
-    expect(mockSend).toHaveBeenCalledWith(
-      expect.objectContaining({
-        to: ['a@example.com', 'b@example.com'],
-        subject: 'Scheduled reconciliation report — a.csv vs b.csv',
-        attachments: [{ filename: 'reconciliation_report_r1.xlsx', content: buffer }],
-      }),
-    );
-  });
-
-  it('throws when Resend reports an error', async () => {
-    mockSend.mockResolvedValue({ data: null, error: { message: 'boom' } });
-
-    await expect(sendScheduledReportEmail({ ...report, id: 'r1' }, buffer, 'xlsx', ['a@example.com'])).rejects.toThrow(
-      'boom',
-    );
-  });
-
-  it('logs (rather than dumps binary content) in the dev fallback path', async () => {
-    const originalKey = process.env.RESEND_API_KEY;
-    delete process.env.RESEND_API_KEY;
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
-
-    await sendScheduledReportEmail({ ...report, id: 'r1' }, buffer, 'xlsx', ['a@example.com']);
-
-    expect(mockSend).not.toHaveBeenCalled();
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('reconciliation_report_r1.xlsx'));
-
-    process.env.RESEND_API_KEY = originalKey;
-    warnSpy.mockRestore();
   });
 });
 

@@ -42,7 +42,6 @@ describe('recordExport', () => {
         userId: USER_ID,
         organizationId: ORG_ID,
         templateId: 't1',
-        scheduleId: null,
         source: 'manual',
         format: 'pdf',
         status: 'success',
@@ -70,7 +69,7 @@ describe('recordExport', () => {
     );
   });
 
-  it('defaults a missing templateId and scheduleId to null, source to manual, and status to success', async () => {
+  it('defaults a missing templateId to null, source to manual, and status to success', async () => {
     mockPrisma.reportExport.create.mockResolvedValue({ id: 'exp-1' });
 
     await recordExport({ reportId: 'r1', userId: USER_ID, organizationId: ORG_ID, format: 'xlsx', fileSizeBytes: 10 });
@@ -79,7 +78,6 @@ describe('recordExport', () => {
       expect.objectContaining({
         data: expect.objectContaining({
           templateId: null,
-          scheduleId: null,
           source: 'manual',
           status: 'success',
           errorMessage: null,
@@ -88,15 +86,13 @@ describe('recordExport', () => {
     );
   });
 
-  it('persists a scheduled, failed export with its error message and no file size', async () => {
+  it('persists a failed export with its error message and no file size', async () => {
     mockPrisma.reportExport.create.mockResolvedValue({ id: 'exp-1' });
 
     await recordExport({
       reportId: 'r1',
       userId: USER_ID,
       organizationId: ORG_ID,
-      scheduleId: 's1',
-      source: 'scheduled',
       format: 'xlsx',
       status: 'failed',
       errorMessage: 'build blew up',
@@ -108,8 +104,7 @@ describe('recordExport', () => {
         userId: USER_ID,
         organizationId: ORG_ID,
         templateId: null,
-        scheduleId: 's1',
-        source: 'scheduled',
+        source: 'manual',
         format: 'xlsx',
         status: 'failed',
         errorMessage: 'build blew up',

@@ -155,13 +155,6 @@ reportsRouter.delete(
 );
 
 reportsRouter.get(
-  '/schedules',
-  authenticate,
-  catchAsync(requirePermission('report', 'read')),
-  catchAsync(reportsController.listSchedules),
-);
-
-reportsRouter.get(
   '/history-stats',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
@@ -380,40 +373,7 @@ reportsRouter.post(
   catchAsync(reportsController.exportReport),
 );
 
-const createScheduleSchema = z.object({
-  cadence: z.enum(['daily', 'weekly', 'monthly']),
-  format: z.enum(['xlsx', 'pdf']).default('xlsx'),
-  templateId: z.string().uuid().optional(),
-  sections: sectionsSchema.optional(),
-  recipientEmails: z.array(z.string().email()).max(20).optional(),
-});
-
-const updateScheduleSchema = createScheduleSchema.partial().extend({ isActive: z.boolean().optional() });
-
-reportsRouter.post(
-  '/:id/schedule',
-  authenticate,
-  catchAsync(requirePermission('report', 'create')),
-  validate(createScheduleSchema),
-  catchAsync(reportsController.createSchedule),
-);
-
-reportsRouter.patch(
-  '/schedules/:id',
-  authenticate,
-  catchAsync(requirePermission('report', 'create')),
-  validate(updateScheduleSchema),
-  catchAsync(reportsController.updateSchedule),
-);
-
-reportsRouter.delete(
-  '/schedules/:id',
-  authenticate,
-  catchAsync(requirePermission('report', 'delete')),
-  catchAsync(reportsController.deleteSchedule),
-);
-
-const emailSchema = z.object({ to: z.string().email() });
+const emailSchema = z.object({ to: z.array(z.string().email()).min(1).max(20) });
 
 reportsRouter.post(
   '/:id/email',

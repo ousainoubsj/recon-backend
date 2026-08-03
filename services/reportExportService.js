@@ -6,9 +6,9 @@ import { getUserMembership } from './organizationService.js';
 
 /**
  * Best-effort, like logAuditSafely right next to it in the controller — a
- * tracking-write failure must never turn an already-sent file download (or
- * a scheduled run's own error handling) into something worse.
- * @param {{reportId: string, userId: string, organizationId: string, templateId?: string|null, format: 'xlsx'|'pdf', fileSizeBytes?: number|null, source?: 'manual'|'scheduled', scheduleId?: string|null, status?: 'success'|'failed', errorMessage?: string|null, fileKey?: string|null}} entry
+ * tracking-write failure must never turn an already-sent file download into
+ * something worse.
+ * @param {{reportId: string, userId: string, organizationId: string, templateId?: string|null, format: 'xlsx'|'pdf', fileSizeBytes?: number|null, status?: 'success'|'failed', errorMessage?: string|null, fileKey?: string|null}} entry
  */
 export async function recordExport(entry) {
   try {
@@ -18,8 +18,7 @@ export async function recordExport(entry) {
         userId: entry.userId,
         organizationId: entry.organizationId,
         templateId: entry.templateId ?? null,
-        scheduleId: entry.scheduleId ?? null,
-        source: entry.source ?? 'manual',
+        source: 'manual',
         format: entry.format,
         status: entry.status ?? 'success',
         errorMessage: entry.errorMessage ?? null,

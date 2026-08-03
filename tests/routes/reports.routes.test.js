@@ -63,13 +63,6 @@ jest.unstable_mockModule('../../services/reportTemplateService.js', () => ({
   getTemplateName: jest.fn().mockResolvedValue(null),
 }));
 
-jest.unstable_mockModule('../../services/scheduledReportService.js', () => ({
-  createSchedule: jest.fn(),
-  listSchedules: jest.fn(),
-  updateSchedule: jest.fn(),
-  deleteSchedule: jest.fn(),
-}));
-
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
 const mockLogResultsViewedOnce = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
