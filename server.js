@@ -23,6 +23,12 @@ export const app = express();
 // instead of the proxy's.
 app.set('trust proxy', 1);
 
+// Google Search Console site-verification file — must stay reachable at
+// this exact path indefinitely, even after verification succeeds.
+app.get('/google311a0ff38634ffd8.html', (_req, res) => {
+  res.type('text/html').send('google-site-verification: google311a0ff38634ffd8.html');
+});
+
 // Frontend and backend are separate subdomains of the same site
 // (recon-cil.com / api.recon-cil.com), so Helmet's default same-origin
 // CORP header blocks cross-subdomain fetches in Chrome (not enforced as
