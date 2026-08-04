@@ -26,8 +26,8 @@ describe('search', () => {
     expect(mockPrisma.member.findMany).not.toHaveBeenCalled();
   });
 
-  it('searches reports by file name and members by name/email, scoped to the org', async () => {
-    const reports = [{ id: 'r1', fileAName: 'Bank_June.csv', fileBName: 'Internal_June.csv' }];
+  it('searches reports by reconciliation name or file name, and members by name/email, scoped to the org', async () => {
+    const reports = [{ id: 'r1', name: 'Amie June Reconciliation', fileAName: 'Bank_June.csv', fileBName: 'Internal_June.csv' }];
     const members = [{ id: 'm1', role: 'admin', user: { id: 'u2', name: 'Amie J.', email: 'amie@example.com' } }];
     mockPrisma.report.findMany.mockResolvedValue(reports);
     mockPrisma.member.findMany.mockResolvedValue(members);
@@ -40,11 +40,12 @@ describe('search', () => {
         organizationId: ORG_ID,
         status: 'completed',
         OR: [
+          { name: { contains: 'amie', mode: 'insensitive' } },
           { fileAName: { contains: 'amie', mode: 'insensitive' } },
           { fileBName: { contains: 'amie', mode: 'insensitive' } },
         ],
       },
-      select: { id: true, fileAName: true, fileBName: true, runDate: true },
+      select: { id: true, name: true, fileAName: true, fileBName: true, runDate: true },
       orderBy: { runDate: 'desc' },
       take: 5,
     });
@@ -66,7 +67,13 @@ describe('search', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ OR: [{ fileAName: { contains: 'bank', mode: 'insensitive' } }, { fileBName: { contains: 'bank', mode: 'insensitive' } }] }),
+        where: expect.objectContaining({
+          OR: [
+            { name: { contains: 'bank', mode: 'insensitive' } },
+            { fileAName: { contains: 'bank', mode: 'insensitive' } },
+            { fileBName: { contains: 'bank', mode: 'insensitive' } },
+          ],
+        }),
       }),
     );
   });

@@ -5,8 +5,8 @@ const RESULT_LIMIT = 5;
 
 /**
  * Global search, scoped to the caller's org: reconciliation reports (by
- * file name) and team members (by name/email). Empty/whitespace query
- * returns empty results without querying.
+ * reconciliation name or file name) and team members (by name/email).
+ * Empty/whitespace query returns empty results without querying.
  * @param {string} userId
  * @param {string} query
  */
@@ -22,11 +22,12 @@ export async function search(userId, query) {
         organizationId,
         status: 'completed', // drafts are private/incomplete, shouldn't surface via search
         OR: [
+          { name: { contains: q, mode: 'insensitive' } },
           { fileAName: { contains: q, mode: 'insensitive' } },
           { fileBName: { contains: q, mode: 'insensitive' } },
         ],
       },
-      select: { id: true, fileAName: true, fileBName: true, runDate: true },
+      select: { id: true, name: true, fileAName: true, fileBName: true, runDate: true },
       orderBy: { runDate: 'desc' },
       take: RESULT_LIMIT,
     }),
