@@ -20,7 +20,7 @@ function isResendConfigured() {
   return Boolean(key) && key !== 're_xxx';
 }
 
-async function sendEmail({ to, subject, html, text, attachments }) {
+async function sendEmail({ to, subject, html, text, attachments, replyTo }) {
   if (!isResendConfigured()) {
     console.warn(`[email:dev-fallback] RESEND_API_KEY not configured — logging email instead of sending.`);
     console.warn(`[email:dev-fallback] To: ${to}\nSubject: ${subject}\n${text}`);
@@ -39,6 +39,7 @@ async function sendEmail({ to, subject, html, text, attachments }) {
     html,
     text,
     ...(attachments?.length ? { attachments } : {}),
+    ...(replyTo ? { replyTo } : {}),
   });
   if (result.error) {
     console.error(`Error sending email to ${to}`, result.error);
@@ -190,5 +191,27 @@ export async function sendOtpEmail({ email, otp }) {
     subject: 'Your verification code',
     html,
     text: htmlToText(html),
+  });
+}
+
+const SUPPORT_EMAIL = 'admin@datafin.info';
+
+// Fixed recipient (not org-configurable) — the "Need help?" dialog in
+// Header.tsx. `replyTo` is the requester's own address so the admin can just
+// hit reply instead of looking up who sent it.
+export async function sendSupportRequestEmail({ name, email, organizationName, message }) {
+  const html = await renderEmailTemplate('email-support-request', {
+    name: escapeHtmlForEmail(name),
+    email: escapeHtmlForEmail(email),
+    organizationName: escapeHtmlForEmail(organizationName),
+    message: escapeHtmlForEmail(message),
+  });
+
+  await sendEmail({
+    to: SUPPORT_EMAIL,
+    subject: `Help request from ${name}`,
+    html,
+    text: htmlToText(html),
+    replyTo: email,
   });
 }

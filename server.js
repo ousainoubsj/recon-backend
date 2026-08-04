@@ -11,6 +11,7 @@ import { matchRuleTemplatesRouter } from './routes/matchRuleTemplates.js';
 import { auditLogsRouter } from './routes/auditLogs.js';
 import { notificationsRouter } from './routes/notifications.js';
 import { searchRouter } from './routes/search.js';
+import { supportRouter } from './routes/support.js';
 import { teamRouter } from './routes/team.js';
 import { settingsRouter } from './routes/settings.js';
 import { authRateLimiter, apiRateLimiter } from './middleware/rateLimit.js';
@@ -84,6 +85,7 @@ app.use('/api/match-rule-templates', matchRuleTemplatesRouter);
 app.use('/api/audit-logs', auditLogsRouter);
 app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
+app.use('/api/support', supportRouter);
 app.use('/api/team', teamRouter);
 app.use('/api/settings', settingsRouter);
 
