@@ -6,19 +6,30 @@
 const CANONICAL_FIELDS = {
   referenceNumber: {
     label: 'Reference Number',
-    synonyms: ['ref no', 'ref_no', 'reference', 'transaction id', 'transaction_id', 'txn ref', 'reference no', 'ref'],
+    synonyms: [
+      'ref no', 'ref_no', 'reference', 'transaction id', 'transaction_id', 'txn ref', 'reference no', 'ref',
+      'cheque no', 'cheque number', 'check no', 'check number', 'utr', 'utr no', 'utr number',
+      'instrument no', 'instrument number', 'payment ref', 'payment reference', 'unique reference',
+      'narration ref', 'trace number', 'doc no', 'document number',
+    ],
   },
   amount: {
     label: 'Amount',
-    synonyms: ['debit amount', 'credit amount', 'net amount', 'txn amount', 'value'],
+    synonyms: [
+      'debit amount', 'credit amount', 'net amount', 'txn amount', 'value',
+      'debit', 'credit', 'dr', 'cr', 'amt', 'transaction value', 'txn value', 'net value', 'gross amount',
+    ],
   },
   transactionDate: {
     label: 'Transaction Date',
-    synonyms: ['posting date', 'value date', 'txn date', 'date'],
+    synonyms: [
+      'posting date', 'value date', 'txn date', 'date',
+      'entry date', 'value dt', 'trans date', 'txn dt', 'date posted', 'posted date', 'transaction dt',
+    ],
   },
   currency: {
     label: 'Currency',
-    synonyms: ['currency code', 'ccy'],
+    synonyms: ['currency code', 'ccy', 'curr', 'currency type', 'iso currency', 'ccy code'],
   },
 };
 
