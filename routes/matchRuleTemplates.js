@@ -15,7 +15,7 @@ export const matchRuleTemplatesRouter = Router();
 // mock surface for no real benefit.
 const matchRuleConfigSchema = z.object({
   amountTolerance: z.number().min(0, 'amount_tolerance must be a non-negative number').max(1),
-  dateToleranceDays: z.number().int().min(0).max(3).optional(),
+  dateToleranceDays: z.number().int().min(0).max(90).optional(),
   sameCurrencyOnly: z.boolean().optional().default(true),
   ignoreCase: z.boolean().optional().default(true),
   ignoreSpaces: z.boolean().optional().default(true),
@@ -39,7 +39,7 @@ matchRuleTemplatesRouter.get(
 matchRuleTemplatesRouter.post(
   '/',
   authenticate,
-  catchAsync(requirePermission('report', 'create')),
+  catchAsync(requirePermission('matchRuleTemplate', 'create')),
   validate(createTemplateSchema),
   catchAsync(matchRuleTemplateController.createTemplate),
 );

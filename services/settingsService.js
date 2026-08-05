@@ -1,10 +1,10 @@
 import { prisma } from '../config/prisma.config.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
-import { AuthorisationError } from '../errors.js';
+import { AuthorisationError, ValidationError } from '../errors.js';
 
 const ORG_INFO_FIELDS = ['orgType', 'country', 'timezone', 'dateFormat', 'currency'];
-const RECONCILIATION_DEFAULT_FIELDS = ['defaultAmountTolerance', 'defaultDateToleranceDays'];
+const RECONCILIATION_DEFAULT_FIELDS = ['defaultAmountTolerance', 'defaultDateToleranceDays', 'enforcedMatchRuleTemplateId'];
 
 function pickProvided(dto, fields) {
   const data = {};
@@ -87,6 +87,16 @@ export async function getReconciliationDefaults(userId) {
 export async function updateReconciliationDefaults(userId, dto, { ip } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const provided = pickProvided(dto, RECONCILIATION_DEFAULT_FIELDS);
+
+  // Picking a different org's template (or a stale/deleted id) should 422,
+  // not silently link to nothing or another org's data.
+  if (provided.enforcedMatchRuleTemplateId) {
+    const template = await prisma.matchRuleTemplate.findFirst({
+      where: { id: provided.enforcedMatchRuleTemplateId, organizationId },
+      select: { id: true },
+    });
+    if (!template) throw new ValidationError('Template does not belong to this organization');
+  }
 
   const before =
     Object.keys(provided).length > 0

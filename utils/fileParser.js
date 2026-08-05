@@ -14,18 +14,74 @@ export async function downloadFromR2(key) {
   return Buffer.concat(chunks);
 }
 
+// A title/banner row (e.g. "Monthly Bank Statement — August 2026") typically
+// has just one populated cell trailing into empty ones, while a real header
+// row has most/all columns populated. Scans a bounded window from the top of
+// the sheet and picks the first row clearing the threshold; if nothing does
+// (e.g. a legitimately sparse header), fails safe to row 0 — today's
+// behavior — rather than guessing wrong silently.
+const HEADER_SCAN_ROWS = 10;
+const HEADER_ROW_THRESHOLD = 0.5;
+// A CSV title row is narrower than the real table (e.g. one comma-free line
+// of banner text vs. N comma-separated columns below it) — XLSX rows come
+// back already padded to the sheet's full column count, so this mostly
+// matters for CSV, but applying it uniformly is harmless either way. Require
+// a row to span most of the widest row seen in the scan window before its
+// fill ratio counts as meaningful, so a single dense cell can't masquerade
+// as a header.
+const HEADER_ROW_WIDTH_THRESHOLD = 0.7;
+
+function detectHeaderRowIndex(rows) {
+  const scanLimit = Math.min(rows.length, HEADER_SCAN_ROWS);
+  const maxCols = Math.max(0, ...rows.slice(0, scanLimit).map((row) => (row ? row.length : 0)));
+  if (maxCols === 0) return 0;
+  for (let i = 0; i < scanLimit; i++) {
+    const row = rows[i];
+    if (!row || row.length === 0) continue;
+    if (row.length < maxCols * HEADER_ROW_WIDTH_THRESHOLD) continue;
+    const nonEmpty = row.filter((cell) => String(cell ?? '').trim() !== '').length;
+    if (nonEmpty / row.length > HEADER_ROW_THRESHOLD) return i;
+  }
+  return 0;
+}
+
+function isBlankRow(row) {
+  return Object.values(row).every((value) => String(value ?? '').trim() === '');
+}
+
+// Shared by both parsers once each has reduced its sheet/CSV to raw
+// string-array rows — builds the {headers, rows} shape from a chosen header
+// row plus the data rows beneath it, dropping rows that are blank in
+// substance (every cell empty) even if they weren't wholly absent from the
+// source (e.g. a formatted-but-empty Excel row, or a `,,,`-only CSV line).
+function rowsFromAoa(headerRow, dataRows) {
+  const headers = headerRow.map((cell) => String(cell ?? ''));
+  const rows = dataRows
+    .map((cells) => {
+      const row = {};
+      headers.forEach((header, i) => {
+        row[header] = cells[i] != null ? String(cells[i]) : '';
+      });
+      return row;
+    })
+    .filter((row) => !isBlankRow(row));
+  return { headers, rows };
+}
+
 function parseCsv(buffer) {
-  const { data } = Papa.parse(buffer.toString('utf-8'), { header: true, skipEmptyLines: true });
-  const headers = data.length > 0 ? Object.keys(data[0]) : [];
-  return { headers, rows: data };
+  const { data } = Papa.parse(buffer.toString('utf-8'), { header: false, skipEmptyLines: true });
+  if (data.length === 0) return { headers: [], rows: [] };
+  const headerIndex = detectHeaderRowIndex(data);
+  return rowsFromAoa(data[headerIndex], data.slice(headerIndex + 1));
 }
 
 function parseXlsx(buffer) {
   const workbook = XLSX.read(buffer, { type: 'buffer' });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
-  const rows = XLSX.utils.sheet_to_json(sheet, { raw: false, defval: '' });
-  const headers = rows.length > 0 ? Object.keys(rows[0]) : [];
-  return { headers, rows };
+  const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' });
+  if (aoa.length === 0) return { headers: [], rows: [] };
+  const headerIndex = detectHeaderRowIndex(aoa);
+  return rowsFromAoa(aoa[headerIndex], aoa.slice(headerIndex + 1));
 }
 
 // Dispatches on the file's display name (already validated at presign time —

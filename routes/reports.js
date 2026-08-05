@@ -17,7 +17,7 @@ const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', '
 // {amountTolerance, dateToleranceDays} keep working unchanged.
 const matchRuleConfigSchema = z.object({
   amountTolerance: z.number().min(0, 'amount_tolerance must be a non-negative number').max(1),
-  dateToleranceDays: z.number().int().min(0).max(3).optional(),
+  dateToleranceDays: z.number().int().min(0).max(90).optional(),
   sameCurrencyOnly: z.boolean().optional().default(true),
   ignoreCase: z.boolean().optional().default(true),
   ignoreSpaces: z.boolean().optional().default(true),
@@ -28,7 +28,7 @@ const matchRuleConfigSchema = z.object({
 const fileColumnMappingSchema = z.object({
   referenceNumber: z.string(),
   amount: z.string(),
-  transactionDate: z.string(),
+  transactionDate: z.string().optional(),
   currency: z.string().optional(),
 });
 

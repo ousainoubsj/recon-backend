@@ -144,6 +144,18 @@ describe('runMatch — date tolerance boundary', () => {
     const { rows } = runMatch(fileA, fileB, mapping, mapping, { amountTolerance: 0, dateToleranceDays: 1 });
     expect(rows[0].breakReason).toBe('amount_mismatch');
   });
+
+  it('ignores a stale/org-default dateToleranceDays when either side has no transactionDate mapping, matching on amount alone', () => {
+    const mappingNoDateA = { referenceNumber: 'ref', amount: 'amount', currency: 'currency' };
+    const fileA = { rows: [row('R1', '100', '2026-06-30')] };
+    const fileB = { rows: [row('R1', '100', '2099-01-01')] };
+    const { rows, summary } = runMatch(fileA, fileB, mappingNoDateA, mapping, {
+      amountTolerance: 0,
+      dateToleranceDays: 1,
+    });
+    expect(rows[0].status).toBe('matched');
+    expect(summary.matched).toBe(1);
+  });
 });
 
 describe('runMatch — sameCurrencyOnly', () => {

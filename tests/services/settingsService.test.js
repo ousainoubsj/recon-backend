@@ -4,6 +4,7 @@ const mockPrisma = {
   organization: { findFirst: jest.fn(), update: jest.fn() },
   user: { findFirst: jest.fn(), update: jest.fn() },
   member: { findFirst: jest.fn() },
+  matchRuleTemplate: { findFirst: jest.fn() },
 };
 
 jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
@@ -21,6 +22,7 @@ const {
   getNotificationPreferences,
   updateNotificationPreferences,
 } = await import('../../services/settingsService.js');
+const { ValidationError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
 const ORG_ID = 'org-1';
@@ -116,7 +118,7 @@ describe('getReconciliationDefaults', () => {
 
     expect(mockPrisma.organization.findFirst).toHaveBeenCalledWith({
       where: { id: ORG_ID },
-      select: { defaultAmountTolerance: true, defaultDateToleranceDays: true },
+      select: { defaultAmountTolerance: true, defaultDateToleranceDays: true, enforcedMatchRuleTemplateId: true },
     });
   });
 });
@@ -148,6 +150,32 @@ describe('updateReconciliationDefaults', () => {
     await updateReconciliationDefaults(USER_ID, { defaultAmountTolerance: 0.01 });
 
     expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+
+  it('accepts an enforcedMatchRuleTemplateId that belongs to the org', async () => {
+    mockPrisma.matchRuleTemplate.findFirst.mockResolvedValue({ id: 't1' });
+    mockPrisma.organization.findFirst.mockResolvedValue({ enforcedMatchRuleTemplateId: null });
+    mockPrisma.organization.update.mockResolvedValue({ id: ORG_ID, enforcedMatchRuleTemplateId: 't1' });
+
+    await updateReconciliationDefaults(USER_ID, { enforcedMatchRuleTemplateId: 't1' });
+
+    expect(mockPrisma.matchRuleTemplate.findFirst).toHaveBeenCalledWith({
+      where: { id: 't1', organizationId: ORG_ID },
+      select: { id: true },
+    });
+    expect(mockPrisma.organization.update).toHaveBeenCalledWith({
+      where: { id: ORG_ID },
+      data: { enforcedMatchRuleTemplateId: 't1' },
+    });
+  });
+
+  it("rejects an enforcedMatchRuleTemplateId that doesn't belong to the org", async () => {
+    mockPrisma.matchRuleTemplate.findFirst.mockResolvedValue(null);
+
+    await expect(updateReconciliationDefaults(USER_ID, { enforcedMatchRuleTemplateId: 'not-mine' })).rejects.toBeInstanceOf(
+      ValidationError,
+    );
+    expect(mockPrisma.organization.update).not.toHaveBeenCalled();
   });
 });
 

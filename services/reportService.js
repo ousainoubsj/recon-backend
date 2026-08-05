@@ -38,6 +38,32 @@ async function withOrgToleranceDefaults(organizationId, config) {
   };
 }
 
+// The real enforcement behind an org's admin-designated default MatchRuleTemplate
+// — MatchingRulesSidebar.tsx already renders read-only for non-admins when one
+// is set, but a non-admin hitting the run/complete-draft endpoints directly
+// with a different config must still get the enforced config applied, not
+// whatever they submitted. Admins always pass their own config through
+// untouched (they're the ones who set the policy). Only used at the two
+// points where a reconciliation actually executes (completeDraft,
+// runReconciliation) — saveDraft/saveReport aren't the authoritative "this
+// is what ran" step, so they're left as before.
+async function resolveRunConfig(organizationId, role, config) {
+  if (role !== 'admin') {
+    const org = await prisma.organization.findFirst({
+      where: { id: organizationId },
+      select: { enforcedMatchRuleTemplateId: true },
+    });
+    if (org?.enforcedMatchRuleTemplateId) {
+      const enforced = await prisma.matchRuleTemplate.findFirst({
+        where: { id: org.enforcedMatchRuleTemplateId, organizationId },
+        select: { config: true },
+      });
+      if (enforced) return enforced.config;
+    }
+  }
+  return withOrgToleranceDefaults(organizationId, config);
+}
+
 // Mirrors the frontend's formatReportReference (recon-frontend/lib/format.ts)
 // exactly — audit-log metadata should show the same human-readable
 // REC-YYYY-NNNNNN reference the UI does, not the raw UUID. Exported since
@@ -997,7 +1023,8 @@ export async function listDrafts(userId) {
 export async function completeDraft(userId, reportId, dto, { ip } = {}) {
   const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
   if (!draft) throw new NotFoundError();
-  const config = await withOrgToleranceDefaults(draft.organizationId, dto.config);
+  const { role } = await getUserMembership(userId);
+  const config = await resolveRunConfig(draft.organizationId, role, dto.config);
 
   const report = await prisma.$transaction((tx) =>
     persistCompletedRun(tx, reportId, {
@@ -1044,8 +1071,8 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     throw new ValidationError('Both files must be uploaded before running reconciliation');
   }
 
-  const { organizationId } = await getUserMembership(userId);
-  const config = await withOrgToleranceDefaults(organizationId, dto.config);
+  const { organizationId, role } = await getUserMembership(userId);
+  const config = await resolveRunConfig(organizationId, role, dto.config);
 
   await logAuditSafely(userId, {
     action: 'report.run.started',

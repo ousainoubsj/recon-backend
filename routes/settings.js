@@ -40,6 +40,11 @@ const updateOrganizationInfoSchema = z.object({
 const updateReconciliationDefaultsSchema = z.object({
   defaultAmountTolerance: z.number().min(0).nullable().optional(),
   defaultDateToleranceDays: z.number().int().min(0).nullable().optional(),
+  // The org's admin-enforced MatchRuleTemplate — null clears enforcement
+  // (members go back to freely editing matching rules, seeded from the two
+  // fields above). Ownership (must belong to this org) is checked in
+  // settingsService.js, not here — zod only validates shape.
+  enforcedMatchRuleTemplateId: z.string().uuid().nullable().optional(),
 });
 
 const updateNotificationPreferencesSchema = z.object({

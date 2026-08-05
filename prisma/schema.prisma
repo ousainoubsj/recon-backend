@@ -322,6 +322,12 @@ model MatchRuleTemplate {
   lastUsedAt     DateTime?    @map("last_used_at")
   useCount       Int          @default(0) @map("use_count")
 
+  // Back-relation for Organization.enforcedMatchRuleTemplateId — a list only
+  // because Prisma requires one on this side; in practice a template is
+  // org-scoped already, so at most the one org it belongs to ever points
+  // here.
+  enforcedByOrganizations Organization[] @relation("EnforcedMatchRuleTemplate")
+
   @@index([organizationId])
   @@map("match_rule_templates")
 }
@@ -437,6 +443,14 @@ model Organization {
   currency                 String?             @db.VarChar(10)
   defaultAmountTolerance   Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
   defaultDateToleranceDays Int?                @map("default_date_tolerance_days")
+  // Admin-designated MatchRuleTemplate that non-admin members are locked to
+  // (matchRuleTemplateService.js enforces this at both the template-listing
+  // and the actual run/complete-draft steps) — null means no enforcement,
+  // members use the org's plain tolerance defaults above and can edit freely.
+  // SetNull so deleting the enforced template un-enforces cleanly rather
+  // than leaving a dangling reference.
+  enforcedMatchRuleTemplateId String?          @map("enforced_match_rule_template_id") @db.Uuid
+  enforcedMatchRuleTemplate   MatchRuleTemplate? @relation("EnforcedMatchRuleTemplate", fields: [enforcedMatchRuleTemplateId], references: [id], onDelete: SetNull)
   // Org-wide, admin-only (not a per-user preference) — when on, every active
   // admin member gets a weekly email + in-app notification summarizing the
   // org's reconciliation activity. See services/weeklyDigestService.js.

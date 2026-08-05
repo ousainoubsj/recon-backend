@@ -4,6 +4,11 @@ export const ROLE_PERMISSIONS = {
     member: ['create', 'read', 'update', 'delete'],
     invitation: ['create', 'cancel'],
     report: ['create', 'read', 'delete', 'export', 'email'],
+    // Separate from `report` (which also gates actually running a
+    // reconciliation, still allowed for analysts) — only admins may create a
+    // MatchRuleTemplate, so the org's saved-template catalog stays a
+    // deliberately curated set an admin can designate a default from.
+    matchRuleTemplate: ['create'],
     file: ['upload'],
     auditLog: ['create', 'read'],
   },
@@ -12,6 +17,7 @@ export const ROLE_PERMISSIONS = {
     member: ['read'],
     invitation: [],
     report: ['create', 'read', 'export', 'email'],
+    matchRuleTemplate: [],
     file: ['upload'],
     auditLog: ['create'],
   },
@@ -20,6 +26,7 @@ export const ROLE_PERMISSIONS = {
     member: ['read'],
     invitation: [],
     report: ['read', 'export', 'email'],
+    matchRuleTemplate: [],
     file: [],
     auditLog: [],
   },

@@ -209,6 +209,16 @@ function evaluateMatch(aEntry, bEntry, config) {
  */
 export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   const config = withDefaults(rawConfig);
+  // If either side has no transactionDate mapping, every entry's `date` is
+  // always null (extractEntries/parseDate) — evaluateMatch's date check
+  // requires both dates present whenever dateToleranceDays is non-null, so
+  // leaving a stale/org-default tolerance in place here would silently fail
+  // every row on "date_mismatch" rather than skipping the check as intended.
+  // Forced here, not just left to the caller, so it holds regardless of
+  // what the frontend sends or what org defaults get merged in upstream.
+  if (!mappingA.transactionDate || !mappingB.transactionDate) {
+    config.dateToleranceDays = null;
+  }
   const sideA = resolveSide(fileA, mappingA, config);
   const sideB = resolveSide(fileB, mappingB, config);
 
