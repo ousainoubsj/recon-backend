@@ -34,6 +34,9 @@ const mockPrisma = {
   organization: {
     findFirst: jest.fn().mockResolvedValue({ defaultAmountTolerance: null, defaultDateToleranceDays: null }),
   },
+  matchRuleTemplate: {
+    findFirst: jest.fn(),
+  },
   auditLog: {
     findMany: jest.fn().mockResolvedValue([]),
   },
@@ -694,6 +697,30 @@ describe('saveDraft', () => {
       },
     });
     expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+
+  it("seeds config from the org's enforced default template when no config is given", async () => {
+    mockPrisma.organization.findFirst.mockResolvedValueOnce({
+      defaultAmountTolerance: null,
+      defaultDateToleranceDays: null,
+      enforcedMatchRuleTemplateId: 'tmpl-1',
+    });
+    mockPrisma.matchRuleTemplate.findFirst.mockResolvedValueOnce({
+      config: { amountTolerance: 5, dateToleranceDays: 2, sameCurrencyOnly: false, duplicateHandling: 'skip' },
+    });
+    mockPrisma.report.create.mockResolvedValue({ id: 'draft-1' });
+
+    await saveDraft(USER_ID, {});
+
+    expect(mockPrisma.matchRuleTemplate.findFirst).toHaveBeenCalledWith({
+      where: { id: 'tmpl-1', organizationId: ORG_ID },
+      select: { config: true },
+    });
+    expect(mockPrisma.report.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        config: { amountTolerance: 5, dateToleranceDays: 2, sameCurrencyOnly: false, duplicateHandling: 'skip' },
+      }),
+    });
   });
 
   it('defaults progress to 0 and unset fields to null', async () => {

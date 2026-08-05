@@ -21,21 +21,38 @@ const SAMPLE_ROW_CAP = 2000;
 
 const toNum = (decimal) => (decimal == null ? 0 : Number(decimal));
 
-// A report's own config always wins; this only fills in amountTolerance/
-// dateToleranceDays when the frontend hasn't set them yet (a brand-new draft
-// with no saved template applied) — the org's Reconciliation Defaults settings
-// exist specifically to seed this case, but nothing read them until now.
+// A report's own config always wins; this only seeds one when the frontend
+// hasn't set amountTolerance/dateToleranceDays yet (a brand-new draft with no
+// saved template applied — e.g. "Upload New Files"/"Try Sample", both of
+// which call createDraft with no config at all). If the org has an
+// admin-designated default MatchRuleTemplate, that's the seed (its full
+// config — tolerances, toggles, duplicate handling — not just the two
+// tolerance numbers), so the "default" applies uniformly to everyone
+// starting a fresh reconciliation, not just non-admins who get it enforced.
+// Falls back to the org's plain Reconciliation Defaults settings when there's
+// no default template. Explicitly-picked-template drafts (config already has
+// both tolerance fields) skip this entirely via the early return, so picking
+// a *different* saved template is never silently overwritten.
 async function withOrgToleranceDefaults(organizationId, config) {
   if (config?.amountTolerance !== undefined && config?.dateToleranceDays !== undefined) return config;
   const org = await prisma.organization.findFirst({
     where: { id: organizationId },
-    select: { defaultAmountTolerance: true, defaultDateToleranceDays: true },
+    select: { defaultAmountTolerance: true, defaultDateToleranceDays: true, enforcedMatchRuleTemplateId: true },
   });
-  return {
-    ...config,
-    amountTolerance: config?.amountTolerance ?? org?.defaultAmountTolerance?.toNumber(),
-    dateToleranceDays: config?.dateToleranceDays ?? org?.defaultDateToleranceDays,
+
+  let seed = {
+    amountTolerance: org?.defaultAmountTolerance?.toNumber(),
+    dateToleranceDays: org?.defaultDateToleranceDays,
   };
+  if (org?.enforcedMatchRuleTemplateId) {
+    const defaultTemplate = await prisma.matchRuleTemplate.findFirst({
+      where: { id: org.enforcedMatchRuleTemplateId, organizationId },
+      select: { config: true },
+    });
+    if (defaultTemplate) seed = defaultTemplate.config;
+  }
+
+  return { ...seed, ...config };
 }
 
 // The real enforcement behind an org's admin-designated default MatchRuleTemplate
