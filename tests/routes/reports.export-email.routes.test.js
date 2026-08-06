@@ -549,3 +549,58 @@ describe('POST /api/reports/:id/email', () => {
     expect(res.status).toBe(404);
   });
 });
+
+describe('POST /api/reports/comparison-email', () => {
+  it('emails a comparison across 2 reports and returns 202', async () => {
+    mockReportService.getReportsByIds.mockResolvedValue([
+      { ...sampleReport, id: REPORT_ID_1 },
+      { ...sampleReport, id: REPORT_ID_2, name: 'May Bank Reconciliation' },
+    ]);
+    mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
+
+    const res = await request(app)
+      .post('/api/reports/comparison-email')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2], to: ['analyst@example.com'] });
+
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ sent: true });
+    expect(mockReportService.getReportsByIds).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2], {
+      requireCompleted: true,
+    });
+    expect(mockSend).toHaveBeenCalledWith(
+      expect.objectContaining({ to: ['analyst@example.com'], from: process.env.EMAIL_FROM }),
+    );
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'report.comparison_email', status: 'info' }),
+    );
+  });
+
+  it('rejects fewer than 2 ids with a 422', async () => {
+    const res = await request(app)
+      .post('/api/reports/comparison-email')
+      .send({ ids: [REPORT_ID_1], to: ['analyst@example.com'] });
+
+    expect(res.status).toBe(422);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid recipient address with a 422 and never calls Resend', async () => {
+    const res = await request(app)
+      .post('/api/reports/comparison-email')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2], to: ['not-an-email'] });
+
+    expect(res.status).toBe(422);
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it('returns a 404 RFC 7807 error when any id is missing or inaccessible', async () => {
+    mockReportService.getReportsByIds.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app)
+      .post('/api/reports/comparison-email')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2], to: ['analyst@example.com'] });
+
+    expect(res.status).toBe(404);
+  });
+});

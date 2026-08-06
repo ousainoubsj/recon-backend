@@ -1,0 +1,41 @@
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #111827;">
+    <div style="background-color: #0D9488; padding: 20px 24px; border-radius: 8px 8px 0 0;">
+        <p style="margin: 0; color: #CCFBF1; font-size: 12px; letter-spacing: 0.05em; text-transform: uppercase;">Combined Report</p>
+        <h2 style="margin: 4px 0 0; color: #ffffff; font-size: 18px;">Comparing {{runCount}} reconciliations</h2>
+    </div>
+
+    <div style="padding: 10px; border-radius: 0 0 8px 8px;">
+        <p style="margin-top: 0;">Hello,</p>
+        <p>Here is the combined comparison report you requested, covering {{dateRangeFormatted}}.</p>
+
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin: 16px 0; border-collapse: separate; border-spacing: 8px 0;">
+            <tr>
+                <td style="width: 33%; padding: 14px 16px; background-color: #F9FAFB; border-radius: 6px;">
+                    <p style="margin: 0; font-size: 20px; font-weight: 700; color: #059669;">{{avgMatchRate}}</p>
+                    <p style="margin: 2px 0 0; font-size: 12px; color: #6B7280;">Avg Match Rate</p>
+                </td>
+                <td style="width: 33%; padding: 14px 16px; background-color: #F9FAFB; border-radius: 6px;">
+                    <p style="margin: 0; font-size: 20px; font-weight: 700;">{{runCount}}</p>
+                    <p style="margin: 2px 0 0; font-size: 12px; color: #6B7280;">Runs Compared</p>
+                </td>
+                <td style="width: 33%; padding: 14px 16px; background-color: #F9FAFB; border-radius: 6px;">
+                    <p style="margin: 0; font-size: 20px; font-weight: 700; color: #DC2626;">{{totalBreakValue}}</p>
+                    <p style="margin: 2px 0 0; font-size: 12px; color: #6B7280;">Total Break Value</p>
+                </td>
+            </tr>
+        </table>
+
+        <h3 style="font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #6B7280; margin: 24px 0 8px;">Reconciliations Compared</h3>
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse: collapse; font-size: 13px;">
+            <tr style="text-align: left; color: #6B7280; font-size: 11px; text-transform: uppercase;">
+                <th style="padding: 6px 0; border-bottom: 1px solid #E5E7EB; font-weight: 600;">Reconciliation</th>
+                <th style="padding: 6px 0; border-bottom: 1px solid #E5E7EB; font-weight: 600; text-align: right;">Run Date</th>
+                <th style="padding: 6px 0; border-bottom: 1px solid #E5E7EB; font-weight: 600; text-align: right;">Match Rate</th>
+            </tr>
+            {{runsRows}}
+        </table>
+
+        <p style="color: #9CA3AF; font-size: 12px; margin: 28px 0 0;">This is an automated message from Reconcil Transaction Reconciliation.</p>
+        <p style="color: #9CA3AF; font-size: 12px; margin: 4px 0 0;">Please do not reply to this email.</p>
+    </div>
+</div>

@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
-import { sendReportEmail } from '../services/emailService.js';
+import { sendReportEmail, sendComparisonReportEmail } from '../services/emailService.js';
 import { filterEmailNotificationOptedIn } from '../services/settingsService.js';
 import { logAuditSafely, logResultsViewedOnce } from '../services/auditLogService.js';
 import { resolveSections, getTemplateName } from '../services/reportTemplateService.js';
@@ -488,5 +488,30 @@ export const emailReport = async (req, res) => {
     status: 'info',
     ip: req.ip,
     metadata: { to: req.body.to },
+  });
+};
+
+// Combined Report's email — mirrors emailReport, just fetching 2+ reports
+// and sending the comparison template instead of the single-report one.
+export const comparisonEmailReport = async (req, res) => {
+  const { ids, to } = req.body;
+  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
+  const recipients = await filterEmailNotificationOptedIn(to);
+  if (recipients.length === 0) {
+    res.status(202).json({ sent: false, reason: 'All recipients have opted out of email notifications' });
+  } else {
+    await sendComparisonReportEmail(reports, recipients);
+    res.status(202).json({ sent: true });
+  }
+
+  await logAuditSafely(req.session.user.id, {
+    action: 'report.comparison_email',
+    entityType: 'report',
+    status: 'info',
+    ip: req.ip,
+    metadata: {
+      references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
+      to,
+    },
   });
 };

@@ -400,3 +400,16 @@ reportsRouter.post(
   validate(emailSchema),
   catchAsync(reportsController.emailReport),
 );
+
+const comparisonEmailSchema = z.object({
+  ids: z.array(z.string().uuid()).min(2).max(100),
+  to: z.array(z.string().email()).min(1).max(20),
+});
+
+reportsRouter.post(
+  '/comparison-email',
+  authenticate,
+  catchAsync(requirePermission('report', 'email')),
+  validate(comparisonEmailSchema),
+  catchAsync(reportsController.comparisonEmailReport),
+);

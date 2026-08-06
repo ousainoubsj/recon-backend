@@ -93,6 +93,55 @@ export async function sendReportEmail(report, to) {
   });
 }
 
+// Combined Report's email — a stats comparison across 2+ reconciliations,
+// same content shape as utils/xlsxComparisonReport.js/pdfComparisonReport.js
+// (avg match rate, total break value, per-run match rate), not a merge.
+// renderEmailTemplate has no loop construct, so the per-run table body is
+// built here and substituted in as one pre-rendered HTML string — report
+// names are user-entered, so each cell is still escaped individually before
+// being assembled into that string.
+export async function sendComparisonReportEmail(reports, to) {
+  const sorted = [...reports].sort((a, b) => new Date(a.runDate) - new Date(b.runDate));
+  const runStats = sorted.map((r) => {
+    const totalRows = r.totalRows ?? 0;
+    const matchedCount = r.matchedCount ?? 0;
+    return {
+      name: r.name || 'Untitled Reconciliation',
+      runDate: r.runDate,
+      matchPercent: totalRows > 0 ? (matchedCount / totalRows) * 100 : 0,
+    };
+  });
+
+  const avgMatchRate = runStats.length > 0 ? runStats.reduce((sum, r) => sum + r.matchPercent, 0) / runStats.length : 0;
+  const totalBreakValue = sorted.reduce((sum, r) => sum + Number(r.totalBreakValue ?? 0), 0);
+  const dateRangeFormatted =
+    runStats.length > 0 ? `${formatDate(runStats[0].runDate)} – ${formatDate(runStats[runStats.length - 1].runDate)}` : 'see link';
+
+  const runsRows = runStats
+    .map(
+      (r) =>
+        `<tr><td style="padding: 8px 0; border-bottom: 1px solid #E5E7EB;">${escapeHtmlForEmail(r.name)}</td>` +
+        `<td style="padding: 8px 0; border-bottom: 1px solid #E5E7EB; text-align: right; color: #6B7280;">${escapeHtmlForEmail(formatDate(r.runDate))}</td>` +
+        `<td style="padding: 8px 0; border-bottom: 1px solid #E5E7EB; text-align: right; font-weight: 600;">${r.matchPercent.toFixed(1)}%</td></tr>`,
+    )
+    .join('');
+
+  const html = await renderEmailTemplate('email-comparison-report', {
+    runCount: runStats.length,
+    dateRangeFormatted: escapeHtmlForEmail(dateRangeFormatted),
+    avgMatchRate: `${avgMatchRate.toFixed(1)}%`,
+    totalBreakValue: formatCurrency(totalBreakValue),
+    runsRows,
+  });
+
+  await sendEmail({
+    to,
+    subject: `Combined report — comparing ${runStats.length} reconciliations`,
+    html,
+    text: htmlToText(html),
+  });
+}
+
 /**
  * Wired into Better Auth's organization plugin `sendInvitationEmail` option.
  * @param {{id: string, role: string, email: string, organization: {name: string}, invitation?: {expiresAt?: string|Date}, inviter: {user: {name: string, email: string}}}} data
