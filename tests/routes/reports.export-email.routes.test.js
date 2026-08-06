@@ -392,6 +392,101 @@ describe('POST /api/reports/bulk-export', () => {
   });
 });
 
+describe('POST /api/reports/comparison-export', () => {
+  it('builds a single stats-comparison file (not a zip) across 2 reports, with no recordExport (no single reportId to attach to)', async () => {
+    mockReportService.getReportsByIds.mockResolvedValue([
+      { ...sampleReport, id: REPORT_ID_1 },
+      { ...sampleReport, id: REPORT_ID_2, name: 'May Bank Reconciliation', matchedCount: 5 },
+    ]);
+
+    const res = await request(app)
+      .post('/api/reports/comparison-export')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2] });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('spreadsheetml.sheet');
+    expect(res.headers['content-disposition']).toContain('attachment; filename="combined_report_');
+    expect(Number(res.headers['content-length'])).toBeGreaterThan(0);
+    expect(mockReportService.getReportsByIds).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2], {
+      requireCompleted: true,
+    });
+    expect(mockRecordExport).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'report.comparison_export', status: 'info' }),
+    );
+  });
+
+  it('returns a real PDF when format is "pdf"', async () => {
+    mockReportService.getReportsByIds.mockResolvedValue([
+      { ...sampleReport, id: REPORT_ID_1 },
+      { ...sampleReport, id: REPORT_ID_2 },
+    ]);
+
+    const res = await request(app)
+      .post('/api/reports/comparison-export')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2], format: 'pdf' });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toBe('application/pdf');
+    expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('rejects fewer than 2 ids with a 422 (comparing one report against itself is not a comparison)', async () => {
+    const res = await request(app)
+      .post('/api/reports/comparison-export')
+      .send({ ids: [REPORT_ID_1] });
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.getReportsByIds).not.toHaveBeenCalled();
+  });
+
+  it('returns a 404 RFC 7807 error when any id is missing or inaccessible', async () => {
+    mockReportService.getReportsByIds.mockRejectedValue(new NotFoundError());
+
+    const res = await request(app)
+      .post('/api/reports/comparison-export')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2] });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('skips the audit log and recordExport when preview is true', async () => {
+    mockReportService.getReportsByIds.mockResolvedValue([
+      { ...sampleReport, id: REPORT_ID_1 },
+      { ...sampleReport, id: REPORT_ID_2 },
+    ]);
+
+    const res = await request(app)
+      .post('/api/reports/comparison-export')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2], preview: true });
+
+    expect(res.status).toBe(200);
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+    expect(mockRecordExport).not.toHaveBeenCalled();
+  });
+
+  it('audit-logs a failed attempt and propagates the error when building the file throws', async () => {
+    mockReportService.getReportsByIds.mockResolvedValue([
+      { ...sampleReport, id: REPORT_ID_1 },
+      { ...sampleReport, id: REPORT_ID_2 },
+    ]);
+    // Forces a real TypeError inside buildComparisonXlsxReport (`sections.summary`
+    // on undefined) — exercises the actual failure path instead of mocking it.
+    mockResolveSections.mockResolvedValueOnce(undefined);
+
+    const res = await request(app)
+      .post('/api/reports/comparison-export')
+      .send({ ids: [REPORT_ID_1, REPORT_ID_2] });
+
+    expect(res.status).toBe(500);
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'report.comparison_export', status: 'failed' }),
+    );
+  });
+});
+
 describe('POST /api/reports/:id/email', () => {
   it('emails the report summary to a single recipient and returns 202', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);

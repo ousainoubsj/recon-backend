@@ -199,6 +199,24 @@ reportsRouter.post(
   catchAsync(reportsController.bulkExportReports),
 );
 
+// Min 2 — comparing a single report against itself isn't a comparison; no
+// templateId (the "Combined Report" template is a client-only pseudo-card,
+// never a real ReportTemplate row, same as "Custom Report").
+const comparisonExportSchema = z.object({
+  ids: z.array(z.string().uuid()).min(2).max(100),
+  format: z.enum(['xlsx', 'pdf']).default('xlsx'),
+  sections: sectionsSchema.optional(),
+  preview: z.boolean().optional(),
+});
+
+reportsRouter.post(
+  '/comparison-export',
+  authenticate,
+  catchAsync(requirePermission('report', 'export')),
+  validate(comparisonExportSchema),
+  catchAsync(reportsController.comparisonExport),
+);
+
 reportsRouter.post(
   '/draft',
   authenticate,

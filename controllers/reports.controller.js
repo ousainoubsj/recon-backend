@@ -15,6 +15,8 @@ import {
 } from '../services/reportExportService.js';
 import { buildXlsxReport } from '../utils/xlsxReport.js';
 import { buildPdfReport } from '../utils/pdfReport.js';
+import { buildComparisonXlsxReport } from '../utils/xlsxComparisonReport.js';
+import { buildComparisonPdfReport } from '../utils/pdfComparisonReport.js';
 import { downloadFromR2 } from '../utils/fileParser.js';
 import { parsePositiveInt } from '../utils/queryParams.js';
 
@@ -364,6 +366,69 @@ export const exportReport = async (req, res) => {
     status: 'success',
     fileSizeBytes: buffer.length,
     fileKey,
+  });
+};
+
+// "Combined Report" — a stats comparison across 2+ completed reconciliations
+// (not a merge of their transactions; see utils/xlsxComparisonReport.js /
+// utils/pdfComparisonReport.js). No templateId: Combined Report is a
+// client-only pseudo-template like Custom Report, never a real
+// ReportTemplate row, so sections come straight from the request body.
+export const comparisonExport = async (req, res) => {
+  const { ids, format = 'xlsx', sections: overrideSections, preview = false } = req.body;
+  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
+
+  const sections = await resolveSections({
+    organizationId: reports[0].organizationId,
+    templateId: undefined,
+    overrideSections,
+  });
+
+  let buffer;
+  try {
+    const reportMeta = await buildReportMeta({
+      organizationId: reports[0].organizationId,
+      templateId: undefined,
+      generatedByName: req.session.user.name,
+    });
+    buffer =
+      format === 'pdf' ? await buildComparisonPdfReport(reports, sections, reportMeta) : await buildComparisonXlsxReport(reports, sections, reportMeta);
+  } catch (err) {
+    if (!preview) {
+      await logAuditSafely(req.session.user.id, {
+        action: 'report.comparison_export',
+        entityType: 'report',
+        status: 'failed',
+        ip: req.ip,
+        metadata: {
+          references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
+          format,
+          reason: err.message,
+        },
+      });
+    }
+    throw err;
+  }
+
+  res.setHeader('Content-Type', CONTENT_TYPE_BY_FORMAT[format]);
+  res.setHeader('Content-Disposition', `attachment; filename="combined_report_${Date.now()}.${format}"`);
+  res.send(buffer);
+
+  if (preview) return;
+
+  // No ReportExport row — its reportId is a required FK to a single Report,
+  // which a comparison across several doesn't have one of. Still
+  // audit-logged, same shape as bulk_export's entry (no entityId, every
+  // compared report's reference listed in metadata).
+  await logAuditSafely(req.session.user.id, {
+    action: 'report.comparison_export',
+    entityType: 'report',
+    status: 'info',
+    ip: req.ip,
+    metadata: {
+      references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
+      format,
+    },
   });
 };
 
