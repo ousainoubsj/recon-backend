@@ -68,6 +68,30 @@ describe('parseAmount', () => {
   it('returns null for unparseable input', () => {
     expect(parseAmount('N/A')).toBeNull();
   });
+
+  it('reads parenthesized amounts as negative', () => {
+    expect(parseAmount('(100.00)')).toBe(-100);
+  });
+
+  it('reads parenthesized amounts with currency symbols and commas as negative', () => {
+    expect(parseAmount('($1,250.75)')).toBe(-1250.75);
+  });
+
+  it('reads trailing-minus amounts as negative', () => {
+    expect(parseAmount('100.00-')).toBe(-100);
+  });
+
+  it('does not double-negate a value with a real leading minus', () => {
+    expect(parseAmount('-12.50')).toBe(-12.5);
+  });
+
+  it('requires both parens — a lone opening paren is not treated as negative', () => {
+    expect(parseAmount('(100.00')).toBe(100);
+  });
+
+  it('fails safe to null for a garbled leading-and-trailing minus', () => {
+    expect(parseAmount('-100-')).toBeNull();
+  });
 });
 
 describe('parseDate', () => {
@@ -172,6 +196,90 @@ describe('runMatch — sameCurrencyOnly', () => {
     const fileB = { rows: [row('R1', '100', '2026-06-30', 'EUR')] };
     const { rows } = runMatch(fileA, fileB, mapping, mapping, { sameCurrencyOnly: false, amountTolerance: 0 });
     expect(rows[0].status).toBe('matched');
+  });
+
+  it('matches when one side has a blank currency and the other a real one — blank is treated as unknown, not mismatched', () => {
+    const fileA = { rows: [row('R1', '100', '2026-06-30', '')] };
+    const fileB = { rows: [row('R1', '100', '2026-06-30', 'EUR')] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, { sameCurrencyOnly: true, amountTolerance: 0 });
+    expect(rows[0].status).toBe('matched');
+    expect(rows[0].breakReason).not.toBe('other');
+  });
+
+  it('matches when both sides have a blank currency', () => {
+    const fileA = { rows: [row('R1', '100', '2026-06-30', '')] };
+    const fileB = { rows: [row('R1', '100', '2026-06-30', '')] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, { sameCurrencyOnly: true, amountTolerance: 0 });
+    expect(rows[0].status).toBe('matched');
+  });
+
+  it('treats a whitespace-only currency the same as blank', () => {
+    const fileA = { rows: [row('R1', '100', '2026-06-30', '   ')] };
+    const fileB = { rows: [row('R1', '100', '2026-06-30', 'EUR')] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, { sameCurrencyOnly: true, amountTolerance: 0 });
+    expect(rows[0].status).toBe('matched');
+  });
+});
+
+describe('runMatch — non-transaction rows (blank ref, amount, and date)', () => {
+  it('drops a row with nothing in ref, amount, or date', () => {
+    const fileA = { rows: [row('', '', '')] };
+    const fileB = { rows: [] };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, {});
+    expect(rows).toHaveLength(0);
+    expect(summary.total).toBe(0);
+  });
+
+  it('does not drop a row with a blank ref/date but a real (zero) amount', () => {
+    const fileA = { rows: [row('', '0', '')] };
+    const fileB = { rows: [] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('unmatched_a');
+  });
+
+  it('still drops a row whose date is unparseable garbage (collapses to null like blank)', () => {
+    const fileA = { rows: [row('', '', 'N/A')] };
+    const fileB = { rows: [] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, {});
+    expect(rows).toHaveLength(0);
+  });
+
+  it('does not drop a row with a blank ref/date but a parenthesized negative amount', () => {
+    const fileA = { rows: [row('', '(100.00)', '')] };
+    const fileB = { rows: [] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, {});
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountA).toBe(-100);
+    expect(rows[0].status).toBe('unmatched_a');
+  });
+});
+
+describe('runMatch — blank-reference rows', () => {
+  it('does not flag two unrelated blank-ref rows in the same file as duplicates of each other', () => {
+    const fileA = { rows: [row('', '100', '2026-06-30'), row('', '250', '2026-07-01')] };
+    const fileB = { rows: [] };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, { duplicateHandling: 'keep-first' });
+    expect(summary.duplicates).toBe(0);
+    expect(summary.unmatchedA).toBe(2);
+    expect(rows.every((r) => r.status === 'unmatched_a')).toBe(true);
+  });
+
+  it('does not let a blank-ref row in file A falsely match an unrelated blank-ref row in file B', () => {
+    const fileA = { rows: [row('', '100', '2026-06-30')] };
+    const fileB = { rows: [row('', '100', '2026-06-30')] };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, {});
+    expect(summary.matched).toBe(0);
+    expect(rows.map((r) => r.status).sort()).toEqual(['unmatched_a', 'unmatched_b']);
+  });
+
+  it('still surfaces a blank-ref row individually even under duplicateHandling: skip', () => {
+    const fileA = { rows: [row('', '100', '2026-06-30')] };
+    const fileB = { rows: [] };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, { duplicateHandling: 'skip' });
+    expect(summary.unmatchedA).toBe(1);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe('unmatched_a');
   });
 });
 

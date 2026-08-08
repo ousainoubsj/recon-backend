@@ -49,13 +49,40 @@ function isBlankRow(row) {
   return Object.values(row).every((value) => String(value ?? '').trim() === '');
 }
 
+// Blank headers (both '' from a genuinely empty cell) or duplicate header
+// text (two columns literally named the same thing) would otherwise collide
+// as object keys once rowsFromAoa builds each row — the later column
+// silently overwriting the earlier one's data, with the returned headers
+// list still showing both as identical, undifferentiable choices in the
+// mapping UI. Blank headers get a positional placeholder first; anything
+// left duplicated (including a placeholder colliding with a real header
+// elsewhere) gets a " (n)" suffix, probed against everything already
+// assigned so the suffix itself can't collide with a pre-existing header.
+function dedupeHeaders(headerRow) {
+  const base = headerRow.map((cell, i) => {
+    const s = String(cell ?? '');
+    return s.trim() === '' ? `Column ${i + 1}` : s;
+  });
+  const used = new Set();
+  return base.map((name) => {
+    let candidate = name;
+    let n = 2;
+    while (used.has(candidate)) {
+      candidate = `${name} (${n})`;
+      n += 1;
+    }
+    used.add(candidate);
+    return candidate;
+  });
+}
+
 // Shared by both parsers once each has reduced its sheet/CSV to raw
 // string-array rows — builds the {headers, rows} shape from a chosen header
 // row plus the data rows beneath it, dropping rows that are blank in
 // substance (every cell empty) even if they weren't wholly absent from the
 // source (e.g. a formatted-but-empty Excel row, or a `,,,`-only CSV line).
 function rowsFromAoa(headerRow, dataRows) {
-  const headers = headerRow.map((cell) => String(cell ?? ''));
+  const headers = dedupeHeaders(headerRow);
   const rows = dataRows
     .map((cells) => {
       const row = {};

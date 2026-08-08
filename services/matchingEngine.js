@@ -54,10 +54,23 @@ export function normalizeRef(ref, config = {}) {
 
 export function parseAmount(value) {
   if (value == null || value === '') return null;
-  const cleaned = String(value).replace(/[^0-9.\-]/g, '');
+  const str = String(value).trim();
+  if (str === '') return null;
+
+  // Accounting-style negatives. CR/DR suffix conventions ("100.00 CR") are
+  // intentionally NOT handled — too locale/column-semantics-dependent to
+  // infer safely from the string alone.
+  const isParenNegative = str.includes('(') && str.includes(')');
+  const isTrailingMinus = str.endsWith('-') && !str.startsWith('-');
+  const forceNegative = isParenNegative || isTrailingMinus;
+
+  let cleaned = str.replace(/[^0-9.\-]/g, '');
+  if (forceNegative) cleaned = cleaned.replace(/-/g, '');
   if (cleaned === '' || cleaned === '-' || cleaned === '.') return null;
+
   const num = Number(cleaned);
-  return Number.isNaN(num) ? null : num;
+  if (Number.isNaN(num)) return null;
+  return forceNegative ? -Math.abs(num) : num;
 }
 
 // ISO first; else DD/MM/YYYY vs MM/DD/YYYY disambiguated by whichever
@@ -91,14 +104,23 @@ function normalizeCurrency(value) {
   return value == null ? null : String(value).trim().toUpperCase();
 }
 
+// A row whose reference, amount, and date all come back empty after parsing
+// isn't a transaction — e.g. a mid-file "June 2026" section-divider row that
+// isn't a title row caught by the top-of-file header-scan heuristic. Whatever
+// text it has is sitting in some unmapped column, so it's dropped before it
+// can ever be grouped or matched. "Unparseable" and "blank" intentionally
+// collapse to the same outcome here (parseAmount/parseDate already return
+// null for both) — that's desired, not an oversight.
 function extractEntries(file, mapping) {
-  return file.rows.map((raw) => ({
-    ref: raw[mapping.referenceNumber],
-    amount: parseAmount(raw[mapping.amount]),
-    date: parseDate(raw[mapping.transactionDate]),
-    currency: mapping.currency ? raw[mapping.currency] : null,
-    raw,
-  }));
+  return file.rows
+    .map((raw) => ({
+      ref: raw[mapping.referenceNumber],
+      amount: parseAmount(raw[mapping.amount]),
+      date: parseDate(raw[mapping.transactionDate]),
+      currency: mapping.currency ? raw[mapping.currency] : null,
+      raw,
+    }))
+    .filter((e) => !(String(e.ref ?? '').trim() === '' && e.amount === null && e.date === null));
 }
 
 // Groups a file's rows by normalized reference, then resolves any group with
@@ -106,11 +128,28 @@ function extractEntries(file, mapping) {
 // survivor entry per ref (only refs with exactly one entry, post-policy) plus
 // the entries that get emitted as standalone 'duplicate' rows. 'skip' drops
 // its group's entries entirely — not a survivor, not a duplicate row.
+//
+// Entries with no reference at all (real amount/date, but nothing to key on)
+// are pulled out into incompleteEntries instead of joining the groups map
+// under a shared '' key. Grouping them there would falsely flag unrelated
+// no-ref rows as duplicates of each other, and — more seriously — would let
+// a no-ref row in file A "match" an unrelated no-ref row in file B purely
+// because both sides' survivor maps hold the same empty key. Each incomplete
+// entry always resolves to missing_counterparty/missing_internal instead
+// (matching by an empty ref is meaningless); duplicateHandling: 'skip' only
+// suppresses real duplicate groups — incomplete entries always surface
+// individually regardless of that setting, since they were never duplicates
+// of each other to begin with.
 function resolveSide(file, mapping, config) {
   const entries = extractEntries(file, mapping);
   const groups = new Map();
+  const incompleteEntries = [];
   for (const entry of entries) {
     const key = normalizeRef(entry.ref, config);
+    if (key === '') {
+      incompleteEntries.push(entry);
+      continue;
+    }
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(entry);
   }
@@ -139,7 +178,7 @@ function resolveSide(file, mapping, config) {
         break;
     }
   }
-  return { survivors, duplicateEntries };
+  return { survivors, duplicateEntries, incompleteEntries };
 }
 
 function makeDuplicateRow(entry, side) {
@@ -178,8 +217,16 @@ function evaluateMatch(aEntry, bEntry, config) {
   const amountDiff =
     aEntry.amount != null && bEntry.amount != null ? aEntry.amount - bEntry.amount : null;
 
-  if (config.sameCurrencyOnly && aEntry.currency != null && bEntry.currency != null) {
-    if (normalizeCurrency(aEntry.currency) !== normalizeCurrency(bEntry.currency)) {
+  // A blank mapped currency cell comes through as '' (not null), so a raw
+  // != null check doesn't treat it as absent. Normalizing first means blank
+  // and whitespace-only currencies fall out as falsy on either side, and get
+  // skipped the same way an unmapped currency would — otherwise two blanks
+  // trivially "match" and a blank vs. a real currency wrongly reads as a
+  // mismatch.
+  const aCurrency = normalizeCurrency(aEntry.currency);
+  const bCurrency = normalizeCurrency(bEntry.currency);
+  if (config.sameCurrencyOnly && aCurrency && bCurrency) {
+    if (aCurrency !== bCurrency) {
       return { status: 'mismatched', breakReason: 'other', amountDiff };
     }
   }
@@ -231,8 +278,23 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   for (const entry of sideB.duplicateEntries) rows.push(makeDuplicateRow(entry, 'B'));
   const duplicates = sideA.duplicateEntries.length + sideB.duplicateEntries.length;
 
-  const consumedB = new Set();
   let unmatchedA = 0;
+  let unmatchedB = 0;
+  // No-ref entries can't be matched against the other side by definition —
+  // each surfaces as its own break rather than risking a false match via a
+  // shared empty ref key (see resolveSide).
+  for (const entry of sideA.incompleteEntries) {
+    rows.push(makeUnmatchedRow(entry, 'A'));
+    unmatchedA += 1;
+    totalBreakValue += Math.abs(entry.amount ?? 0);
+  }
+  for (const entry of sideB.incompleteEntries) {
+    rows.push(makeUnmatchedRow(entry, 'B'));
+    unmatchedB += 1;
+    totalBreakValue += Math.abs(entry.amount ?? 0);
+  }
+
+  const consumedB = new Set();
   for (const [ref, aEntry] of sideA.survivors) {
     const bEntry = sideB.survivors.get(ref);
     if (!bEntry) {
@@ -263,7 +325,6 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
     }
   }
 
-  let unmatchedB = 0;
   for (const [ref, bEntry] of sideB.survivors) {
     if (consumedB.has(ref)) continue;
     rows.push(makeUnmatchedRow(bEntry, 'B'));
