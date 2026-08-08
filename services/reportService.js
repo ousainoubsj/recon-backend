@@ -214,6 +214,26 @@ function reportRowsForInsert(reportId, rows) {
   }));
 }
 
+// A single createMany becomes a single INSERT with one bound parameter per
+// column per row — Postgres caps a query at 65535 total bound parameters, so
+// a large-enough file pair (e.g. thousands of output rows across a wide
+// source file) can blow past that limit in one shot and throw. Batching
+// keeps every INSERT under the cap; batch size is derived from the actual
+// row shape (not hardcoded) so it self-adjusts if reportRowsForInsert's
+// field count ever changes. Multiple createMany calls inside the same `tx`
+// stay within the caller's transaction, so this is still all-or-nothing.
+const POSTGRES_MAX_QUERY_PARAMS = 65535;
+
+async function insertReportRowsInBatches(tx, reportId, rows) {
+  const records = reportRowsForInsert(reportId, rows);
+  if (records.length === 0) return;
+  const fieldsPerRow = Object.keys(records[0]).length;
+  const batchSize = Math.floor(POSTGRES_MAX_QUERY_PARAMS / fieldsPerRow);
+  for (let i = 0; i < records.length; i += batchSize) {
+    await tx.reportRow.createMany({ data: records.slice(i, i + batchSize) });
+  }
+}
+
 // Atomic per-year counter backing Report.sequenceNumber — the upsert's
 // `update` branch is a single UPDATE statement guarded by the year's row
 // lock, so concurrent completions in the same transaction-per-request model
@@ -272,7 +292,7 @@ async function persistCompletedRun(tx, reportId, dto) {
     },
   });
 
-  await tx.reportRow.createMany({ data: reportRowsForInsert(report.id, dto.rows) });
+  await insertReportRowsInBatches(tx, report.id, dto.rows);
 
   return report;
 }
@@ -342,8 +362,9 @@ export async function saveReport(userId, dto, { ip } = {}) {
       },
     });
 
-    // 2. Bulk-insert rows (createMany = single INSERT statement).
-    await tx.reportRow.createMany({ data: reportRowsForInsert(report.id, dto.rows) });
+    // 2. Bulk-insert rows, batched to stay under Postgres's per-query
+    // parameter limit (see insertReportRowsInBatches).
+    await insertReportRowsInBatches(tx, report.id, dto.rows);
 
     return report;
   });

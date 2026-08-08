@@ -22,6 +22,7 @@ const matchRuleConfigSchema = z.object({
   ignoreCase: z.boolean().optional().default(true),
   ignoreSpaces: z.boolean().optional().default(true),
   trimLeadingZeros: z.boolean().optional().default(true),
+  ignoreNonNumericPrefix: z.boolean().optional().default(false),
   duplicateHandling: z.enum(['keep-first', 'keep-last', 'flag-all', 'skip']).optional().default('keep-first'),
 });
 

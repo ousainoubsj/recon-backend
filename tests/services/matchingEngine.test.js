@@ -48,6 +48,28 @@ describe('normalizeRef', () => {
   it('defaults all toggles to true when omitted', () => {
     expect(normalizeRef(' 0042 ')).toBe('42');
   });
+
+  it('leaves a non-numeric prefix untouched by default', () => {
+    expect(normalizeRef('TC82083380406', {})).toBe('tc82083380406');
+  });
+
+  it('strips a leading non-numeric prefix when ignoreNonNumericPrefix is true', () => {
+    expect(
+      normalizeRef('TC82083380406', { ignoreCase: false, ignoreSpaces: false, trimLeadingZeros: false, ignoreNonNumericPrefix: true }),
+    ).toBe('82083380406');
+  });
+
+  it('leaves a ref with no digits at all untouched even when ignoreNonNumericPrefix is true', () => {
+    expect(
+      normalizeRef('CANCELLED', { ignoreCase: false, ignoreSpaces: false, trimLeadingZeros: false, ignoreNonNumericPrefix: true }),
+    ).toBe('CANCELLED');
+  });
+
+  it('strips the prefix before trimming leading zeros, so zeros the prefix was masking still get trimmed', () => {
+    expect(
+      normalizeRef('TC0082083380406', { ignoreCase: false, ignoreSpaces: false, trimLeadingZeros: true, ignoreNonNumericPrefix: true }),
+    ).toBe('82083380406');
+  });
 });
 
 describe('parseAmount', () => {
@@ -334,6 +356,24 @@ describe('runMatch — unmatched directionality', () => {
     const { rows } = runMatch(fileA, fileB, mapping, mapping, {});
     expect(rows[0].status).toBe('unmatched_b');
     expect(rows[0].breakReason).toBe('missing_internal');
+  });
+});
+
+describe('runMatch — ignoreNonNumericPrefix', () => {
+  it('treats a prefixed ref and its bare-digit counterpart as unmatched by default', () => {
+    const fileA = { rows: [row('TC82083380406', '100', '2026-06-30')] };
+    const fileB = { rows: [row('82083380406', '100', '2026-06-30')] };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, {});
+    expect(summary.matched).toBe(0);
+    expect(rows.map((r) => r.status).sort()).toEqual(['unmatched_a', 'unmatched_b']);
+  });
+
+  it('matches a prefixed ref against its bare-digit counterpart when enabled', () => {
+    const fileA = { rows: [row('TC82083380406', '100', '2026-06-30')] };
+    const fileB = { rows: [row('82083380406', '100', '2026-06-30')] };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, { ignoreNonNumericPrefix: true });
+    expect(summary.matched).toBe(1);
+    expect(rows[0].status).toBe('matched');
   });
 });
 

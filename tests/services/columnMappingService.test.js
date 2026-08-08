@@ -19,6 +19,13 @@ describe('suggestMapping', () => {
     expect(refSuggestion.confidence).toBeLessThan(100);
   });
 
+  it('scores "Transaction Code" as an exact synonym match for Reference Number', () => {
+    const suggestions = suggestMapping(['Transaction Code', 'Invoice Number', 'Amount', 'Transaction Date ']);
+    const refSuggestion = suggestions.find((s) => s.label === 'Reference Number');
+    expect(refSuggestion.value).toBe('Transaction Code');
+    expect(refSuggestion.confidence).toBe(96);
+  });
+
   it('picks the best-scoring header per field from a mixed header set', () => {
     const suggestions = suggestMapping(['Ref_No', 'Amount', 'Value Date', 'Currency Code', 'Notes']);
     const dateSuggestion = suggestions.find((s) => s.label === 'Transaction Date');

@@ -8,6 +8,7 @@ const CANONICAL_FIELDS = {
     label: 'Reference Number',
     synonyms: [
       'ref no', 'ref_no', 'reference', 'transaction id', 'transaction_id', 'txn ref', 'reference no', 'ref',
+      'transaction code', 'transaction_code', 'txn code', 'txn_code',
       'cheque no', 'cheque number', 'check no', 'check number', 'utr', 'utr no', 'utr number',
       'instrument no', 'instrument number', 'payment ref', 'payment reference', 'unique reference',
       'narration ref', 'trace number', 'doc no', 'document number',

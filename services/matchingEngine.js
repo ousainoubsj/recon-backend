@@ -37,14 +37,31 @@ function withDefaults(config = {}) {
     ignoreCase: config.ignoreCase ?? true,
     ignoreSpaces: config.ignoreSpaces ?? true,
     trimLeadingZeros: config.trimLeadingZeros ?? true,
+    // Unlike the other three (always safe to collapse), a prefix can carry
+    // real meaning — e.g. which system/channel a transaction came from — so
+    // this defaults off rather than assumed-safe, and has to be opted into
+    // per run.
+    ignoreNonNumericPrefix: config.ignoreNonNumericPrefix ?? false,
     duplicateHandling: config.duplicateHandling ?? 'keep-first',
   };
 }
 
 export function normalizeRef(ref, config = {}) {
-  const { ignoreCase = true, ignoreSpaces = true, trimLeadingZeros = true } = config;
+  const {
+    ignoreCase = true,
+    ignoreSpaces = true,
+    trimLeadingZeros = true,
+    ignoreNonNumericPrefix = false,
+  } = config;
   let r = String(ref ?? '');
   if (ignoreSpaces) r = r.replace(/\s+/g, '');
+  // Strips a leading non-digit prefix (e.g. "TC82083380406" -> "82083380406")
+  // so the same transaction with an inconsistent channel prefix on one side
+  // still matches. Runs before trimLeadingZeros so zeros a prefix was
+  // masking (e.g. "TC0082083380406") still get trimmed. Only strips when
+  // digits actually follow, so a ref with no digits at all isn't collapsed
+  // to ''.
+  if (ignoreNonNumericPrefix) r = r.replace(/^\D+(?=\d)/, '');
   if (ignoreCase) r = r.toLowerCase();
   // Leading zeros only strip when followed by another digit, so a ref like
   // "TRX-0001258" (doesn't start with 0) is untouched, while "00042"->"42".
