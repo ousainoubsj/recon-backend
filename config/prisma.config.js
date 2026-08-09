@@ -12,14 +12,18 @@ if (!connectionString) {
 // Strip query params - we handle SSL via pool config
 connectionString = connectionString.split('?')[0];
 
-const pool = new pg.Pool({
+// Exported alongside `prisma` so callers that need a raw client (e.g. the
+// COPY-based bulk row insert in reportService.js -- Prisma has no COPY
+// support) can borrow a connection from this same pool instead of opening a
+// second one.
+export const pgPool = new pg.Pool({
   connectionString,
   ssl: {
     rejectUnauthorized: false,
   },
 });
 
-const adapter = new PrismaPg(pool);
+const adapter = new PrismaPg(pgPool);
 
 export const prisma = new PrismaClient({
   adapter,

@@ -85,6 +85,38 @@ jest.unstable_mockModule('../../services/columnMappingService.js', () => ({
   computeValidationSummary: mockComputeValidationSummary,
 }));
 
+// persistCompletedRun's bulk row write (COPY, not createMany) and the
+// reconciliation job queue both live outside Prisma — mocked at the module
+// boundary same as everything else here, so these tests assert on *what*
+// gets bulk-inserted/enqueued without needing real pg-copy-streams/BullMQ
+// mechanics. See tests/services/reportRowBulkInsert.test.js for real
+// CSV-encoding coverage.
+const mockCopyReportRowsIn = jest.fn().mockResolvedValue(undefined);
+const mockDeleteReportRows = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/reportRowBulkInsert.js', () => ({
+  copyReportRowsIn: mockCopyReportRowsIn,
+  deleteReportRows: mockDeleteReportRows,
+}));
+
+const mockEnqueueReconciliationJob = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../queues/reconciliationQueue.js', () => ({
+  enqueueReconciliationJob: mockEnqueueReconciliationJob,
+  RECONCILIATION_QUEUE_NAME: 'reconciliation-runs',
+}));
+
+// The mapping-preview sample cache lives in Redis, not Postgres (see
+// mappingSampleCache.js) — mocked at the module boundary same as the other
+// out-of-Prisma dependencies above, so these tests never open a real Redis
+// connection.
+const mockSetSampleRows = jest.fn().mockResolvedValue(undefined);
+const mockGetSampleRows = jest.fn();
+const mockClearSampleRows = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/mappingSampleCache.js', () => ({
+  setSampleRows: mockSetSampleRows,
+  getSampleRows: mockGetSampleRows,
+  clearSampleRows: mockClearSampleRows,
+}));
+
 const {
   saveReport,
   listReports,
@@ -96,7 +128,8 @@ const {
   updateDraft,
   listDrafts,
   completeDraft,
-  runReconciliation,
+  enqueueReconciliationRun,
+  executeReconciliationRun,
   getMappingPreview,
   getRulePreview,
   getTransactions,
@@ -193,8 +226,8 @@ describe('saveReport', () => {
       },
     });
     expect(mockTx.reportSequence.upsert).toHaveBeenCalledWith({
-      where: { year: CURRENT_YEAR },
-      create: { year: CURRENT_YEAR, lastValue: 1 },
+      where: { year_organizationId: { year: CURRENT_YEAR, organizationId: ORG_ID } },
+      create: { year: CURRENT_YEAR, organizationId: ORG_ID, lastValue: 1 },
       update: { lastValue: { increment: 1 } },
     });
 
@@ -934,9 +967,12 @@ describe('completeDraft', () => {
         valueBreakdown: { matchedValue: 100, unmatchedValue: 50, duplicateValue: 0 },
       }),
     });
-    expect(mockTx.reportRow.createMany).toHaveBeenCalledWith({
-      data: expect.arrayContaining([expect.objectContaining({ reportId: 'draft-1', ref: 'REF1' })]),
-    });
+    expect(mockDeleteReportRows).toHaveBeenCalledWith('draft-1');
+    expect(mockCopyReportRowsIn).toHaveBeenCalledWith(
+      'draft-1',
+      expect.arrayContaining([expect.objectContaining({ ref: 'REF1' })]),
+      expect.objectContaining({ onProgress: undefined }),
+    );
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.create',
       entityType: 'report',
@@ -978,6 +1014,25 @@ describe('completeDraft', () => {
     );
   });
 
+  // Regression test for the bug where ReportSequence was keyed only by year
+  // — every organization shared one counter, so one org's completions
+  // inflated the "Run #" every other org's next run started from. The
+  // upsert must be scoped by (year, organizationId), not year alone.
+  it("scopes the sequence-number upsert to the draft's own organization, not a global year-only counter", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID, organizationId: 'org-7' });
+    mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: null });
+    mockTx.reportSequence.upsert.mockResolvedValue({ year: CURRENT_YEAR, lastValue: 1 });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(mockTx.reportSequence.upsert).toHaveBeenCalledWith({
+      where: { year_organizationId: { year: CURRENT_YEAR, organizationId: 'org-7' } },
+      create: { year: CURRENT_YEAR, organizationId: 'org-7', lastValue: 1 },
+      update: { lastValue: { increment: 1 } },
+    });
+  });
+
   it('does not reassign a sequence number on a retry that already has one', async () => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
     mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
@@ -1000,7 +1055,7 @@ const runDto = {
   config: { amountTolerance: 0.5, dateToleranceDays: 1 },
 };
 
-describe('runReconciliation', () => {
+describe('enqueueReconciliationRun', () => {
   const draft = {
     id: 'draft-1',
     userId: USER_ID,
@@ -1010,6 +1065,82 @@ describe('runReconciliation', () => {
     fileAKey: 'uploads/u1/a.csv',
     fileBKey: 'uploads/u1/b.csv',
     status: 'draft',
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(draft);
+    mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'processing' });
+  });
+
+  it('validates, flips the report to processing, and enqueues a job — never running the pipeline itself', async () => {
+    const id = await enqueueReconciliationRun(USER_ID, 'draft-1', runDto);
+
+    expect(id).toBe('draft-1');
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { status: 'processing', progress: 10, errorMessage: null },
+    });
+    expect(mockEnqueueReconciliationJob).toHaveBeenCalledWith({
+      reportId: 'draft-1',
+      userId: USER_ID,
+      ip: null,
+      dto: { name: runDto.name, columnMapping: runDto.columnMapping },
+      config: runDto.config,
+    });
+    // The actual pipeline runs in the worker, not here.
+    expect(mockDownloadFromR2).not.toHaveBeenCalled();
+    expect(mockRunMatch).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.run.started',
+      entityType: 'report',
+      entityId: 'draft-1',
+      status: 'info',
+      ip: undefined,
+      metadata: { filePair: 'a.csv vs b.csv' },
+    });
+  });
+
+  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(enqueueReconciliationRun(USER_ID, 'missing', runDto)).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockEnqueueReconciliationJob).not.toHaveBeenCalled();
+  });
+
+  it('throws ValidationError when either file has not been uploaded yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileBKey: null });
+
+    await expect(enqueueReconciliationRun(USER_ID, 'draft-1', runDto)).rejects.toBeInstanceOf(ValidationError);
+    expect(mockEnqueueReconciliationJob).not.toHaveBeenCalled();
+  });
+
+  it('accepts a previously failed run for retry (status draft-or-failed)', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, status: 'failed' });
+
+    await enqueueReconciliationRun(USER_ID, 'draft-1', runDto);
+
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
+    );
+  });
+});
+
+describe('executeReconciliationRun', () => {
+  const draft = {
+    id: 'draft-1',
+    name: 'Old name',
+    fileAName: 'a.csv',
+    fileBName: 'b.csv',
+    fileAKey: 'uploads/u1/a.csv',
+    fileBKey: 'uploads/u1/b.csv',
+  };
+
+  const jobPayload = {
+    reportId: 'draft-1',
+    userId: USER_ID,
+    ip: undefined,
+    dto: { name: undefined, columnMapping: runDto.columnMapping },
+    config: runDto.config,
   };
 
   beforeEach(() => {
@@ -1031,11 +1162,11 @@ describe('runReconciliation', () => {
   });
 
   it('downloads+parses both files fresh, runs the match, and persists a completed report', async () => {
-    const id = await runReconciliation(USER_ID, 'draft-1', runDto);
+    const id = await executeReconciliationRun(jobPayload);
 
     expect(id).toBe('draft-1');
-    expect(mockDownloadFromR2).toHaveBeenCalledWith('uploads/u1/a.csv');
-    expect(mockDownloadFromR2).toHaveBeenCalledWith('uploads/u1/b.csv');
+    expect(mockDownloadFromR2).toHaveBeenCalledWith('uploads/u1/a.csv', expect.objectContaining({ onProgress: expect.any(Function) }));
+    expect(mockDownloadFromR2).toHaveBeenCalledWith('uploads/u1/b.csv', expect.objectContaining({ onProgress: expect.any(Function) }));
     expect(mockRunMatch).toHaveBeenCalledWith(
       expect.anything(),
       expect.anything(),
@@ -1043,20 +1174,14 @@ describe('runReconciliation', () => {
       runDto.columnMapping.fileB,
       runDto.config,
     );
+    expect(mockDeleteReportRows).toHaveBeenCalledWith('draft-1');
+    expect(mockCopyReportRowsIn).toHaveBeenCalledWith('draft-1', [], expect.objectContaining({ onProgress: expect.any(Function) }));
     expect(mockTx.report.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'draft-1' },
         data: expect.objectContaining({ status: 'completed', columnMapping: runDto.columnMapping }),
       }),
     );
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
-      action: 'report.run.started',
-      entityType: 'report',
-      entityId: 'draft-1',
-      status: 'info',
-      ip: undefined,
-      metadata: { filePair: 'a.csv vs b.csv' },
-    });
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.run.completed',
       entityType: 'report',
@@ -1066,44 +1191,34 @@ describe('runReconciliation', () => {
     });
   });
 
+  it('bumps progress at the parse and match checkpoints', async () => {
+    await executeReconciliationRun(jobPayload);
+
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({ where: { id: 'draft-1' }, data: { progress: 55 } });
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({ where: { id: 'draft-1' }, data: { progress: 60 } });
+  });
+
   it('auto-detects sourceReportId from a completed report sharing the same file pair', async () => {
     mockPrisma.report.findFirst
-      .mockResolvedValueOnce(draft) // the draft lookup
+      .mockResolvedValueOnce(draft) // the report lookup
       .mockResolvedValueOnce({ id: 'prior-report' }); // findSourceReportId's lookup
 
-    await runReconciliation(USER_ID, 'draft-1', runDto);
+    await executeReconciliationRun(jobPayload);
 
     expect(mockTx.report.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ sourceReportId: 'prior-report' }) }),
     );
   });
 
-  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
+  it('throws NotFoundError when the report no longer exists', async () => {
     mockPrisma.report.findFirst.mockResolvedValue(null);
 
-    await expect(runReconciliation(USER_ID, 'missing', runDto)).rejects.toBeInstanceOf(NotFoundError);
+    await expect(executeReconciliationRun(jobPayload)).rejects.toBeInstanceOf(NotFoundError);
     expect(mockDownloadFromR2).not.toHaveBeenCalled();
-  });
-
-  it('throws ValidationError when either file has not been uploaded yet', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileBKey: null });
-
-    await expect(runReconciliation(USER_ID, 'draft-1', runDto)).rejects.toBeInstanceOf(ValidationError);
-    expect(mockDownloadFromR2).not.toHaveBeenCalled();
-  });
-
-  it('accepts a previously failed run for retry (status draft-or-failed)', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, status: 'failed' });
-
-    await runReconciliation(USER_ID, 'draft-1', runDto);
-
-    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
-    );
   });
 
   it('clears any prior errorMessage on a successful persisted run', async () => {
-    await runReconciliation(USER_ID, 'draft-1', runDto);
+    await executeReconciliationRun(jobPayload);
 
     expect(mockTx.report.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ errorMessage: null }) }),
@@ -1115,7 +1230,7 @@ describe('runReconciliation', () => {
     mockDownloadFromR2.mockRejectedValue(downloadError);
     mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'failed' });
 
-    await expect(runReconciliation(USER_ID, 'draft-1', runDto, { ip: '10.0.0.1' })).rejects.toBe(downloadError);
+    await expect(executeReconciliationRun({ ...jobPayload, ip: '10.0.0.1' })).rejects.toBe(downloadError);
 
     expect(mockPrisma.report.update).toHaveBeenCalledWith({
       where: { id: 'draft-1' },
@@ -1139,10 +1254,27 @@ describe('runReconciliation', () => {
     });
     mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'failed' });
 
-    await expect(runReconciliation(USER_ID, 'draft-1', runDto)).rejects.toBe(parseError);
+    await expect(executeReconciliationRun(jobPayload)).rejects.toBe(parseError);
     expect(mockPrisma.report.update).toHaveBeenCalledWith({
       where: { id: 'draft-1' },
       data: { status: 'failed', errorMessage: 'Unsupported file extension: txt' },
+    });
+  });
+
+  // The persistence-gap fix: a failure in the bulk row write (or the final
+  // status-flip transaction) now correctly lands the report in `failed`
+  // too, instead of leaving it silently stuck in whatever state it was in
+  // (this exact scenario is what happened to the real AFTAB report before
+  // this fix — stuck in `draft` with no errorMessage).
+  it('persists a failed Report row when the bulk row write throws', async () => {
+    const copyError = new Error('COPY failed: connection reset');
+    mockCopyReportRowsIn.mockRejectedValueOnce(copyError);
+    mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'failed' });
+
+    await expect(executeReconciliationRun(jobPayload)).rejects.toBe(copyError);
+    expect(mockPrisma.report.update).toHaveBeenCalledWith({
+      where: { id: 'draft-1' },
+      data: { status: 'failed', errorMessage: 'COPY failed: connection reset' },
     });
   });
 });
@@ -1181,14 +1313,19 @@ describe('getMappingPreview', () => {
     expect(preview.fileA.mappings).toEqual([
       { field: 'referenceNumber', label: 'Reference Number', value: 'Ref', confidence: 90 },
     ]);
+    // Postgres only gets a small marker (row data lives in Redis — see
+    // mappingSampleCache.js) recording that a sample exists and its total
+    // row count, for extrapolatePreview's scale factor.
     expect(mockPrisma.report.update).toHaveBeenCalledWith({
       where: { id: 'draft-1' },
       data: expect.objectContaining({
-        fileASampleRows: { totalRows: 1, rows: [{ Ref: 'R1' }] },
-        fileBSampleRows: { totalRows: 1, rows: [{ Ref: 'R1' }] },
+        fileASampleRows: { totalRows: 1 },
+        fileBSampleRows: { totalRows: 1 },
         columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Ref' } },
       }),
     });
+    expect(mockSetSampleRows).toHaveBeenCalledWith('draft-1', 'A', [{ Ref: 'R1' }]);
+    expect(mockSetSampleRows).toHaveBeenCalledWith('draft-1', 'B', [{ Ref: 'R1' }]);
   });
 
   it('persists per-file summaries (rows/columns/fileSizeBytes) that survive completion, unlike the sample-rows cache', async () => {
@@ -1239,18 +1376,20 @@ describe('getMappingPreview', () => {
 });
 
 describe('getRulePreview', () => {
-  const sampleRows = { totalRows: 2, rows: [{ ref: 'R1' }] };
+  const sampleMarker = { totalRows: 2 };
+  const sampleRows = [{ ref: 'R1' }];
   const draft = {
     id: 'draft-1',
     userId: USER_ID,
-    fileASampleRows: sampleRows,
-    fileBSampleRows: sampleRows,
+    fileASampleRows: sampleMarker,
+    fileBSampleRows: sampleMarker,
     columnMapping: runDto.columnMapping,
     status: 'draft',
   };
 
   beforeEach(() => {
     mockPrisma.report.findFirst.mockResolvedValue(draft);
+    mockGetSampleRows.mockResolvedValue(sampleRows);
     mockRunMatch.mockReturnValue({
       summary: { matched: 1, mismatched: 0, duplicates: 0, unmatchedA: 0, unmatchedB: 0 },
       rows: [],
@@ -1272,9 +1411,11 @@ describe('getRulePreview', () => {
       potentialDuplicates: 0,
       missingReferences: 0,
     });
+    expect(mockGetSampleRows).toHaveBeenCalledWith('draft-1', 'A');
+    expect(mockGetSampleRows).toHaveBeenCalledWith('draft-1', 'B');
     expect(mockRunMatch).toHaveBeenCalledWith(
-      { rows: sampleRows.rows },
-      { rows: sampleRows.rows },
+      { rows: sampleRows },
+      { rows: sampleRows },
       runDto.columnMapping.fileA,
       runDto.columnMapping.fileB,
       runDto.config,
@@ -1290,8 +1431,17 @@ describe('getRulePreview', () => {
     expect(mockRunMatch).toHaveBeenCalledWith(expect.anything(), expect.anything(), override.fileA, override.fileB, runDto.config);
   });
 
-  it('throws ConflictError when no sample has been cached yet', async () => {
+  it('throws ConflictError when no sample has been cached yet (Postgres marker absent)', async () => {
     mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileASampleRows: null });
+
+    await expect(getRulePreview(USER_ID, 'draft-1', { config: runDto.config })).rejects.toBeInstanceOf(ConflictError);
+  });
+
+  // The Postgres marker only gets cleared on run completion, not on Redis
+  // TTL expiry — so a marker-present-but-cache-gone state is a real,
+  // separate case, not just defensive padding.
+  it('throws ConflictError when the marker exists but the Redis cache has expired', async () => {
+    mockGetSampleRows.mockResolvedValueOnce(null);
 
     await expect(getRulePreview(USER_ID, 'draft-1', { config: runDto.config })).rejects.toBeInstanceOf(ConflictError);
   });
@@ -1605,6 +1755,43 @@ describe('getFilePairTrend', () => {
     expect(trend.matchRateTrend.current[4]).toBe(90);
     expect(trend.matchRateTrend.current[0]).toBe(94);
     expect(trend.matchRateTrend.prior[0]).toBe(99);
+  });
+
+  // The actual bug this covers: the frontend used to label chart points by
+  // array position ("Run 1".."Run N") regardless of which runs were
+  // actually plotted — at run #9 looking at the latest 5, that showed "Run
+  // 1..5" instead of "Run 5..9". Exposing the raw stored sequenceNumber
+  // fixed that, but introduced a different confusion: sequenceNumber is
+  // permanent (an invoice-number-style reference — see the schema comment),
+  // so a deleted earlier run leaves a visible gap (e.g. "...Run 12, Run
+  // 17"), which reads as broken even though nothing's wrong. runLabels is a
+  // dense rank recomputed fresh from what currently exists instead — always
+  // contiguous, and reflects true recency (not just position within this
+  // one chart) since it's ranked against the full matching history, not
+  // just the slice fetched for display.
+  it('ranks each point by its position among currently-existing runs, oldest to newest', async () => {
+    const runs = Array.from({ length: 5 }, () => ({ totalRows: 100, matchedCount: 90, totalBreakValue: 0 }));
+    mockPrisma.report.findMany.mockResolvedValue(runs);
+    mockPrisma.report.count.mockResolvedValue(5);
+
+    const trend = await getFilePairTrend(USER_ID, 'r1', { limit: 5 });
+
+    expect(trend.runLabels.current).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  // The motivating case: 8 runs total exist, "last 7" should read as a
+  // clean 2-8 (2nd through 8th of everything that currently exists) — not
+  // 1-7 (which would misleadingly look like the very start of history) and
+  // not whatever gapped historical numbers those 7 runs happened to keep.
+  it('reflects true recency against the full matching history, not just the fetched window — last 7 of 8 total reads as 2-8', async () => {
+    const runs = Array.from({ length: 8 }, () => ({ totalRows: 100, matchedCount: 90, totalBreakValue: 0 }));
+    mockPrisma.report.findMany.mockResolvedValue(runs);
+    mockPrisma.report.count.mockResolvedValue(8);
+
+    const trend = await getFilePairTrend(USER_ID, 'r1', { limit: 7 });
+
+    expect(trend.runLabels.current).toEqual([2, 3, 4, 5, 6, 7, 8]);
+    expect(trend.runLabels.prior).toEqual([1]);
   });
 });
 

@@ -13,11 +13,18 @@ import {
   deriveDescription,
 } from './matchingEngine.js';
 import { suggestMapping, mappingFromSuggestions, computeValidationSummary } from './columnMappingService.js';
+import { copyReportRowsIn, deleteReportRows } from './reportRowBulkInsert.js';
+import { enqueueReconciliationJob } from '../queues/reconciliationQueue.js';
+import { setSampleRows, getSampleRows, clearSampleRows } from './mappingSampleCache.js';
 
 // Cap on how many rows of each file get cached on the draft at
 // mapping-preview time, for the rule-preview endpoint to reuse cheaply as
 // sliders move without re-parsing the full file each time.
-const SAMPLE_ROW_CAP = 2000;
+// Now that repeated reads go through Redis (mappingSampleCache.js) rather
+// than a Postgres JSON column, this mostly just bounds Redis memory per
+// draft rather than being the fix for the repeated-read cost it used to be
+// — 300 rows is still a reasonable sample for a "cheap estimate" panel.
+const SAMPLE_ROW_CAP = 300;
 
 const toNum = (decimal) => (decimal == null ? 0 : Number(decimal));
 
@@ -238,63 +245,78 @@ async function insertReportRowsInBatches(tx, reportId, rows) {
 // `update` branch is a single UPDATE statement guarded by the year's row
 // lock, so concurrent completions in the same transaction-per-request model
 // never hand out the same number twice.
-async function nextSequenceNumber(tx, year) {
+async function nextSequenceNumber(tx, year, organizationId) {
   const seq = await tx.reportSequence.upsert({
-    where: { year },
-    create: { year, lastValue: 1 },
+    where: { year_organizationId: { year, organizationId } },
+    create: { year, organizationId, lastValue: 1 },
     update: { lastValue: { increment: 1 } },
   });
   return seq.lastValue;
 }
 
-// Shared by completeDraft (legacy client-computed rows) and runReconciliation
-// (server-computed via the matching engine) — both promote a draft into a
-// completed report the same way, just from different sources of `rows`.
-// `dto.name` must already be resolved by the caller (e.g. `body.name ??
-// draft.name`) — this function doesn't know about the draft's prior name.
-async function persistCompletedRun(tx, reportId, dto) {
-  // A retry of a previously-failed run reuses this same reportId — only
-  // assign a sequence number the first time it actually completes, never
-  // reassign one on a later retry.
-  const existing = await tx.report.findUnique({ where: { id: reportId }, select: { sequenceNumber: true } });
-  const needsSequence = existing?.sequenceNumber == null;
-  const year = new Date().getUTCFullYear();
-  const sequenceNumber = needsSequence ? await nextSequenceNumber(tx, year) : undefined;
+// Shared by completeDraft (legacy client-computed rows) and
+// executeReconciliationRun (server-computed via the matching engine) — both
+// promote a draft into a completed report the same way, just from different
+// sources of `rows`. `dto.name` must already be resolved by the caller (e.g.
+// `body.name ?? draft.name`) — this function doesn't know about the draft's
+// prior name.
+//
+// Deliberately NOT one big transaction: the bulk row write (copyReportRowsIn)
+// runs first, on its own connection, outside any Prisma transaction — a
+// large file's worth of rows has no business being bound by Prisma's
+// interactive-transaction timeout. Only the small, fast "assign sequence
+// number + flip to completed" step is transactional, and it runs *last*, so
+// a report only ever reads `completed` once its rows are fully and
+// correctly persisted — never before. deleteReportRows first makes this
+// safe to call again for the same reportId (a BullMQ retry after a crash
+// mid-COPY) without risking duplicate rows.
+async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
+  await deleteReportRows(reportId);
+  await copyReportRowsIn(reportId, dto.rows, { onProgress: onCopyProgress });
+  // The mapping-preview sample has no further use once the real result
+  // exists — frees it immediately rather than waiting out its TTL.
+  await clearSampleRows(reportId);
 
-  const report = await tx.report.update({
-    where: { id: reportId },
-    data: {
-      status: 'completed',
-      progress: 100,
-      // Clears any prior failed-attempt message when this is a retry.
-      errorMessage: null,
-      name: dto.name,
-      fileAName: dto.fileAName,
-      fileBName: dto.fileBName,
-      totalRows: dto.summary.total,
-      matchedCount: dto.summary.matched,
-      unmatchedCount: dto.summary.unmatchedA + dto.summary.unmatchedB,
-      mismatchedCount: dto.summary.mismatched,
-      duplicateCount: dto.summary.duplicates,
-      totalBreakValue: dto.summary.totalBreakValue,
-      amountTolerance: dto.config.amountTolerance,
-      dateToleranceDays: dto.config.dateToleranceDays ?? null,
-      config: dto.config,
-      columnMapping: dto.columnMapping ?? undefined,
-      rulesConfig: dto.config,
-      sourceReportId: dto.sourceReportId ?? null,
-      // Cleared once a run completes — no longer needed after the full
-      // files have been re-parsed for the real result.
-      fileASampleRows: null,
-      fileBSampleRows: null,
-      valueBreakdown: computeValueBreakdown(dto.rows),
-      ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
-    },
+  return prisma.$transaction(async (tx) => {
+    // A retry of a previously-failed run reuses this same reportId — only
+    // assign a sequence number the first time it actually completes, never
+    // reassign one on a later retry.
+    const existing = await tx.report.findUnique({ where: { id: reportId }, select: { sequenceNumber: true } });
+    const needsSequence = existing?.sequenceNumber == null;
+    const year = new Date().getUTCFullYear();
+    const sequenceNumber = needsSequence ? await nextSequenceNumber(tx, year, dto.organizationId) : undefined;
+
+    return tx.report.update({
+      where: { id: reportId },
+      data: {
+        status: 'completed',
+        progress: 100,
+        // Clears any prior failed-attempt message when this is a retry.
+        errorMessage: null,
+        name: dto.name,
+        fileAName: dto.fileAName,
+        fileBName: dto.fileBName,
+        totalRows: dto.summary.total,
+        matchedCount: dto.summary.matched,
+        unmatchedCount: dto.summary.unmatchedA + dto.summary.unmatchedB,
+        mismatchedCount: dto.summary.mismatched,
+        duplicateCount: dto.summary.duplicates,
+        totalBreakValue: dto.summary.totalBreakValue,
+        amountTolerance: dto.config.amountTolerance,
+        dateToleranceDays: dto.config.dateToleranceDays ?? null,
+        config: dto.config,
+        columnMapping: dto.columnMapping ?? undefined,
+        rulesConfig: dto.config,
+        sourceReportId: dto.sourceReportId ?? null,
+        // Cleared once a run completes — no longer needed after the full
+        // files have been re-parsed for the real result.
+        fileASampleRows: null,
+        fileBSampleRows: null,
+        valueBreakdown: computeValueBreakdown(dto.rows),
+        ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
+      },
+    });
   });
-
-  await insertReportRowsInBatches(tx, report.id, dto.rows);
-
-  return report;
 }
 
 async function findSourceReportId(organizationId, fileAName, fileBName, excludeReportId) {
@@ -338,7 +360,7 @@ export async function saveReport(userId, dto, { ip } = {}) {
     // default), so it always needs a fresh sequence number — unlike
     // persistCompletedRun, there's no draft/retry history to check first.
     const year = new Date().getUTCFullYear();
-    const sequenceNumber = await nextSequenceNumber(tx, year);
+    const sequenceNumber = await nextSequenceNumber(tx, year, organizationId);
 
     // 1. Insert summary row
     const report = await tx.report.create({
@@ -942,26 +964,45 @@ export async function getFilePairTrend(userId, reportId, { scope = 'filePair', l
   const report = await assertReportAccess(userId, reportId);
   const { organizationId } = await getUserMembership(userId);
 
-  const runs = await prisma.report.findMany({
-    where: {
-      organizationId,
-      status: 'completed',
-      ...(scope === 'overall'
-        ? {}
-        : {
-            fileAName: { equals: report.fileAName ?? '', mode: 'insensitive' },
-            fileBName: { equals: report.fileBName ?? '', mode: 'insensitive' },
-          }),
-    },
-    select: { totalRows: true, matchedCount: true, totalBreakValue: true },
-    orderBy: { runDate: 'desc' },
-    take: limit * 2,
-  });
+  const where = {
+    organizationId,
+    status: 'completed',
+    ...(scope === 'overall'
+      ? {}
+      : {
+          fileAName: { equals: report.fileAName ?? '', mode: 'insensitive' },
+          fileBName: { equals: report.fileBName ?? '', mode: 'insensitive' },
+        }),
+  };
 
-  // runs[0] is the most recent — reverse each slice so points render oldest
-  // to newest, left to right, matching how the chart reads.
-  const currentRuns = runs.slice(0, limit).reverse();
-  const priorRuns = runs.slice(limit, limit * 2).reverse();
+  const [runs, totalCount] = await Promise.all([
+    prisma.report.findMany({
+      where,
+      select: { totalRows: true, matchedCount: true, totalBreakValue: true },
+      orderBy: { runDate: 'desc' },
+      take: limit * 2,
+    }),
+    prisma.report.count({ where }),
+  ]);
+
+  // runs[0] is the most recent, so it's the totalCount'th run that currently
+  // exists in this scope; runs[1] is totalCount-1, etc. This is a dense
+  // rank recomputed fresh from what currently exists, not the run's
+  // permanent Report.sequenceNumber/reference-ID — those two are
+  // deliberately different things. sequenceNumber never changes once
+  // assigned (so REC-2026-000012 always means the same run, the way an
+  // invoice number would) and is intentionally left with gaps if an earlier
+  // run gets deleted. This rank is the opposite on purpose: it's only ever
+  // used to label *this chart*, always contiguous and always reflecting
+  // "how many-th of your currently-existing runs is this," so "last 7"
+  // reads as a clean, gapless window (e.g. runs 2-8 of 8) instead of
+  // whatever historical numbers those particular runs happened to keep.
+  const runsWithRank = runs.map((r, i) => ({ ...r, rank: totalCount - i }));
+
+  // reversed so points render oldest to newest, left to right, matching how
+  // the chart reads.
+  const currentRuns = runsWithRank.slice(0, limit).reverse();
+  const priorRuns = runsWithRank.slice(limit, limit * 2).reverse();
 
   const matchRateOf = (r) => (r.totalRows > 0 ? (r.matchedCount / r.totalRows) * 100 : 0);
   const breakValueOf = (r) => toNum(r.totalBreakValue);
@@ -969,6 +1010,9 @@ export async function getFilePairTrend(userId, reportId, { scope = 'filePair', l
   return {
     matchRateTrend: { current: currentRuns.map(matchRateOf), prior: priorRuns.map(matchRateOf) },
     breakValueTrend: { current: currentRuns.map(breakValueOf), prior: priorRuns.map(breakValueOf) },
+    // Shared by both trends above — they're built from the same
+    // currentRuns/priorRuns, so one set of run ranks covers both charts.
+    runLabels: { current: currentRuns.map((r) => r.rank), prior: priorRuns.map((r) => r.rank) },
   };
 }
 
@@ -1064,16 +1108,15 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
   const { role } = await getUserMembership(userId);
   const config = await resolveRunConfig(draft.organizationId, role, dto.config);
 
-  const report = await prisma.$transaction((tx) =>
-    persistCompletedRun(tx, reportId, {
-      name: dto.name ?? draft.name,
-      fileAName: dto.fileAName,
-      fileBName: dto.fileBName,
-      summary: dto.summary,
-      rows: dto.rows,
-      config,
-    }),
-  );
+  const report = await persistCompletedRun(reportId, {
+    name: dto.name ?? draft.name,
+    fileAName: dto.fileAName,
+    fileBName: dto.fileBName,
+    organizationId: draft.organizationId,
+    summary: dto.summary,
+    rows: dto.rows,
+    config,
+  });
 
   await logAuditSafely(userId, {
     action: 'report.create',
@@ -1092,17 +1135,28 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
 // A previously failed run behaves like a draft that can be retried — it
 // still has fileAKey/fileBKey/columnMapping/sample rows to work with, it
 // just needs another attempt.
+//
+// fileASampleRows/fileBSampleRows can be several MB of JSON for a wide
+// source file (getMappingPreview caches up to SAMPLE_ROW_CAP rows of every
+// column) — omitted here since none of this helper's callers other than
+// getRulePreview ever read them off the row, and fetching them anyway made
+// every draft lookup on a large file pair take several seconds for nothing.
+// getRulePreview queries directly instead of going through this helper,
+// since it's the one place that actually needs the cached sample.
 function findDraftOrFailedRun(userId, reportId) {
-  return prisma.report.findFirst({ where: { id: reportId, userId, status: { in: ['draft', 'failed'] } } });
+  return prisma.report.findFirst({
+    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    omit: { fileASampleRows: true, fileBSampleRows: true },
+  });
 }
 
-// The actual matching engine entry point: re-downloads+re-parses the full
-// files fresh from R2 (never reuses the mapping-preview sample — that's only
-// for the cheap rule-preview endpoint), runs the match, and persists exactly
-// like completeDraft does. A failure during download/parse/match persists a
-// `status: 'failed'` row (with the error message) rather than leaving no
-// record at all — the draft stays retryable afterward.
-export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
+// Validates and enqueues a reconciliation run for background execution by
+// the BullMQ worker (workers/reconciliationWorker.js) — the actual pipeline
+// (executeReconciliationRun, below) runs fully decoupled from this request,
+// so there's no HTTP-timeout ceiling on how large a file pair can be. Flips
+// the report to `processing` synchronously so the caller/poller sees that
+// state immediately, without waiting on the worker to even pick the job up.
+export async function enqueueReconciliationRun(userId, reportId, dto, { ip } = {}) {
   const draft = await findDraftOrFailedRun(userId, reportId);
   if (!draft) throw new NotFoundError();
   if (!draft.fileAKey || !draft.fileBKey) {
@@ -1111,6 +1165,11 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
 
   const { organizationId, role } = await getUserMembership(userId);
   const config = await resolveRunConfig(organizationId, role, dto.config);
+
+  await prisma.report.update({
+    where: { id: reportId },
+    data: { status: 'processing', progress: 10, errorMessage: null },
+  });
 
   await logAuditSafely(userId, {
     action: 'report.run.started',
@@ -1121,15 +1180,150 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     metadata: { filePair: `${draft.fileAName ?? 'File A'} vs ${draft.fileBName ?? 'File B'}` },
   });
 
-  let summary, rows;
+  await enqueueReconciliationJob({
+    reportId,
+    userId,
+    ip: ip ?? null,
+    dto: { name: dto.name, columnMapping: dto.columnMapping },
+    config,
+  });
+
+  return reportId;
+}
+
+// Progress ranges for executeReconciliationRun's checkpoints. Download and
+// the bulk row write (COPY) get real, proportional progress within their
+// range (byte count / row count respectively) — those are the two phases
+// that actually scale with file size and can meaningfully take time. Parse
+// and match stay flat single-jump checkpoints: both are fast regardless of
+// file size in practice, and getting real incremental progress out of them
+// (particularly XLSX parsing, which has no per-row hook) would be a much
+// bigger rework for a phase that's already over in a second or two.
+const PROGRESS_DOWNLOAD_START = 10;
+const PROGRESS_DOWNLOAD_END = 40;
+const PROGRESS_PARSED = 55;
+const PROGRESS_MATCHED = 60;
+const PROGRESS_PERSIST_START = 60;
+const PROGRESS_PERSIST_END = 95;
+
+// Every progress write — the frequent per-chunk ones from download/COPY
+// progress callbacks and the coarse single-shot checkpoints alike — chains
+// onto the same promise, so they're strictly serialized in call order.
+// That's what keeps a late-resolving "download 38%" write from landing
+// after (and clobbering) a "parse complete: 55%" write that logically
+// happened later — without needing explicit awaits at every call site.
+// Rounding-based dedup keeps the actual write count small regardless of how
+// many chunks fire (typically tens per run, not hundreds).
+function createProgressReporter(reportId) {
+  let last = -1;
+  let chain = Promise.resolve();
+  return (raw) => {
+    const rounded = Math.round(raw);
+    if (rounded === last) return chain;
+    last = rounded;
+    chain = chain
+      .then(() => prisma.report.update({ where: { id: reportId }, data: { progress: rounded } }))
+      // Best-effort — a transient write failure here shouldn't stall or
+      // fail the actual run.
+      .catch(() => {});
+    return chain;
+  };
+}
+
+// The actual matching engine entry point: re-downloads+re-parses the full
+// files fresh from R2 (never reuses the mapping-preview sample — that's only
+// for the cheap rule-preview endpoint), runs the match, and persists exactly
+// like completeDraft does. Called only by the BullMQ worker — never
+// directly by an HTTP handler; enqueueReconciliationRun (above) is the
+// request-facing entry point. Wraps the *entire* pipeline, including
+// persistence, in the try/catch: a failure anywhere in here — download,
+// parse, match, or the bulk row write — persists a `status: 'failed'` row
+// with the real error message rather than leaving the report silently stuck
+// in whatever state it was already in.
+export async function executeReconciliationRun({ reportId, userId, ip, dto, config }) {
+  const draft = await prisma.report.findFirst({
+    where: { id: reportId },
+    omit: { fileASampleRows: true, fileBSampleRows: true },
+  });
+  if (!draft) throw new NotFoundError();
+
+  const reportProgress = createProgressReporter(reportId);
+
   try {
+    // Combined byte progress across both downloads, scaled into the
+    // download range — each file's onProgress fires independently
+    // (Promise.all runs them concurrently), so this recomputes the
+    // combined fraction from whichever side last reported.
+    let bytesA = 0;
+    let totalA = 0;
+    let bytesB = 0;
+    let totalB = 0;
+    const reportDownloadProgress = () => {
+      const total = totalA + totalB;
+      if (!total) return;
+      const fraction = (bytesA + bytesB) / total;
+      reportProgress(PROGRESS_DOWNLOAD_START + fraction * (PROGRESS_DOWNLOAD_END - PROGRESS_DOWNLOAD_START));
+    };
+
     const [fileABuffer, fileBBuffer] = await Promise.all([
-      downloadFromR2(draft.fileAKey),
-      downloadFromR2(draft.fileBKey),
+      downloadFromR2(draft.fileAKey, {
+        onProgress: (bytes, total) => {
+          bytesA = bytes;
+          if (total != null) totalA = total;
+          reportDownloadProgress();
+        },
+      }),
+      downloadFromR2(draft.fileBKey, {
+        onProgress: (bytes, total) => {
+          bytesB = bytes;
+          if (total != null) totalB = total;
+          reportDownloadProgress();
+        },
+      }),
     ]);
+
     const fileA = parseTabularFile(fileABuffer, draft.fileAName);
     const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
-    ({ summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, config));
+    await reportProgress(PROGRESS_PARSED);
+
+    const { summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, config);
+    await reportProgress(PROGRESS_MATCHED);
+
+    const { organizationId } = await getUserMembership(userId);
+    const sourceReportId = await findSourceReportId(organizationId, draft.fileAName, draft.fileBName, reportId);
+
+    const report = await persistCompletedRun(
+      reportId,
+      {
+        name: dto.name ?? draft.name,
+        fileAName: draft.fileAName,
+        fileBName: draft.fileBName,
+        organizationId,
+        summary,
+        rows,
+        config,
+        columnMapping: dto.columnMapping,
+        sourceReportId,
+      },
+      {
+        onCopyProgress: (written, total) => {
+          reportProgress(PROGRESS_PERSIST_START + (written / total) * (PROGRESS_PERSIST_END - PROGRESS_PERSIST_START));
+        },
+      },
+    );
+
+    await logAuditSafely(userId, {
+      action: 'report.run.completed',
+      entityType: 'report',
+      entityId: report.id,
+      ip,
+      metadata: {
+        matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+        totalBreakValue: toNum(report.totalBreakValue),
+      },
+    });
+
+    return report.id;
   } catch (err) {
     await prisma.report.update({ where: { id: reportId }, data: { status: 'failed', errorMessage: err.message } });
     await logAuditSafely(userId, {
@@ -1142,34 +1336,6 @@ export async function runReconciliation(userId, reportId, dto, { ip } = {}) {
     });
     throw err;
   }
-
-  const sourceReportId = await findSourceReportId(organizationId, draft.fileAName, draft.fileBName, reportId);
-
-  const report = await prisma.$transaction((tx) =>
-    persistCompletedRun(tx, reportId, {
-      name: dto.name ?? draft.name,
-      fileAName: draft.fileAName,
-      fileBName: draft.fileBName,
-      summary,
-      rows,
-      config,
-      columnMapping: dto.columnMapping,
-      sourceReportId,
-    }),
-  );
-
-  await logAuditSafely(userId, {
-    action: 'report.run.completed',
-    entityType: 'report',
-    entityId: report.id,
-    ip,
-    metadata: {
-      matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
-      totalBreakValue: toNum(report.totalBreakValue),
-    },
-  });
-
-  return report.id;
 }
 
 // Downloads+parses the draft's full uploaded files, returns per-file
@@ -1202,9 +1368,13 @@ export async function getMappingPreview(userId, reportId) {
   const fileBSummary = { rows: fileB.rows.length, columns: fileB.headers.length, fileSizeBytes: fileBBuffer.length };
 
   const data = {
-    fileASampleRows: { totalRows: fileA.rows.length, rows: fileA.rows.slice(0, SAMPLE_ROW_CAP) },
-    fileBSampleRows: { totalRows: fileB.rows.length, rows: fileB.rows.slice(0, SAMPLE_ROW_CAP) },
-    // Unlike the sample-rows cache above, these are NOT cleared at
+    // The actual row data lives in Redis (mappingSampleCache.js) — this is
+    // just a small marker recording that a sample exists and how many total
+    // rows the source file has (extrapolatePreview's scale factor needs
+    // that), without dragging the full sample through Postgres.
+    fileASampleRows: { totalRows: fileA.rows.length },
+    fileBSampleRows: { totalRows: fileB.rows.length },
+    // Unlike the sample-rows marker above, these are NOT cleared at
     // completion — Results' File Summary cards read them long after.
     fileASummary,
     fileBSummary,
@@ -1212,7 +1382,11 @@ export async function getMappingPreview(userId, reportId) {
   if (!draft.columnMapping) {
     data.columnMapping = { fileA: mappingA, fileB: mappingB };
   }
-  await prisma.report.update({ where: { id: reportId }, data });
+  await Promise.all([
+    prisma.report.update({ where: { id: reportId }, data }),
+    setSampleRows(reportId, 'A', fileA.rows.slice(0, SAMPLE_ROW_CAP)),
+    setSampleRows(reportId, 'B', fileB.rows.slice(0, SAMPLE_ROW_CAP)),
+  ]);
 
   return {
     fileA: {
@@ -1236,7 +1410,12 @@ export async function getMappingPreview(userId, reportId) {
 // reuses the bounded sample cached by getMappingPreview instead of
 // re-downloading/re-parsing the full files on every rule-slider tick.
 export async function getRulePreview(userId, reportId, dto) {
-  const draft = await findDraftOrFailedRun(userId, reportId);
+  // Queries directly rather than via findDraftOrFailedRun — this is the one
+  // caller that actually needs fileASampleRows/fileBSampleRows, which that
+  // helper omits (see its comment).
+  const draft = await prisma.report.findFirst({
+    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+  });
   if (!draft) throw new NotFoundError();
   if (!draft.fileASampleRows || !draft.fileBSampleRows) {
     throw new ConflictError('Call the mapping-preview endpoint before requesting a rule preview');
@@ -1244,18 +1423,32 @@ export async function getRulePreview(userId, reportId, dto) {
   const mapping = dto.columnMapping ?? draft.columnMapping;
   if (!mapping) throw new ConflictError('No column mapping available — call the mapping-preview endpoint first');
 
-  const sampleA = draft.fileASampleRows;
-  const sampleB = draft.fileBSampleRows;
+  const [sampleARows, sampleBRows] = await Promise.all([
+    getSampleRows(reportId, 'A'),
+    getSampleRows(reportId, 'B'),
+  ]);
+  // The Postgres marker (checked above) can outlive the Redis cache — it's
+  // not cleared on TTL expiry, only on run completion — so this is a
+  // separate, real "the cache is gone" case, not just defensive padding.
+  if (!sampleARows || !sampleBRows) {
+    throw new ConflictError('Call the mapping-preview endpoint before requesting a rule preview');
+  }
 
   const { summary } = runMatch(
-    { rows: sampleA.rows },
-    { rows: sampleB.rows },
+    { rows: sampleARows },
+    { rows: sampleBRows },
     mapping.fileA,
     mapping.fileB,
     dto.config,
   );
 
-  return extrapolatePreview(summary, sampleA.rows.length, sampleA.totalRows, sampleB.rows.length, sampleB.totalRows);
+  return extrapolatePreview(
+    summary,
+    sampleARows.length,
+    draft.fileASampleRows.totalRows,
+    sampleBRows.length,
+    draft.fileBSampleRows.totalRows,
+  );
 }
 
 // Org admins can delete any report in the org; everyone else may only

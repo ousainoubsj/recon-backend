@@ -114,8 +114,8 @@ export const getRulePreview = async (req, res) => {
 };
 
 export const runReconciliation = async (req, res) => {
-  const id = await reportService.runReconciliation(req.session.user.id, req.params.id, req.body, { ip: req.ip });
-  res.status(200).json({ id });
+  const id = await reportService.enqueueReconciliationRun(req.session.user.id, req.params.id, req.body, { ip: req.ip });
+  res.status(202).json({ id, status: 'processing' });
 };
 
 export const getReport = async (req, res) => {

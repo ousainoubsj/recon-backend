@@ -38,7 +38,7 @@ const mockReportService = {
   bulkDeleteReports: jest.fn(),
   getMappingPreview: jest.fn(),
   getRulePreview: jest.fn(),
-  runReconciliation: jest.fn(),
+  enqueueReconciliationRun: jest.fn(),
   getTransactions: jest.fn(),
   getTransaction: jest.fn(),
   markRowReviewed: jest.fn(),
@@ -792,16 +792,16 @@ describe('POST /api/reports/:id/rule-preview', () => {
 });
 
 describe('POST /api/reports/:id/run', () => {
-  it('runs reconciliation for an admin and returns the new report id', async () => {
-    mockReportService.runReconciliation.mockResolvedValue('report-1');
+  it('enqueues reconciliation for an admin and returns 202 with the processing report id', async () => {
+    mockReportService.enqueueReconciliationRun.mockResolvedValue('report-1');
 
     const res = await request(app)
       .post('/api/reports/draft-1/run')
       .send({ columnMapping, config: { amountTolerance: 0.5, dateToleranceDays: 1 } });
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'report-1' });
-    expect(mockReportService.runReconciliation).toHaveBeenCalledWith(
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ id: 'report-1', status: 'processing' });
+    expect(mockReportService.enqueueReconciliationRun).toHaveBeenCalledWith(
       USER_ID,
       'draft-1',
       expect.objectContaining({ columnMapping }),
@@ -815,11 +815,11 @@ describe('POST /api/reports/:id/run', () => {
       .send({ config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(422);
-    expect(mockReportService.runReconciliation).not.toHaveBeenCalled();
+    expect(mockReportService.enqueueReconciliationRun).not.toHaveBeenCalled();
   });
 
   it('returns an RFC 7807 422 when files have not been uploaded yet', async () => {
-    mockReportService.runReconciliation.mockRejectedValue(new ValidationError('Both files must be uploaded'));
+    mockReportService.enqueueReconciliationRun.mockRejectedValue(new ValidationError('Both files must be uploaded'));
 
     const res = await request(app)
       .post('/api/reports/draft-1/run')
@@ -836,7 +836,7 @@ describe('POST /api/reports/:id/run', () => {
       .send({ columnMapping, config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(403);
-    expect(mockReportService.runReconciliation).not.toHaveBeenCalled();
+    expect(mockReportService.enqueueReconciliationRun).not.toHaveBeenCalled();
   });
 });
 

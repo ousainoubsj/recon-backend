@@ -3,13 +3,20 @@ import Papa from 'papaparse';
 import * as XLSX from 'xlsx';
 import { r2 } from './r2Client.js';
 
-export async function downloadFromR2(key) {
-  const { Body } = await r2.send(
+// onProgress(bytesReceived, totalBytes) fires per chunk — used by
+// executeReconciliationRun to report real download progress. totalBytes is
+// R2's ContentLength; if the response ever omits it, callers get `undefined`
+// and should treat progress as indeterminate rather than dividing by it.
+export async function downloadFromR2(key, { onProgress } = {}) {
+  const { Body, ContentLength } = await r2.send(
     new GetObjectCommand({ Bucket: process.env.R2_BUCKET_NAME, Key: key }),
   );
   const chunks = [];
+  let bytesReceived = 0;
   for await (const chunk of Body) {
     chunks.push(chunk);
+    bytesReceived += chunk.length;
+    onProgress?.(bytesReceived, ContentLength);
   }
   return Buffer.concat(chunks);
 }

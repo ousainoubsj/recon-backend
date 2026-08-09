@@ -16,10 +16,16 @@ enum ReconRowStatus {
 
 enum ReportStatus {
   draft
+  // Set for the duration of a background reconciliation run (see
+  // services/reportService.js's enqueueReconciliationRun /
+  // executeReconciliationRun) — the run executes in a BullMQ worker, not
+  // inside the /run HTTP request, so this is the state a report sits in
+  // while that worker is still processing it.
+  processing
   completed
-  // Nothing sets this yet — no code path produces a failed run until the
-  // actual matching engine exists. Included now for parity with History's
-  // "Failed" quick filter so it isn't blocked on a future migration.
+  // Set when a run's download/parse/match/persist pipeline throws --
+  // errorMessage carries the reason. The report stays retryable from this
+  // state (see findDraftOrFailedRun).
   failed
 }
 
@@ -179,7 +185,11 @@ model Report {
   exports   ReportExport[]
   favorites ReportFavorite[]
 
-  @@unique([sequenceYear, sequenceNumber])
+  // organizationId-scoped, not just (sequenceYear, sequenceNumber) alone —
+  // otherwise a second organization's first completion of the year would
+  // collide with the first organization's REC-YYYY-000001. See
+  // ReportSequence's own comment for the counter side of this same fix.
+  @@unique([organizationId, sequenceYear, sequenceNumber])
   @@index([userId], map: "idx_reports_user_id")
   @@index([organizationId], map: "idx_reports_organization_id")
   @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
@@ -189,12 +199,21 @@ model Report {
 }
 
 // Backs Report.sequenceNumber's atomic per-year counter — a dedicated row
-// per calendar year, incremented via upsert inside the same transaction
-// that completes a report, so concurrent completions never collide.
+// per (calendar year, organization), incremented via upsert inside the same
+// transaction that completes a report, so concurrent completions never
+// collide. Scoped by organizationId, not just year — a global-only counter
+// (this table's original shape) means every organization on the platform
+// shares one sequence, so an unrelated org completing a run bumps the
+// number every other org's next "Run #" starts from, and the visible
+// sequence gets riddled with gaps that have nothing to do with that org's
+// own history.
 model ReportSequence {
-  year      Int @id
-  lastValue Int @default(0) @map("last_value")
+  year           Int
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  lastValue      Int          @default(0) @map("last_value")
 
+  @@id([year, organizationId])
   @@map("report_sequence")
 }
 
@@ -467,6 +486,7 @@ model Organization {
   reportTemplates          ReportTemplate[]
   reportExports            ReportExport[]
   matchRuleTemplates       MatchRuleTemplate[]
+  reportSequences          ReportSequence[]
 
   @@unique([slug])
   @@map("organization")
