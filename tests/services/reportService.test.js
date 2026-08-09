@@ -263,7 +263,43 @@ describe('saveReport', () => {
 });
 
 describe('listReports', () => {
-  const FAVORITES_INCLUDE = { favorites: { where: { userId: USER_ID }, select: { id: true } } };
+  // Mirrors listReports' explicit select in reportService.js -- trimmed to
+  // what the frontend's Report type actually needs, deliberately excluding
+  // rulesConfig/fileASampleRows/fileBSampleRows/sourceReportId (unused by
+  // any listReports consumer, and the sample-row fields can be several MB
+  // each on an untouched pre-migration draft-turned-failed report).
+  const REPORT_LIST_SELECT = {
+    id: true,
+    userId: true,
+    organizationId: true,
+    status: true,
+    errorMessage: true,
+    fileAName: true,
+    fileBName: true,
+    name: true,
+    tag: true,
+    progress: true,
+    runDate: true,
+    updatedAt: true,
+    totalRows: true,
+    matchedCount: true,
+    unmatchedCount: true,
+    mismatchedCount: true,
+    duplicateCount: true,
+    totalBreakValue: true,
+    amountTolerance: true,
+    dateToleranceDays: true,
+    sequenceYear: true,
+    sequenceNumber: true,
+    fileAKey: true,
+    fileBKey: true,
+    columnMapping: true,
+    config: true,
+    fileASummary: true,
+    fileBSummary: true,
+    valueBreakdown: true,
+    favorites: { where: { userId: USER_ID }, select: { id: true } },
+  };
   const DEFAULT_STATUS = { in: ['completed', 'failed'] };
 
   it("queries all completed+failed reports in the user's organization, newest first, unbounded by default, mapping isFavorited", async () => {
@@ -280,7 +316,7 @@ describe('listReports', () => {
     ]);
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID, status: DEFAULT_STATUS },
-      include: FAVORITES_INCLUDE,
+      select: REPORT_LIST_SELECT,
       orderBy: { runDate: 'desc' },
     });
   });
@@ -317,7 +353,7 @@ describe('listReports', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID, status: DEFAULT_STATUS },
-      include: FAVORITES_INCLUDE,
+      select: REPORT_LIST_SELECT,
       orderBy: { runDate: 'desc' },
       take: 5,
     });
@@ -346,7 +382,7 @@ describe('listReports', () => {
           { fileBName: { contains: 'june', mode: 'insensitive' } },
         ],
       },
-      include: FAVORITES_INCLUDE,
+      select: REPORT_LIST_SELECT,
       orderBy: { runDate: 'desc' },
     });
   });
