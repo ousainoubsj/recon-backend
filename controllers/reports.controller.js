@@ -295,7 +295,7 @@ const CONTENT_TYPE_BY_FORMAT = {
 };
 
 export const exportReport = async (req, res) => {
-  const report = await reportService.getReport(req.session.user.id, req.params.id);
+  const report = await reportService.getReport(req.session.user.id, req.params.id, { includeRows: true });
   const { format = 'xlsx', templateId, sections: overrideSections, preview = false } = req.body ?? {};
 
   const sections = await resolveSections({
@@ -441,7 +441,7 @@ export const downloadExport = async (req, res) => {
   const buffer = exportRow.fileKey
     ? await downloadFromR2(exportRow.fileKey)
     : await (async () => {
-        const report = await reportService.getReport(req.session.user.id, exportRow.reportId);
+        const report = await reportService.getReport(req.session.user.id, exportRow.reportId, { includeRows: true });
         const sections = await resolveSections({
           organizationId: report.organizationId,
           templateId: exportRow.templateId ?? undefined,
@@ -472,7 +472,7 @@ export const deleteExport = async (req, res) => {
 };
 
 export const emailReport = async (req, res) => {
-  const report = await reportService.getReport(req.session.user.id, req.params.id);
+  const report = await reportService.getReport(req.session.user.id, req.params.id, { includeRows: true });
   const recipients = await filterEmailNotificationOptedIn(req.body.to);
   if (recipients.length === 0) {
     res.status(202).json({ sent: false, reason: 'All recipients have opted out of email notifications' });

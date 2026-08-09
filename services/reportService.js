@@ -741,11 +741,23 @@ async function getRunDurationMs(reportId) {
   return lastCompleted.ts.getTime() - lastStarted.ts.getTime();
 }
 
-export async function getReport(userId, reportId) {
+// includeRows defaults to false: the vast majority of callers (the polled
+// GET /reports/:id that drives useReport, favorite/visibility checks) never
+// read the row-level data, but `include: { rows: true }` used to be
+// unconditional -- for a report the size of AFTAB (9k+ rows, each carrying
+// full rawA/rawB source-column JSON), that meant every single poll during
+// and after a run paid the cost of serializing the entire row set for
+// nothing. That's what made the progress screen appear to hang right around
+// completion for large reports specifically: the moment status flips to
+// completed and the rows actually exist, the very next poll's payload jumps
+// from empty to several MB. Only the export/email code paths actually build
+// row-level content (buildPdfReport/buildXlsxReport/sendReportEmail) and
+// opt in explicitly.
+export async function getReport(userId, reportId, { includeRows = false } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    include: { rows: true },
+    include: includeRows ? { rows: true } : undefined,
   });
   if (!report) throw new NotFoundError();
   // Drafts are private to their creator — org membership alone isn't enough,

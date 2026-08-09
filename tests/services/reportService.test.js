@@ -404,8 +404,8 @@ describe('listReports', () => {
 });
 
 describe('getReport', () => {
-  it('returns the report with rows when found within the org', async () => {
-    const report = { id: 'r1', rows: [] };
+  it('returns the report without fetching rows by default', async () => {
+    const report = { id: 'r1' };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
     const result = await getReport(USER_ID, 'r1');
@@ -413,9 +413,29 @@ describe('getReport', () => {
     expect(result).toEqual({ ...report, priorRun: null, runDurationMs: null });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
-      include: { rows: true },
+      include: undefined,
     });
     expect(mockPrisma.auditLog.findMany).not.toHaveBeenCalled();
+  });
+
+  // The bug this covers: include: { rows: true } used to be unconditional,
+  // so every poll during/after a run — even ones that only ever render
+  // status/progress — paid the cost of fetching and serializing every row.
+  // For a large report (AFTAB-scale, 9k+ rows each carrying full rawA/rawB
+  // source JSON), that made the progress screen appear to hang right around
+  // completion, since the moment status flips to completed the payload
+  // jumps from empty to several MB on the very next poll. Only
+  // export/email call sites need row-level data now, via includeRows:true.
+  it('fetches rows only when includeRows is explicitly requested', async () => {
+    const report = { id: 'r1', rows: [] };
+    mockPrisma.report.findFirst.mockResolvedValue(report);
+
+    await getReport(USER_ID, 'r1', { includeRows: true });
+
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
+      where: { id: 'r1', organizationId: ORG_ID },
+      include: { rows: true },
+    });
   });
 
   it('resolves priorRun from the most recent other completed report in the org, regardless of file pair', async () => {
