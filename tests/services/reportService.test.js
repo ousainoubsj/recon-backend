@@ -897,7 +897,23 @@ describe('listDrafts', () => {
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { userId: USER_ID, organizationId: ORG_ID, status: 'draft' },
       orderBy: { updatedAt: 'desc' },
+      omit: { fileASampleRows: true, fileBSampleRows: true },
     });
+  });
+
+  // The bug: without this omit, every draft in the list paid the cost of its
+  // full cached mapping-preview sample (up to SAMPLE_ROW_CAP rows of every
+  // column, several MB for a wide file) even though nothing in the response
+  // ever reads it — making the drafts list take up to a minute for a user
+  // with a few large-file-pair drafts.
+  it('omits the cached sample-row blobs, which the draft list never reads', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await listDrafts(USER_ID);
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ omit: { fileASampleRows: true, fileBSampleRows: true } }),
+    );
   });
 });
 

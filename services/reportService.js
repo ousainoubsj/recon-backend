@@ -1103,6 +1103,14 @@ export async function listDrafts(userId) {
   const drafts = await prisma.report.findMany({
     where: { userId, organizationId, status: 'draft' },
     orderBy: { updatedAt: 'desc' },
+    // Same reasoning as findDraftOrFailedRun above: fileASampleRows/
+    // fileBSampleRows can be several MB of cached JSON per draft (up to
+    // SAMPLE_ROW_CAP rows of every column, from getMappingPreview). This
+    // list is the "resume a draft" picker — the frontend's Report type
+    // never reads these fields — but without the omit, every draft in the
+    // list pays that multi-MB cost, which is what made this endpoint take
+    // up to a minute for a user with several large-file-pair drafts.
+    omit: { fileASampleRows: true, fileBSampleRows: true },
   });
   return drafts.map(withDraftProgress);
 }
