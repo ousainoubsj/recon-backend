@@ -1738,6 +1738,31 @@ describe('getFilePairTrend', () => {
     );
   });
 
+  // The bug: every report's trend chart queried "whatever's newest right
+  // now" instead of being anchored to the run actually being viewed, so an
+  // older report's chart showed the same org-wide latest N runs as every
+  // other report instead of its own history.
+  it('anchors the window to the viewed run\'s runDate, not the current latest runs', async () => {
+    const runDate = new Date('2026-06-01T00:00:00Z');
+    mockPrisma.report.findFirst.mockResolvedValueOnce({
+      id: 'r1',
+      organizationId: ORG_ID,
+      status: 'completed',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+      runDate,
+    });
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await getFilePairTrend(USER_ID, 'r1');
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ runDate: { lte: runDate } }),
+      }),
+    );
+  });
+
   it('honors a custom limit, taking 2x for the current+prior windows and splitting at that boundary', async () => {
     // 10 runs total, most-recent-first — with limit:5, current should be
     // runs[0..4] (reversed) and prior should be runs[5..9] (reversed), not

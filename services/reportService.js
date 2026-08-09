@@ -967,6 +967,13 @@ export async function getFilePairTrend(userId, reportId, { scope = 'filePair', l
   const where = {
     organizationId,
     status: 'completed',
+    // Anchored to the run being viewed, not "whatever's newest right now" —
+    // without this, every report's trend chart showed the same org-wide
+    // latest N runs regardless of which report you opened. Bounding by
+    // runDate makes the window "the N runs ending at and including this
+    // one," so an older report's chart reflects its own history instead of
+    // runs that happened after it.
+    ...(report.runDate ? { runDate: { lte: report.runDate } } : {}),
     ...(scope === 'overall'
       ? {}
       : {
