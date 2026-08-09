@@ -1083,6 +1083,7 @@ describe('enqueueReconciliationRun', () => {
     expect(mockEnqueueReconciliationJob).toHaveBeenCalledWith({
       reportId: 'draft-1',
       userId: USER_ID,
+      organizationId: ORG_ID,
       ip: null,
       dto: { name: runDto.name, columnMapping: runDto.columnMapping },
       config: runDto.config,
@@ -1138,6 +1139,7 @@ describe('executeReconciliationRun', () => {
   const jobPayload = {
     reportId: 'draft-1',
     userId: USER_ID,
+    organizationId: ORG_ID,
     ip: undefined,
     dto: { name: undefined, columnMapping: runDto.columnMapping },
     config: runDto.config,

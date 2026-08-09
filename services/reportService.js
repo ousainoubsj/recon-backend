@@ -1183,6 +1183,7 @@ export async function enqueueReconciliationRun(userId, reportId, dto, { ip } = {
   await enqueueReconciliationJob({
     reportId,
     userId,
+    organizationId,
     ip: ip ?? null,
     dto: { name: dto.name, columnMapping: dto.columnMapping },
     config,
@@ -1240,7 +1241,7 @@ function createProgressReporter(reportId) {
 // parse, match, or the bulk row write — persists a `status: 'failed'` row
 // with the real error message rather than leaving the report silently stuck
 // in whatever state it was already in.
-export async function executeReconciliationRun({ reportId, userId, ip, dto, config }) {
+export async function executeReconciliationRun({ reportId, userId, ip, dto, config, organizationId }) {
   const draft = await prisma.report.findFirst({
     where: { id: reportId },
     omit: { fileASampleRows: true, fileBSampleRows: true },
@@ -1289,7 +1290,10 @@ export async function executeReconciliationRun({ reportId, userId, ip, dto, conf
     const { summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, config);
     await reportProgress(PROGRESS_MATCHED);
 
-    const { organizationId } = await getUserMembership(userId);
+    // organizationId comes from the job payload, resolved once in
+    // enqueueReconciliationRun — not re-fetched here. It never changes for
+    // an in-flight run, and getUserMembership is a real DB round-trip; this
+    // avoids paying it twice per run for the same answer.
     const sourceReportId = await findSourceReportId(organizationId, draft.fileAName, draft.fileBName, reportId);
 
     const report = await persistCompletedRun(
