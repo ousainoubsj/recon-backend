@@ -186,21 +186,33 @@ export async function logAuditSafely(userId, entry) {
 // the window, treat it as a genuine new view.
 const RESULTS_VIEWED_DEDUP_MS = 30 * 60 * 1000;
 
-export async function logResultsViewedOnce(userId, reportId, entry) {
+/**
+ * logAuditSafely for events that repeat without meaning anything new: skipped when the same user
+ * already has an entry with this action and target inside `windowMs`.
+ */
+export async function logAuditOnce(userId, entry, windowMs) {
   try {
     const recent = await prisma.auditLog.findFirst({
       where: {
         userId,
-        entityType: 'report',
-        entityId: reportId,
-        action: 'report.results.viewed',
-        ts: { gte: new Date(Date.now() - RESULTS_VIEWED_DEDUP_MS) },
+        action: entry.action,
+        entityType: entry.entityType ?? null,
+        entityId: entry.entityId ?? null,
+        ts: { gte: new Date(Date.now() - windowMs) },
       },
       select: { id: true },
     });
     if (recent) return;
-    await createAuditLog(userId, { ...entry, action: 'report.results.viewed', entityType: 'report', entityId: reportId });
+    await createAuditLog(userId, entry);
   } catch (err) {
-    console.error('Failed to write audit log', 'report.results.viewed', reportId, err);
+    console.error('Failed to write audit log', entry.action, entry.entityId, err);
   }
+}
+
+export function logResultsViewedOnce(userId, reportId, entry) {
+  return logAuditOnce(
+    userId,
+    { ...entry, action: 'report.results.viewed', entityType: 'report', entityId: reportId },
+    RESULTS_VIEWED_DEDUP_MS,
+  );
 }

@@ -22,6 +22,16 @@ export const listAuditLogs = async (req, res) => {
   res.json(logs);
 };
 
+// The caller's own activity only: the actor filter is forced, never taken from the query.
+export const listMyAuditLogs = async (req, res) => {
+  const limit = parsePositiveInt(req.query.limit, MAX_LIMIT) ?? DEFAULT_LIMIT;
+  const offset = parsePositiveInt(req.query.offset);
+  const { action, dateFrom, dateTo } = req.query;
+  const userId = req.session.user.id;
+  const logs = await auditLogService.listAuditLogs(userId, { limit, offset, action, dateFrom, dateTo, actorUserId: userId });
+  res.json(logs);
+};
+
 export const getAuditLogStats = async (req, res) => {
   const stats = await auditLogService.getAuditLogStats(req.session.user.id);
   res.json(stats);

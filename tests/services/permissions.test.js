@@ -32,6 +32,9 @@ describe('hasPermission', () => {
     ['analyst', 'auditLog', 'read', false],
     ['viewer', 'auditLog', 'create', false],
     ['viewer', 'auditLog', 'read', false],
+    ['admin', 'auditLog', 'readOwn', true],
+    ['analyst', 'auditLog', 'readOwn', true],
+    ['viewer', 'auditLog', 'readOwn', true],
   ];
 
   it.each(cases)('%s can %s:%s -> %s', (role, resource, action, expected) => {

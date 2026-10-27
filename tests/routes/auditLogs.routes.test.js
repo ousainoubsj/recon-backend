@@ -20,6 +20,7 @@ const mockAuditLogService = {
   listAuditLogs: jest.fn(),
   createAuditLog: jest.fn(),
   logAuditSafely: jest.fn().mockResolvedValue(undefined),
+  logAuditOnce: jest.fn().mockResolvedValue(undefined),
   getAuditLogStats: jest.fn(),
   getTopActions: jest.fn(),
   getTopUsers: jest.fn(),
@@ -106,9 +107,10 @@ describe('GET /api/audit-logs', () => {
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockAuditLogService.listAuditLogs).not.toHaveBeenCalled();
-    expect(mockAuditLogService.logAuditSafely).toHaveBeenCalledWith(
+    expect(mockAuditLogService.logAuditOnce).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ action: 'auditLog.read.denied', status: 'failed' }),
+      expect.any(Number),
     );
   });
 
@@ -165,6 +167,35 @@ describe('GET /api/audit-logs/top-users', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual(users);
     expect(mockAuditLogService.getTopUsers).toHaveBeenCalledWith(USER_ID);
+  });
+});
+
+describe('GET /api/audit-logs/mine', () => {
+  it("returns a viewer's own activity, forcing the actor filter to the caller", async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer', status: 'active' });
+    mockAuditLogService.listAuditLogs.mockResolvedValue([{ id: 'log-1' }]);
+
+    const res = await request(app).get('/api/audit-logs/mine?limit=6&userId=someone-else');
+
+    expect(res.status).toBe(200);
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ actorUserId: USER_ID, limit: 6 }));
+  });
+
+  it('refuses an inactive member', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer', status: 'inactive' });
+
+    const res = await request(app).get('/api/audit-logs/mine');
+
+    expect(res.status).toBe(403);
+    expect(mockAuditLogService.listAuditLogs).not.toHaveBeenCalled();
+  });
+
+  it("still refuses a viewer the org-wide feed", async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer', status: 'active' });
+
+    const res = await request(app).get('/api/audit-logs');
+
+    expect(res.status).toBe(403);
   });
 });
 

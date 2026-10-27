@@ -14,6 +14,13 @@ auditLogsRouter.get(
 );
 
 auditLogsRouter.get(
+  '/mine',
+  authenticate,
+  catchAsync(requirePermission('auditLog', 'readOwn')),
+  catchAsync(auditLogController.listMyAuditLogs),
+);
+
+auditLogsRouter.get(
   '/stats',
   authenticate,
   catchAsync(requirePermission('auditLog', 'read')),

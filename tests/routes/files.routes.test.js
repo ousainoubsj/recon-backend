@@ -22,8 +22,10 @@ jest.unstable_mockModule('@aws-sdk/s3-request-presigner', () => ({
 }));
 
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+const mockLogAuditOnce = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
+  logAuditOnce: mockLogAuditOnce,
 }));
 
 const { filesRouter } = await import('../../routes/files.js');
@@ -98,9 +100,10 @@ describe('POST /api/files/presign', () => {
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+    expect(mockLogAuditOnce).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ action: 'file.upload.denied', status: 'failed' }),
+      expect.any(Number),
     );
   });
 });

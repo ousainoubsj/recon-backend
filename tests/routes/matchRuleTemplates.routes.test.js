@@ -26,6 +26,7 @@ jest.unstable_mockModule('../../services/matchRuleTemplateService.js', () => moc
 
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: jest.fn().mockResolvedValue(undefined),
+  logAuditOnce: jest.fn().mockResolvedValue(undefined),
 }));
 
 const { matchRuleTemplatesRouter } = await import('../../routes/matchRuleTemplates.js');

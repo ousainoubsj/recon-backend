@@ -13,6 +13,7 @@ const {
   listAuditLogs,
   logAuditSafely,
   logResultsViewedOnce,
+  logAuditOnce,
   getAuditLogStats,
   getTopActions,
   getTopUsers,
@@ -350,6 +351,31 @@ describe('logAuditSafely', () => {
     expect(consoleError).toHaveBeenCalled();
 
     consoleError.mockRestore();
+  });
+});
+
+describe('logAuditOnce', () => {
+  const entry = { action: 'auditLog.read.denied', entityType: 'auditLog', status: 'failed' };
+
+  it('writes when the user has no matching entry inside the window, matching a null target exactly', async () => {
+    mockPrisma.auditLog.findFirst.mockResolvedValue(null);
+    mockPrisma.auditLog.create.mockResolvedValue({ id: 'log-1' });
+
+    await logAuditOnce(USER_ID, entry, 5 * 60 * 1000);
+
+    expect(mockPrisma.auditLog.findFirst).toHaveBeenCalledWith({
+      where: { userId: USER_ID, action: 'auditLog.read.denied', entityType: 'auditLog', entityId: null, ts: { gte: expect.any(Date) } },
+      select: { id: true },
+    });
+    expect(mockPrisma.auditLog.create).toHaveBeenCalled();
+  });
+
+  it('skips the write when a matching entry already exists inside the window', async () => {
+    mockPrisma.auditLog.findFirst.mockResolvedValue({ id: 'log-0' });
+
+    await logAuditOnce(USER_ID, entry, 5 * 60 * 1000);
+
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
   });
 });
 

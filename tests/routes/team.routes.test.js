@@ -17,8 +17,10 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
 }));
 
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+const mockLogAuditOnce = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
+  logAuditOnce: mockLogAuditOnce,
 }));
 
 const mockTeamService = {
@@ -157,9 +159,10 @@ describe('PATCH /api/team/members/:id', () => {
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
     expect(mockTeamService.updateMember).not.toHaveBeenCalled();
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+    expect(mockLogAuditOnce).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ action: 'member.update.denied', status: 'failed' }),
+      expect.any(Number),
     );
   });
 
@@ -169,9 +172,10 @@ describe('PATCH /api/team/members/:id', () => {
     const res = await request(app).patch('/api/team/members/m1').send({ status: 'active' });
 
     expect(res.status).toBe(403);
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+    expect(mockLogAuditOnce).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ metadata: { role: 'admin', reason: 'inactive' } }),
+      expect.any(Number),
     );
   });
 });

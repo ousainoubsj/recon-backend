@@ -21,6 +21,7 @@ jest.unstable_mockModule('../../services/searchService.js', () => mockSearchServ
 
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: jest.fn().mockResolvedValue(undefined),
+  logAuditOnce: jest.fn().mockResolvedValue(undefined),
 }));
 
 const { searchRouter } = await import('../../routes/search.js');

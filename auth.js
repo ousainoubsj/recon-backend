@@ -22,7 +22,7 @@ const statement = {
   invitation: ['create', 'cancel'],
   report: ['create', 'read', 'delete', 'export', 'email'],
   file: ['upload'],
-  auditLog: ['read'],
+  auditLog: ['read', 'readOwn'],
 };
 const ac = createAccessControl(statement);
 const roles = Object.fromEntries(

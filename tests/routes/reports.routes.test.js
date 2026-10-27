@@ -67,6 +67,7 @@ const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
 const mockLogResultsViewedOnce = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
+  logAuditOnce: jest.fn().mockResolvedValue(undefined),
   logResultsViewedOnce: mockLogResultsViewedOnce,
 }));
 

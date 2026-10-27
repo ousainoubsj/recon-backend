@@ -19,6 +19,7 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
+  logAuditOnce: jest.fn().mockResolvedValue(undefined),
 }));
 
 const mockGetSignedUrl = jest.fn();
