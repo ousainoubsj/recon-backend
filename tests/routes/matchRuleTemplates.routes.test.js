@@ -72,6 +72,20 @@ describe('POST /api/match-rule-templates', () => {
     );
   });
 
+  it("stores an old client's removed 'skip' policy as flag-all", async () => {
+    mockMatchRuleTemplateService.createTemplate.mockResolvedValue({ id: 't1' });
+
+    await request(app)
+      .post('/api/match-rule-templates')
+      .send({ ...validBody, config: { ...validBody.config, duplicateHandling: 'skip' } });
+
+    expect(mockMatchRuleTemplateService.createTemplate).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ config: expect.objectContaining({ duplicateHandling: 'flag-all' }) }),
+      expect.anything(),
+    );
+  });
+
   it('rejects a missing name with a 422', async () => {
     const res = await request(app).post('/api/match-rule-templates').send({ config: validBody.config });
 

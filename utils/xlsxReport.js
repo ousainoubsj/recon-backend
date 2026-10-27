@@ -8,6 +8,7 @@ import {
   MAX_DETAIL_ROWS,
   NON_MATCHED_STATUSES,
   computeCategoryStats,
+  exceptionReason,
   getBreakRows,
   getNonMatchedRows,
 } from './reportSections.js';
@@ -506,7 +507,7 @@ async function buildOverviewSheet(wb, report, sections, meta) {
     const nonMatched = getNonMatchedRows(report);
     const reasonCounts = new Map();
     for (const r of nonMatched) {
-      const key = r.breakReason ?? 'other';
+      const key = exceptionReason(r);
       reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + 1);
     }
 
@@ -605,7 +606,7 @@ function appendStatusSheet(wb, report, status) {
       amountA: r.amountA != null ? Number(r.amountA) : null,
       amountB: r.amountB != null ? Number(r.amountB) : null,
       amountDiff: r.amountDiff != null ? Number(r.amountDiff) : null,
-      breakReasonLabel: r.breakReason ? (BREAK_REASON_LABELS[r.breakReason] ?? r.breakReason) : '',
+      breakReasonLabel: r.breakReason ? (BREAK_REASON_LABELS[exceptionReason(r)] ?? r.breakReason) : '',
       reviewedLabel: r.reviewed ? 'Yes' : 'No',
     });
     if (i % 2 === 1) excelRow.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TINT_GRAY } }));

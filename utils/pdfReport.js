@@ -3,7 +3,7 @@ import path from 'node:path';
 import React from 'react';
 import { Circle, Document, Image, Page, Path, StyleSheet, Svg, Text, View, renderToBuffer } from '@react-pdf/renderer';
 import { formatReportReference } from './reportReference.js';
-import { BREAK_REASON_LABELS, MAX_DETAIL_ROWS, computeCategoryStats, getBreakRows, getNonMatchedRows } from './reportSections.js';
+import { BREAK_REASON_LABELS, MAX_DETAIL_ROWS, computeCategoryStats, exceptionReason, getBreakRows, getNonMatchedRows } from './reportSections.js';
 
 // No JSX transform is configured for this backend (plain Node ESM, no
 // build step) — React.createElement directly, same component model minus
@@ -562,7 +562,7 @@ function ReportDocument({ report, sections, generatedByName, organizationName, o
     const nonMatched = getNonMatchedRows(report);
     const reasonCounts = new Map();
     for (const row of nonMatched) {
-      const key = row.breakReason ?? 'other';
+      const key = exceptionReason(row);
       reasonCounts.set(key, (reasonCounts.get(key) ?? 0) + 1);
     }
     const sorted = [...nonMatched].sort((a, b) => Math.abs(Number(b.amountA ?? b.amountB ?? 0)) - Math.abs(Number(a.amountA ?? a.amountB ?? 0)));

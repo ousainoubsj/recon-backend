@@ -15,8 +15,17 @@ export const BREAK_REASON_LABELS = {
   missing_internal: 'Missing Internally',
   date_mismatch: 'Date Mismatch',
   duplicate: 'Duplicate',
+  duplicated_in_other_file: 'Duplicated in Other File',
   other: 'Other',
 };
+
+// The reason key exports group and label by. An unmatched row tagged 'duplicate' is a real break whose partner
+// is duplicated in the other file, so it must not be counted with the duplicate rows themselves.
+export function exceptionReason(row) {
+  const isUnmatched = row.status === 'unmatched_a' || row.status === 'unmatched_b';
+  if (isUnmatched && row.breakReason === 'duplicate') return 'duplicated_in_other_file';
+  return row.breakReason ?? 'other';
+}
 
 export function computeCategoryStats(report) {
   const total = report.totalRows || 0;

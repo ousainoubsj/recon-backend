@@ -42,7 +42,9 @@ function withDefaults(config = {}) {
     // this defaults off rather than assumed-safe, and has to be opted into
     // per run.
     ignoreNonNumericPrefix: config.ignoreNonNumericPrefix ?? false,
-    duplicateHandling: config.duplicateHandling ?? 'keep-first',
+    // 'skip' was removed: it dropped every copy of a duplicated reference from the results without a
+    // trace. Configs saved with it (runs, templates) now flag those rows instead.
+    duplicateHandling: config.duplicateHandling === 'skip' ? 'flag-all' : (config.duplicateHandling ?? 'keep-first'),
   };
 }
 
@@ -143,8 +145,10 @@ function extractEntries(file, mapping) {
 // Groups a file's rows by normalized reference, then resolves any group with
 // more than one entry per the duplicateHandling policy. Returns the single
 // survivor entry per ref (only refs with exactly one entry, post-policy) plus
-// the entries that get emitted as standalone 'duplicate' rows. 'skip' drops
-// its group's entries entirely — not a survivor, not a duplicate row.
+// the entries that get emitted as standalone 'duplicate' rows. Every entry
+// ends up in exactly one of those, so nothing in the file can go unreported.
+// `flaggedKeys` are refs left with no survivor (flag-all), so the other side
+// can say its unmatched row's partner is duplicated rather than missing.
 //
 // Entries with no reference at all (real amount/date, but nothing to key on)
 // are pulled out into incompleteEntries instead of joining the groups map
@@ -153,10 +157,7 @@ function extractEntries(file, mapping) {
 // a no-ref row in file A "match" an unrelated no-ref row in file B purely
 // because both sides' survivor maps hold the same empty key. Each incomplete
 // entry always resolves to missing_counterparty/missing_internal instead
-// (matching by an empty ref is meaningless); duplicateHandling: 'skip' only
-// suppresses real duplicate groups — incomplete entries always surface
-// individually regardless of that setting, since they were never duplicates
-// of each other to begin with.
+// (matching by an empty ref is meaningless).
 function resolveSide(file, mapping, config) {
   const entries = extractEntries(file, mapping);
   const groups = new Map();
@@ -173,6 +174,7 @@ function resolveSide(file, mapping, config) {
 
   const survivors = new Map();
   const duplicateEntries = [];
+  const flaggedKeys = new Set();
   for (const [key, group] of groups) {
     if (group.length === 1) {
       survivors.set(key, group[0]);
@@ -187,15 +189,13 @@ function resolveSide(file, mapping, config) {
         survivors.set(key, group[group.length - 1]);
         duplicateEntries.push(...group.slice(0, -1));
         break;
-      case 'flag-all':
-        duplicateEntries.push(...group);
-        break;
-      case 'skip':
       default:
-        break;
+        // flag-all, and the fallback for any unknown value: never drop a group silently.
+        duplicateEntries.push(...group);
+        flaggedKeys.add(key);
     }
   }
-  return { survivors, duplicateEntries, incompleteEntries };
+  return { survivors, duplicateEntries, incompleteEntries, flaggedKeys };
 }
 
 function makeDuplicateRow(entry, side) {
@@ -213,11 +213,13 @@ function makeDuplicateRow(entry, side) {
   };
 }
 
-function makeUnmatchedRow(entry, side) {
+// `partnerDuplicated`: the other file has this ref, but more than once, so it was flagged rather than matched.
+function makeUnmatchedRow(entry, side, partnerDuplicated = false) {
+  const missingReason = side === 'A' ? 'missing_counterparty' : 'missing_internal';
   return {
     ref: entry.ref,
     status: side === 'A' ? 'unmatched_a' : 'unmatched_b',
-    breakReason: side === 'A' ? 'missing_counterparty' : 'missing_internal',
+    breakReason: partnerDuplicated ? 'duplicate' : missingReason,
     amountA: side === 'A' ? entry.amount : null,
     amountB: side === 'B' ? entry.amount : null,
     amountDiff: null,
@@ -315,7 +317,7 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   for (const [ref, aEntry] of sideA.survivors) {
     const bEntry = sideB.survivors.get(ref);
     if (!bEntry) {
-      rows.push(makeUnmatchedRow(aEntry, 'A'));
+      rows.push(makeUnmatchedRow(aEntry, 'A', sideB.flaggedKeys.has(ref)));
       unmatchedA += 1;
       totalBreakValue += Math.abs(aEntry.amount ?? 0);
       continue;
@@ -344,7 +346,7 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
 
   for (const [ref, bEntry] of sideB.survivors) {
     if (consumedB.has(ref)) continue;
-    rows.push(makeUnmatchedRow(bEntry, 'B'));
+    rows.push(makeUnmatchedRow(bEntry, 'B', sideA.flaggedKeys.has(ref)));
     unmatchedB += 1;
     totalBreakValue += Math.abs(bEntry.amount ?? 0);
   }
@@ -358,12 +360,21 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   };
 }
 
+// An unmatched row tagged 'duplicate': its reference exists in the other file, but more than once.
+function isPartnerDuplicated(row) {
+  return row.breakReason === 'duplicate' && (row.status === 'unmatched_a' || row.status === 'unmatched_b');
+}
+
 // Read-time only — never persisted, so it can't drift from the config it's
 // meant to explain and never bloats storage across many rows.
 export function buildMatchAnalysis(row, rawConfig = {}) {
   const config = withDefaults(rawConfig);
   const analysis = [];
 
+  if (isPartnerDuplicated(row)) {
+    analysis.push({ text: 'Reference found in the other file, but more than once, so it was not matched', passed: false });
+    return analysis;
+  }
   if (row.status === 'unmatched_a') {
     analysis.push({ text: 'No matching reference found in the counterparty file', passed: false });
     return analysis;
@@ -411,6 +422,9 @@ export function buildMatchAnalysis(row, rawConfig = {}) {
 }
 
 export function buildRecommendedAction(row) {
+  if (isPartnerDuplicated(row)) {
+    return 'The other file lists this reference more than once. Confirm which of those entries this transaction corresponds to.';
+  }
   switch (row.breakReason) {
     case 'amount_mismatch':
       return `Review amount in counterparty file. Possible missing fee/charge of ${
@@ -451,7 +465,7 @@ export function buildShortReason(row) {
       reason = 'Transaction dates do not align within tolerance';
       break;
     case 'duplicate':
-      reason = 'Duplicate reference';
+      reason = isPartnerDuplicated(row) ? 'Reference is duplicated in the other file' : 'Duplicate reference';
       break;
     default:
       reason = 'Currency mismatch between files';

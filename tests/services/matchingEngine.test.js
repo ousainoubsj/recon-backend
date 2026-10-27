@@ -295,7 +295,7 @@ describe('runMatch — blank-reference rows', () => {
     expect(rows.map((r) => r.status).sort()).toEqual(['unmatched_a', 'unmatched_b']);
   });
 
-  it('still surfaces a blank-ref row individually even under duplicateHandling: skip', () => {
+  it('surfaces a blank-ref row individually whatever the duplicate policy', () => {
     const fileA = { rows: [row('', '100', '2026-06-30')] };
     const fileB = { rows: [] };
     const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, { duplicateHandling: 'skip' });
@@ -333,11 +333,42 @@ describe('runMatch — duplicate handling policies', () => {
     expect(summary.unmatchedA).toBe(0);
   });
 
-  it('skip drops the entire group — no duplicate rows, no survivor, reduces total', () => {
+  it('treats a legacy skip config as flag-all, so no transaction ever disappears from the results', () => {
     const { rows, summary } = runMatch(dupFileA, fileB, mapping, mapping, { duplicateHandling: 'skip' });
-    expect(summary.duplicates).toBe(0);
-    expect(summary.unmatchedA).toBe(0);
-    expect(rows.length).toBe(0);
+    expect(summary.duplicates).toBe(3);
+    expect(rows).toHaveLength(3);
+  });
+
+  it('flags an unknown policy value as duplicates rather than dropping the group', () => {
+    const { rows } = runMatch(dupFileA, fileB, mapping, mapping, { duplicateHandling: 'not-a-policy' });
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.status === 'duplicate')).toBe(true);
+  });
+
+  it("tags the other file's lone row as partner-duplicated instead of missing", () => {
+    const loneB = { rows: [row('R1', '100', '2026-06-30')] };
+    const { rows, summary } = runMatch(dupFileA, loneB, mapping, mapping, { duplicateHandling: 'flag-all' });
+    const bRow = rows.find((r) => r.status === 'unmatched_b');
+    expect(bRow.breakReason).toBe('duplicate');
+    expect(summary.unmatchedB).toBe(1);
+    expect(buildShortReason(bRow).reason).toBe('Reference is duplicated in the other file');
+    expect(buildMatchAnalysis(bRow)).toEqual([
+      { text: 'Reference found in the other file, but more than once, so it was not matched', passed: false },
+    ]);
+    expect(buildRecommendedAction(bRow)).toMatch(/more than once/);
+  });
+
+  it('keeps the ordinary missing reason when the other file simply lacks the reference', () => {
+    const otherB = { rows: [row('R2', '100', '2026-06-30')] };
+    const { rows } = runMatch(dupFileA, otherB, mapping, mapping, { duplicateHandling: 'flag-all' });
+    expect(rows.find((r) => r.status === 'unmatched_b').breakReason).toBe('missing_internal');
+  });
+
+  it('matches normally under keep-first, so the partner row is not tagged', () => {
+    const loneB = { rows: [row('R1', '100', '2026-06-30')] };
+    const { rows, summary } = runMatch(dupFileA, loneB, mapping, mapping, { duplicateHandling: 'keep-first' });
+    expect(summary.matched).toBe(1);
+    expect(rows.some((r) => r.status === 'unmatched_b')).toBe(false);
   });
 });
 

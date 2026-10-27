@@ -21,7 +21,12 @@ const matchRuleConfigSchema = z.object({
   ignoreSpaces: z.boolean().optional().default(true),
   trimLeadingZeros: z.boolean().optional().default(true),
   ignoreNonNumericPrefix: z.boolean().optional().default(false),
-  duplicateHandling: z.enum(['keep-first', 'keep-last', 'flag-all', 'skip']).optional().default('keep-first'),
+  // 'skip' is no longer offered (it dropped rows silently); an old client sending it gets flag-all.
+  duplicateHandling: z
+    .enum(['keep-first', 'keep-last', 'flag-all', 'skip'])
+    .optional()
+    .default('keep-first')
+    .transform((value) => (value === 'skip' ? 'flag-all' : value)),
 });
 
 const createTemplateSchema = z.object({

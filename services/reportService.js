@@ -957,9 +957,11 @@ const BREAK_REASON_CATEGORY_LABELS = {
   other: 'Others',
 };
 
-// The 5-bucket "Top Break Causes"/categoryBreakdown shape. Duplicates are
+// The 5-bucket "Top Break Causes"/categoryBreakdown shape. Duplicate *rows* are
 // deliberately excluded — same rationale as summary.totalBreakValue: a
-// duplicate is a data-quality flag, not a value break. All 5 canonical
+// duplicate is a data-quality flag, not a value break. An unmatched row whose
+// partner is duplicated is a real break, so it gets a sixth bucket, returned
+// only when non-zero, and the buckets always sum to the break value. All 5 canonical
 // categories are always returned (zero-filled if a reason has no rows this
 // run) once there's at least one real break to categorize, so e.g. "Others"
 // still shows up at 0/0% rather than silently disappearing — but a report
@@ -968,8 +970,8 @@ const BREAK_REASON_CATEGORY_LABELS = {
 export async function getBreakBreakdown(userId, reportId) {
   await assertReportAccess(userId, reportId);
   const grouped = await prisma.reportRow.groupBy({
-    by: ['breakReason'],
-    where: { reportId, breakReason: { not: null, notIn: ['duplicate'] } },
+    by: ['breakReason', 'status'],
+    where: { reportId, breakReason: { not: null }, status: { not: 'duplicate' } },
     _sum: { amountDiff: true, amountA: true, amountB: true },
   });
   if (grouped.length === 0) return [];
@@ -982,17 +984,24 @@ export async function getBreakBreakdown(userId, reportId) {
   // idea as missing_counterparty/missing_internal using amountA/amountB
   // rather than a diff.
   const amountForGroup = (g) => {
+    if (g.breakReason === 'duplicate') return Math.abs(toNum(g.status === 'unmatched_a' ? g._sum.amountA : g._sum.amountB));
     if (g.breakReason === 'missing_counterparty') return Math.abs(toNum(g._sum.amountA));
     if (g.breakReason === 'missing_internal') return Math.abs(toNum(g._sum.amountB));
     if (g.breakReason === 'date_mismatch' || g.breakReason === 'other') return Math.abs(toNum(g._sum.amountA));
     return Math.abs(toNum(g._sum.amountDiff));
   };
 
-  const amountByReason = new Map(grouped.map((g) => [g.breakReason, amountForGroup(g)]));
+  // Grouping by status too means one reason can span several groups (a duplicated partner on either side).
+  const amountByReason = new Map();
+  for (const g of grouped) {
+    amountByReason.set(g.breakReason, (amountByReason.get(g.breakReason) ?? 0) + amountForGroup(g));
+  }
   const buckets = Object.entries(BREAK_REASON_CATEGORY_LABELS).map(([reason, category]) => ({
     category,
     amount: amountByReason.get(reason) ?? 0,
   }));
+  const duplicatedPartnerAmount = amountByReason.get('duplicate') ?? 0;
+  if (duplicatedPartnerAmount > 0) buckets.push({ category: 'Duplicated in Other File', amount: duplicatedPartnerAmount });
   const total = buckets.reduce((sum, b) => sum + b.amount, 0);
 
   return buckets

@@ -1747,14 +1747,40 @@ describe('getBreakBreakdown', () => {
     expect(breakdown).toEqual([]);
   });
 
-  it('excludes duplicate from the groupBy query', async () => {
+  it('excludes duplicate rows by status, so unmatched rows with a duplicated partner still count', async () => {
     mockPrisma.reportRow.groupBy.mockResolvedValue([]);
 
     await getBreakBreakdown(USER_ID, 'r1');
 
     expect(mockPrisma.reportRow.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { reportId: 'r1', breakReason: { not: null, notIn: ['duplicate'] } } }),
+      expect.objectContaining({
+        by: ['breakReason', 'status'],
+        where: { reportId: 'r1', breakReason: { not: null }, status: { not: 'duplicate' } },
+      }),
     );
+  });
+
+  it('adds a Duplicated in Other File bucket from both sides, so the buckets sum to the break value', async () => {
+    mockPrisma.reportRow.groupBy.mockResolvedValue([
+      { breakReason: 'missing_internal', status: 'unmatched_b', _sum: { amountDiff: null, amountA: null, amountB: 30 } },
+      { breakReason: 'duplicate', status: 'unmatched_a', _sum: { amountDiff: null, amountA: 100, amountB: null } },
+      { breakReason: 'duplicate', status: 'unmatched_b', _sum: { amountDiff: null, amountA: null, amountB: 70 } },
+    ]);
+
+    const breakdown = await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(breakdown[0]).toEqual({ category: 'Duplicated in Other File', amount: 170, percent: 85 });
+    expect(breakdown.reduce((sum, b) => sum + b.amount, 0)).toBe(200);
+  });
+
+  it('omits the Duplicated in Other File bucket when nothing falls in it', async () => {
+    mockPrisma.reportRow.groupBy.mockResolvedValue([
+      { breakReason: 'missing_internal', status: 'unmatched_b', _sum: { amountDiff: null, amountA: null, amountB: 30 } },
+    ]);
+
+    const breakdown = await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(breakdown.map((b) => b.category)).not.toContain('Duplicated in Other File');
   });
 });
 
