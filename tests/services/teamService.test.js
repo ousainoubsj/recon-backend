@@ -140,7 +140,9 @@ describe('getTeamStats', () => {
       4,
       expect.objectContaining({ where: expect.objectContaining({ organizationId: ORG_ID, createdAt: expect.any(Object) }) }),
     );
-    expect(mockPrisma.invitation.count).toHaveBeenCalledWith({ where: { organizationId: ORG_ID, status: 'pending' } });
+    expect(mockPrisma.invitation.count).toHaveBeenCalledWith({
+      where: { organizationId: ORG_ID, status: 'pending', expiresAt: { gt: expect.any(Date) } },
+    });
     expect(mockPrisma.auditLog.count).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({

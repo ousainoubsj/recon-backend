@@ -43,7 +43,8 @@ export async function getTeamStats(userId) {
     prisma.member.count({ where: { organizationId } }),
     prisma.member.count({ where: { organizationId, status: 'active' } }),
     prisma.member.count({ where: { organizationId, role: 'admin' } }),
-    prisma.invitation.count({ where: { organizationId, status: 'pending' } }),
+    // Better Auth never flips an expired invitation's status, so expiry is checked here.
+    prisma.invitation.count({ where: { organizationId, status: 'pending', expiresAt: { gt: new Date() } } }),
     prisma.member.count({ where: { organizationId, createdAt: { gte: startOfMonth } } }),
     // Member has no deactivatedAt timestamp — the only record of *when* a
     // deactivation happened is updateMember's own 'member.update' audit log
