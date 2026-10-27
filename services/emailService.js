@@ -20,6 +20,11 @@ function isResendConfigured() {
   return Boolean(key) && key !== 're_xxx';
 }
 
+// The fallback prints sign-in codes and reset links, so production refuses to boot rather than use it.
+if (process.env.NODE_ENV === 'production' && !isResendConfigured()) {
+  throw new Error('RESEND_API_KEY must be set to a real Resend key in production');
+}
+
 async function sendEmail({ to, subject, html, text, attachments, replyTo }) {
   if (!isResendConfigured()) {
     console.warn(`[email:dev-fallback] RESEND_API_KEY not configured — logging email instead of sending.`);
