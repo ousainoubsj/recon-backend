@@ -17,6 +17,9 @@ const mockPrisma = {
     updateMany: jest.fn(),
     update: jest.fn(),
   },
+  reportExport: {
+    findMany: jest.fn().mockResolvedValue([]),
+  },
   reportFavorite: {
     upsert: jest.fn(),
     deleteMany: jest.fn(),
@@ -43,6 +46,9 @@ const mockPrisma = {
 };
 
 jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
+
+const mockDeleteR2Objects = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../utils/r2Client.js', () => ({ r2: { send: jest.fn() }, deleteR2Objects: mockDeleteR2Objects }));
 
 const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({
@@ -2239,6 +2245,100 @@ describe('addFavorite / removeFavorite', () => {
     mockPrisma.reportFavorite.deleteMany.mockResolvedValue({ count: 0 });
 
     await expect(removeFavorite(USER_ID, 'r1')).resolves.toBeUndefined();
+  });
+});
+
+describe('report file cleanup in R2', () => {
+  const owned = {
+    id: 'r1',
+    userId: USER_ID,
+    name: 'June Bank',
+    fileAName: 'a.csv',
+    fileBName: 'b.csv',
+    fileAKey: `uploads/${USER_ID}/1-a.csv`,
+    fileBKey: `uploads/${USER_ID}/1-b.csv`,
+    status: 'completed',
+    sequenceYear: 2026,
+    sequenceNumber: 4,
+  };
+
+  it("deletes the report's uploads and stored exports after the rows are gone", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findFirst.mockResolvedValue(owned);
+    mockPrisma.reportExport.findMany.mockResolvedValueOnce([{ fileKey: `exports/${ORG_ID}/r1/x.pdf` }]);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+
+    await deleteReport(USER_ID, 'r1');
+
+    expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith({
+      where: { reportId: { in: ['r1'] }, organizationId: ORG_ID, fileKey: { not: null } },
+      select: { fileKey: true },
+    });
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([owned.fileAKey, owned.fileBKey, `exports/${ORG_ID}/r1/x.pdf`]);
+    expect(mockPrisma.report.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(mockDeleteR2Objects.mock.invocationCallOrder[0]);
+  });
+
+  it("never deletes a stored key outside the report's own upload and export prefixes", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findFirst.mockResolvedValue({ ...owned, fileBKey: 'uploads/someone-else/1-b.csv' });
+    mockPrisma.reportExport.findMany.mockResolvedValueOnce([{ fileKey: 'exports/other-org/r9/x.pdf' }]);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+
+    await deleteReport(USER_ID, 'r1');
+
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([owned.fileAKey]);
+  });
+
+  it('deletes no files when the delete itself is refused', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findFirst.mockResolvedValue({ ...owned, userId: OTHER_USER_ID });
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 0 });
+
+    await expect(deleteReport(USER_ID, 'r1')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockDeleteR2Objects).not.toHaveBeenCalled();
+  });
+
+  it('still completes the delete when R2 cleanup fails, logging it for follow-up', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findFirst.mockResolvedValue(owned);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+    mockDeleteR2Objects.mockRejectedValueOnce(new Error('R2 unreachable'));
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(deleteReport(USER_ID, 'r1')).resolves.toBeUndefined();
+    expect(consoleError).toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("bulk: a non-admin's request only removes files of their own reports", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findMany.mockResolvedValue([
+      owned,
+      { ...owned, id: 'r2', userId: OTHER_USER_ID, fileAKey: `uploads/${OTHER_USER_ID}/2-a.csv`, fileBKey: `uploads/${OTHER_USER_ID}/2-b.csv` },
+    ]);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+
+    await bulkDeleteReports(USER_ID, ['r1', 'r2']);
+
+    expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ reportId: { in: ['r1'] } }) }));
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([owned.fileAKey, owned.fileBKey]);
+  });
+});
+
+describe('updateDraft file key ownership', () => {
+  it("rejects a file key that wasn't issued to this user, before touching the draft", async () => {
+    await expect(updateDraft(USER_ID, 'draft-1', { fileAKey: 'uploads/someone-else/1-a.csv' })).rejects.toBeInstanceOf(ValidationError);
+    await expect(updateDraft(USER_ID, 'draft-1', { fileBKey: 'exports/org-x/r/x.pdf' })).rejects.toBeInstanceOf(ValidationError);
+    expect(mockPrisma.report.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("accepts the caller's own upload key", async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', status: 'draft' });
+
+    await updateDraft(USER_ID, 'draft-1', { fileAKey: `uploads/${USER_ID}/1-a.csv` });
+
+    expect(mockPrisma.report.updateMany).toHaveBeenCalled();
   });
 });
 

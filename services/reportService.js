@@ -6,6 +6,7 @@ import { withSubject } from '../utils/audit.js';
 import { reportSubject } from '../utils/reportReference.js';
 import { createNotification } from './notificationService.js';
 import { downloadFromR2, parseTabularFile } from '../utils/fileParser.js';
+import { deleteR2Objects } from '../utils/r2Client.js';
 import {
   runMatch,
   extrapolatePreview,
@@ -1106,7 +1107,17 @@ export async function saveDraft(userId, dto) {
 // mock Audit Log's granular vocabulary, distinct from the single
 // `report.run.*` events below. Not logged on every PATCH, only when that
 // specific field is part of it (e.g. a progress-only autosave stays silent).
+// Keys come from the client, so each must be one /files/presign issued to this user. Otherwise a draft
+// could point at (and a run would read, and a delete would remove) another organization's upload.
+function assertOwnUploadKey(userId, key) {
+  if (key !== undefined && !key.startsWith(`uploads/${userId}/`)) {
+    throw new ValidationError('File key does not belong to an upload of yours');
+  }
+}
+
 export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {}) {
+  assertOwnUploadKey(userId, dto.fileAKey);
+  assertOwnUploadKey(userId, dto.fileBKey);
   const needsBefore = dto.columnMapping !== undefined || dto.config !== undefined;
   const before = needsBefore
     ? await prisma.report.findFirst({
@@ -1543,6 +1554,32 @@ export async function getRulePreview(userId, reportId, dto) {
   );
 }
 
+/**
+ * R2 objects a deleted report leaves behind: its two uploads and its stored exports. Only keys under
+ * the report's own prefixes are returned, so a stored key pointing anywhere else is never deleted.
+ */
+async function reportFileKeys(reports, organizationId) {
+  if (reports.length === 0) return [];
+  const exports = await prisma.reportExport.findMany({
+    where: { reportId: { in: reports.map((r) => r.id) }, organizationId, fileKey: { not: null } },
+    select: { fileKey: true },
+  });
+  const uploadKeys = reports.flatMap((r) =>
+    [r.fileAKey, r.fileBKey].filter((key) => key?.startsWith(`uploads/${r.userId}/`)),
+  );
+  const exportKeys = exports.map((e) => e.fileKey).filter((key) => key.startsWith(`exports/${organizationId}/`));
+  return [...uploadKeys, ...exportKeys];
+}
+
+// After the rows are gone: a failure here leaves orphaned files (logged for cleanup), never a half-deleted report.
+async function deleteReportFiles(keys) {
+  try {
+    await deleteR2Objects(keys);
+  } catch (err) {
+    console.error('Failed to delete report files from R2', keys.length, err);
+  }
+}
+
 // Org admins can delete any report in the org; everyone else may only
 // delete a report they created themselves.
 export async function deleteReport(userId, reportId, { ip, userAgent } = {}) {
@@ -1553,14 +1590,28 @@ export async function deleteReport(userId, reportId, { ip, userAgent } = {}) {
   // so a report that no longer matches still correctly 404s either way.
   const existing = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    select: { userId: true, name: true, fileAName: true, fileBName: true, status: true, sequenceYear: true, sequenceNumber: true },
+    select: {
+      id: true,
+      userId: true,
+      name: true,
+      fileAName: true,
+      fileBName: true,
+      fileAKey: true,
+      fileBKey: true,
+      status: true,
+      sequenceYear: true,
+      sequenceNumber: true,
+    },
   });
   if (!existing) throw new NotFoundError();
+  // Read before the delete: its cascade removes the export rows that hold these keys.
+  const fileKeys = await reportFileKeys([existing], organizationId);
 
   const { count } = await prisma.report.deleteMany({
     where: { id: reportId, organizationId, ...(role === 'admin' ? {} : { userId }) },
   });
   if (count === 0) throw new NotFoundError();
+  await deleteReportFiles(fileKeys);
 
   const isAdminActingOnAnother = role === 'admin' && existing.userId !== userId;
   await logAuditSafely(userId, {
@@ -1676,12 +1727,16 @@ export async function bulkDeleteReports(userId, ids, { ip, userAgent } = {}) {
 
   const existing = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId },
-    select: { id: true, userId: true, sequenceYear: true, sequenceNumber: true },
+    select: { id: true, userId: true, sequenceYear: true, sequenceNumber: true, fileAKey: true, fileBKey: true },
   });
+  // Same rule as the delete below: a non-admin's request only removes their own reports.
+  const deletable = role === 'admin' ? existing : existing.filter((r) => r.userId === userId);
+  const fileKeys = await reportFileKeys(deletable, organizationId);
 
   const { count } = await prisma.report.deleteMany({
     where: { id: { in: ids }, organizationId, ...(role === 'admin' ? {} : { userId }) },
   });
+  await deleteReportFiles(fileKeys);
 
   const deletedCountByOwner = new Map();
   if (role === 'admin') {
