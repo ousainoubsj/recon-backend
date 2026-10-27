@@ -3,8 +3,9 @@ import { Prisma } from '@prisma/client';
 
 const mockTx = {
   report: { create: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
-  reportRow: { createMany: jest.fn() },
+  reportRow: { createMany: jest.fn(), updateMany: jest.fn() },
   reportSequence: { upsert: jest.fn() },
+  reportRowResolution: { create: jest.fn(), findUnique: jest.fn() },
   $queryRaw: jest.fn(),
 };
 
@@ -33,6 +34,10 @@ const mockPrisma = {
     findFirst: jest.fn(),
     updateMany: jest.fn(),
     groupBy: jest.fn(),
+  },
+  reportRowResolution: {
+    findFirst: jest.fn(),
+    deleteMany: jest.fn(),
   },
   member: {
     findFirst: jest.fn(),
@@ -144,6 +149,8 @@ const {
   getTransactions,
   getTransaction,
   markRowReviewed,
+  resolveRows,
+  unresolve,
   getBreakBreakdown,
   getFilePairTrend,
   getHistoryStats,
@@ -198,6 +205,8 @@ beforeEach(() => {
   // existing literal-match assertions on tx.report.update's payload below
   // don't need to account for sequenceYear/sequenceNumber being added.
   mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
+  // getReport's resolution summary; tests that need other raw-query results override it.
+  mockPrisma.$queryRaw.mockResolvedValue([{ resolvedCount: 0, unresolvedExceptionCount: 0 }]);
   // Postgres returns NUMERIC sums as Decimals.
   mockTx.$queryRaw.mockResolvedValue([
     { matchedValue: new Prisma.Decimal('100.0000'), unmatchedValue: new Prisma.Decimal('50.0000'), duplicateValue: new Prisma.Decimal(0) },
@@ -461,7 +470,7 @@ describe('getReport', () => {
 
     const result = await getReport(USER_ID, 'r1');
 
-    expect(result).toEqual({ ...report, priorRun: null, runDurationMs: null });
+    expect(result).toEqual({ ...report, priorRun: null, runDurationMs: null, resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 } });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
       include: undefined,
@@ -530,7 +539,15 @@ describe('getReport', () => {
     const report = { id: 'r1', status: 'draft', userId: USER_ID, rows: [] };
     mockPrisma.report.findFirst.mockResolvedValue(report);
 
-    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({ ...report, progress: 0, priorRun: null, runDurationMs: null });
+    await expect(getReport(USER_ID, 'r1')).resolves.toEqual({
+      ...report,
+      progress: 0,
+      priorRun: null,
+      runDurationMs: null,
+      resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
+    });
+    // A draft can't carry resolutions, so the summary query is skipped (getReport is polled while runs process).
+    expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
     expect(mockPrisma.report.findFirst).toHaveBeenCalledTimes(1);
   });
 
@@ -1609,6 +1626,38 @@ describe('getTransactions', () => {
 
     await expect(getTransactions(USER_ID, 'missing', {})).rejects.toBeInstanceOf(NotFoundError);
   });
+
+  it('ignores an unknown status instead of passing it to Prisma', async () => {
+    await getTransactions(USER_ID, 'r1', { status: 'not-a-status' });
+
+    expect(mockPrisma.reportRow.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { reportId: 'r1' } }));
+  });
+
+  it('accepts an explicit unmatched side for the match picker', async () => {
+    await getTransactions(USER_ID, 'r1', { status: 'unmatched_b' });
+
+    expect(mockPrisma.reportRow.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { reportId: 'r1', status: 'unmatched_b' } }));
+  });
+
+  it('filters by resolution and returns each row with its resolution in the same query', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([
+      { id: 'row-1', ref: 'REF1', status: 'unmatched_a', reviewed: false, resolution: { id: 'res-1', kind: 'explained' } },
+    ]);
+
+    const result = await getTransactions(USER_ID, 'r1', { resolution: 'resolved' });
+
+    const call = mockPrisma.reportRow.findMany.mock.calls[0][0];
+    expect(call.where.AND).toEqual([{ resolutionId: { not: null } }]);
+    expect(call.include).toEqual({ resolution: { select: { id: true, kind: true } } });
+    expect(result.rows[0].resolution).toEqual({ id: 'res-1', kind: 'explained' });
+  });
+
+  it("maps a row with no resolution to resolution: null and filters 'unresolved' by a null link", async () => {
+    const result = await getTransactions(USER_ID, 'r1', { resolution: 'unresolved' });
+
+    expect(mockPrisma.reportRow.findMany.mock.calls[0][0].where.AND).toEqual([{ resolutionId: null }]);
+    expect(result.rows[0].resolution).toBeNull();
+  });
 });
 
 describe('getTransaction', () => {
@@ -1627,11 +1676,215 @@ describe('getTransaction', () => {
     expect(mockBuildMatchAnalysis).toHaveBeenCalledWith(row, { amountTolerance: 0.5 });
   });
 
+  it("returns the row's full resolution, with a null resolvedBy once that user is gone", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+    mockPrisma.reportRow.findFirst.mockResolvedValue({
+      id: 'row-1',
+      ref: 'REF1',
+      status: 'unmatched_b',
+      resolution: {
+        id: 'res-1',
+        kind: 'explained',
+        note: 'Bank fee',
+        resolvedAt: new Date('2026-10-27T10:00:00Z'),
+        resolvedByUser: null,
+        rows: [{ id: 'row-1', ref: 'REF1', status: 'unmatched_b' }],
+      },
+    });
+
+    const result = await getTransaction(USER_ID, 'r1', 'row-1');
+
+    expect(mockPrisma.reportRow.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'row-1', reportId: 'r1' } }));
+    expect(result.resolution).toEqual({
+      id: 'res-1',
+      kind: 'explained',
+      note: 'Bank fee',
+      resolvedAt: new Date('2026-10-27T10:00:00Z'),
+      resolvedBy: null,
+      rows: [{ id: 'row-1', reference: 'REF1', side: 'B' }],
+    });
+  });
+
   it('throws NotFoundError when the row does not belong to the report', async () => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
     mockPrisma.reportRow.findFirst.mockResolvedValue(null);
 
     await expect(getTransaction(USER_ID, 'r1', 'missing-row')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('resolveRows', () => {
+  const ROW_A = { id: 'row-a', ref: 'INV-1', status: 'unmatched_a', resolutionId: null };
+  const ROW_B = { id: 'row-b', ref: 'BNK-1', status: 'unmatched_b', resolutionId: null };
+  const STORED_RESOLUTION = {
+    id: 'res-1',
+    kind: 'matched',
+    note: 'Same payment',
+    resolvedAt: new Date('2026-10-27T10:00:00Z'),
+    resolvedByUser: { id: USER_ID, name: 'Ada' },
+    rows: [
+      { id: 'row-a', ref: 'INV-1', status: 'unmatched_a' },
+      { id: 'row-b', ref: 'BNK-1', status: 'unmatched_b' },
+    ],
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed', userId: USER_ID });
+    mockPrisma.reportRow.findMany.mockResolvedValue([ROW_A, ROW_B]);
+    mockTx.reportRowResolution.create.mockResolvedValue({ id: 'res-1' });
+    mockTx.reportRow.updateMany.mockResolvedValue({ count: 2 });
+    mockTx.reportRowResolution.findUnique.mockResolvedValue(STORED_RESOLUTION);
+  });
+
+  const matchInput = { kind: 'matched', rowIds: ['row-a', 'row-b'], note: 'Same payment' };
+
+  it("404s on another organization's report without reading or writing any row", async () => {
+    // assertReportAccess scopes the lookup to the caller's org, so a foreign report id comes back empty.
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(resolveRows(USER_ID, 'foreign-report', matchInput)).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'foreign-report', organizationId: ORG_ID } }));
+    expect(mockPrisma.reportRow.findMany).not.toHaveBeenCalled();
+    expect(mockTx.reportRowResolution.create).not.toHaveBeenCalled();
+  });
+
+  it('404s when a row id belongs to a different report', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([ROW_A]);
+
+    await expect(resolveRows(USER_ID, 'r1', matchInput)).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.reportRow.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { id: { in: ['row-a', 'row-b'] }, reportId: 'r1' } }));
+    expect(mockTx.reportRowResolution.create).not.toHaveBeenCalled();
+  });
+
+  it('404s on a report that is not completed', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'processing', userId: USER_ID });
+
+    await expect(resolveRows(USER_ID, 'r1', matchInput)).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('pairs one unmatched row from each side in one transaction and audit-logs it after', async () => {
+    const result = await resolveRows(USER_ID, 'r1', matchInput, { ip: '1.2.3.4', userAgent: 'jest' });
+
+    expect(mockTx.reportRowResolution.create).toHaveBeenCalledWith({
+      data: { reportId: 'r1', kind: 'matched', note: 'Same payment', resolvedBy: USER_ID },
+      select: { id: true },
+    });
+    expect(mockTx.reportRow.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['row-a', 'row-b'] }, reportId: 'r1', resolutionId: null },
+      data: { resolutionId: 'res-1' },
+    });
+    expect(result).toEqual({
+      id: 'res-1',
+      kind: 'matched',
+      note: 'Same payment',
+      resolvedAt: STORED_RESOLUTION.resolvedAt,
+      resolvedBy: { id: USER_ID, name: 'Ada' },
+      rows: [
+        { id: 'row-a', reference: 'INV-1', side: 'A' },
+        { id: 'row-b', reference: 'BNK-1', side: 'B' },
+      ],
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        action: 'report.row.resolve',
+        entityId: 'r1',
+        metadata: expect.objectContaining({ resolutionId: 'res-1', kind: 'matched', transactionRefs: ['INV-1', 'BNK-1'] }),
+      }),
+    );
+  });
+
+  it('rejects a match of two rows from the same side', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([ROW_A, { ...ROW_B, status: 'unmatched_a' }]);
+
+    await expect(resolveRows(USER_ID, 'r1', matchInput)).rejects.toBeInstanceOf(ValidationError);
+    expect(mockTx.reportRowResolution.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a match that includes a mismatched row', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([ROW_A, { ...ROW_B, status: 'mismatched' }]);
+
+    await expect(resolveRows(USER_ID, 'r1', matchInput)).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('rejects resolving a matched row of either kind', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([{ ...ROW_A, status: 'matched' }]);
+
+    await expect(resolveRows(USER_ID, 'r1', { kind: 'explained', rowIds: ['row-a'], note: 'n' })).rejects.toBeInstanceOf(ValidationError);
+  });
+
+  it('allows explaining mismatched and duplicate rows', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([
+      { ...ROW_A, status: 'mismatched' },
+      { ...ROW_B, status: 'duplicate' },
+    ]);
+
+    await expect(resolveRows(USER_ID, 'r1', { kind: 'explained', rowIds: ['row-a', 'row-b'], note: 'Bank fee' })).resolves.toBeDefined();
+  });
+
+  it('409s when a row is already resolved, before writing anything', async () => {
+    mockPrisma.reportRow.findMany.mockResolvedValue([ROW_A, { ...ROW_B, resolutionId: 'res-0' }]);
+
+    await expect(resolveRows(USER_ID, 'r1', matchInput)).rejects.toBeInstanceOf(ConflictError);
+    expect(mockTx.reportRowResolution.create).not.toHaveBeenCalled();
+  });
+
+  it('409s and audits nothing when a concurrent resolve claims a row between the read and the write', async () => {
+    // The guarded updateMany skips the row another transaction already took; throwing inside the
+    // transaction rolls back the resolution created just before it.
+    mockTx.reportRow.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(resolveRows(USER_ID, 'r1', matchInput)).rejects.toBeInstanceOf(ConflictError);
+    expect(mockTx.reportRowResolution.findUnique).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+});
+
+describe('unresolve', () => {
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed', userId: USER_ID });
+    mockPrisma.reportRowResolution.findFirst.mockResolvedValue({
+      id: 'res-1',
+      kind: 'explained',
+      note: 'Timing difference',
+      rows: [{ ref: 'INV-1' }],
+    });
+    mockPrisma.reportRowResolution.deleteMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("404s on another organization's report without touching resolutions", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(unresolve(USER_ID, 'foreign-report', 'res-1')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.reportRowResolution.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('404s for a resolution id that belongs to a different report', async () => {
+    mockPrisma.reportRowResolution.findFirst.mockResolvedValue(null);
+
+    await expect(unresolve(USER_ID, 'r1', 'res-of-other-report')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.reportRowResolution.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'res-of-other-report', reportId: 'r1' } }));
+    expect(mockPrisma.reportRowResolution.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('deletes the resolution scoped to the report and audit-logs what was undone', async () => {
+    await unresolve(USER_ID, 'r1', 'res-1');
+
+    expect(mockPrisma.reportRowResolution.deleteMany).toHaveBeenCalledWith({ where: { id: 'res-1', reportId: 'r1' } });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        action: 'report.row.unresolve',
+        metadata: expect.objectContaining({ kind: 'explained', note: 'Timing difference', transactionRefs: ['INV-1'] }),
+      }),
+    );
+  });
+
+  it('404s when a concurrent undo deleted it first', async () => {
+    mockPrisma.reportRowResolution.deleteMany.mockResolvedValue({ count: 0 });
+
+    await expect(unresolve(USER_ID, 'r1', 'res-1')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });
 

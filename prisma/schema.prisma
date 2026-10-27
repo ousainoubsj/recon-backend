@@ -86,6 +86,7 @@ model User {
   reportExports      ReportExport[]
   favorites          ReportFavorite[]
   reviewedReportRows ReportRow[]         @relation("ReportRowReviewedBy")
+  resolvedResolutions ReportRowResolution[] @relation("ReportRowResolvedBy")
   matchRuleTemplates MatchRuleTemplate[]
 
   name          String
@@ -184,6 +185,7 @@ model Report {
   rows      ReportRow[]
   exports   ReportExport[]
   favorites ReportFavorite[]
+  resolutions ReportRowResolution[]
 
   // organizationId-scoped, not just (sequenceYear, sequenceNumber) alone —
   // otherwise a second organization's first completion of the year would
@@ -238,11 +240,40 @@ model ReportRow {
   reviewedBy     String?           @map("reviewed_by")
   reviewedByUser User?             @relation("ReportRowReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
   reviewedAt     DateTime?         @map("reviewed_at")
+  // Set when a user matches or explains this row by hand; the engine's status above never changes.
+  resolutionId   String?              @map("resolution_id") @db.Uuid
+  resolution     ReportRowResolution? @relation(fields: [resolutionId], references: [id], onDelete: SetNull)
 
   @@index([reportId, status], map: "idx_rows_report_status")
   @@index([reportId, ref], map: "idx_rows_ref")
   @@index([reportId, breakReason], map: "idx_rows_break_reason")
+  @@index([reportId, resolutionId], map: "idx_rows_report_resolution")
+  @@index([resolutionId], map: "idx_rows_resolution")
   @@map("report_rows")
+}
+
+enum RowResolutionKind {
+  // An unmatched_a row paired by hand with an unmatched_b row.
+  matched
+  // A break accepted with a reason (timing difference, bank fee, ...).
+  explained
+}
+
+// A user's decision layered over the engine's result: rows point here, their amounts and status stay as computed.
+model ReportRowResolution {
+  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId       String            @map("report_id") @db.Uuid
+  report         Report            @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  kind           RowResolutionKind
+  note           String            @db.VarChar(1000)
+  // SetNull like ReportRow.reviewedBy: the resolution outlives the user who made it.
+  resolvedBy     String?           @map("resolved_by")
+  resolvedByUser User?             @relation("ReportRowResolvedBy", fields: [resolvedBy], references: [id], onDelete: SetNull)
+  resolvedAt     DateTime          @default(now()) @map("resolved_at") @db.Timestamptz
+  rows           ReportRow[]
+
+  @@index([reportId], map: "idx_row_resolutions_report")
+  @@map("report_row_resolutions")
 }
 
 model AuditLog {

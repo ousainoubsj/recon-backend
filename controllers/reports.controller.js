@@ -142,10 +142,11 @@ export const getReport = async (req, res) => {
 };
 
 export const getTransactions = async (req, res) => {
-  const { search, status, amountMin, amountMax, dateFrom, dateTo, sortBy, sortDir } = req.query;
+  const { search, status, resolution, amountMin, amountMax, dateFrom, dateTo, sortBy, sortDir } = req.query;
   const result = await reportService.getTransactions(req.session.user.id, req.params.id, {
     search,
     status,
+    resolution,
     amountMin: amountMin !== undefined ? Number(amountMin) : undefined,
     amountMax: amountMax !== undefined ? Number(amountMax) : undefined,
     dateFrom,
@@ -172,6 +173,16 @@ export const markRowReviewed = async (req, res) => {
     auditContext(req),
   );
   res.json(row);
+};
+
+export const resolveRows = async (req, res) => {
+  const resolution = await reportService.resolveRows(req.session.user.id, req.params.id, req.body, auditContext(req));
+  res.status(201).json(resolution);
+};
+
+export const unresolve = async (req, res) => {
+  await reportService.unresolve(req.session.user.id, req.params.id, req.params.resolutionId, auditContext(req));
+  res.status(204).end();
 };
 
 export const getBreakBreakdown = async (req, res) => {

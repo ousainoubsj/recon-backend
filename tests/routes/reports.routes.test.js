@@ -42,6 +42,8 @@ const mockReportService = {
   getTransactions: jest.fn(),
   getTransaction: jest.fn(),
   markRowReviewed: jest.fn(),
+  resolveRows: jest.fn(),
+  unresolve: jest.fn(),
   getBreakBreakdown: jest.fn(),
   getFilePairTrend: jest.fn(),
 };
@@ -440,6 +442,106 @@ describe('PATCH /api/reports/:id/transactions/:rowId/review', () => {
 
     expect(res.status).toBe(403);
     expect(mockReportService.markRowReviewed).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /api/reports/:id/resolutions', () => {
+  const REPORT_ID = '123e4567-e89b-12d3-a456-426614174000';
+  const ROW_A = '223e4567-e89b-12d3-a456-426614174001';
+  const ROW_B = '323e4567-e89b-12d3-a456-426614174002';
+  const url = `/api/reports/${REPORT_ID}/resolutions`;
+
+  it('creates a match for an analyst and returns 201 with the resolution', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
+    mockReportService.resolveRows.mockResolvedValue({ id: 'res-1', kind: 'matched' });
+
+    const res = await request(app).post(url).send({ kind: 'matched', rowIds: [ROW_A, ROW_B], note: '  Same payment  ' });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ id: 'res-1', kind: 'matched' });
+    // The note arrives trimmed: the zod-parsed body replaces req.body.
+    expect(mockReportService.resolveRows).toHaveBeenCalledWith(
+      USER_ID,
+      REPORT_ID,
+      { kind: 'matched', rowIds: [ROW_A, ROW_B], note: 'Same payment' },
+      { ip: expect.any(String), userAgent: null },
+    );
+  });
+
+  it('rejects a viewer with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).post(url).send({ kind: 'explained', rowIds: [ROW_A], note: 'n' });
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.resolveRows).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['a match without exactly two rows', { kind: 'matched', rowIds: [ROW_A], note: 'n' }],
+    ['a blank note', { kind: 'explained', rowIds: [ROW_A], note: '   ' }],
+    ['the same row twice', { kind: 'explained', rowIds: [ROW_A, ROW_A], note: 'n' }],
+    ['a non-uuid row id', { kind: 'explained', rowIds: ['row-1'], note: 'n' }],
+    ['an unknown kind', { kind: 'ignored', rowIds: [ROW_A], note: 'n' }],
+    ['more than 100 rows', { kind: 'explained', rowIds: Array.from({ length: 101 }, () => ROW_A), note: 'n' }],
+  ])('rejects %s with a 422', async (_label, body) => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+
+    const res = await request(app).post(url).send(body);
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.resolveRows).not.toHaveBeenCalled();
+  });
+
+  it('404s on a malformed report id before reaching the service', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+
+    const res = await request(app).post('/api/reports/not-a-uuid/resolutions').send({ kind: 'explained', rowIds: [ROW_A], note: 'n' });
+
+    expect(res.status).toBe(404);
+    expect(mockReportService.resolveRows).not.toHaveBeenCalled();
+  });
+
+  it('passes a service ConflictError through as a 409', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+    mockReportService.resolveRows.mockRejectedValue(new ConflictError('One of these transactions is already resolved'));
+
+    const res = await request(app).post(url).send({ kind: 'explained', rowIds: [ROW_A], note: 'n' });
+
+    expect(res.status).toBe(409);
+  });
+});
+
+describe('DELETE /api/reports/:id/resolutions/:resolutionId', () => {
+  const REPORT_ID = '123e4567-e89b-12d3-a456-426614174000';
+  const RESOLUTION_ID = '423e4567-e89b-12d3-a456-426614174003';
+
+  it('undoes a resolution for an admin and returns 204', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+    mockReportService.unresolve.mockResolvedValue(undefined);
+
+    const res = await request(app).delete(`/api/reports/${REPORT_ID}/resolutions/${RESOLUTION_ID}`);
+
+    expect(res.status).toBe(204);
+    expect(mockReportService.unresolve).toHaveBeenCalledWith(USER_ID, REPORT_ID, RESOLUTION_ID, expect.anything());
+  });
+
+  it('rejects a viewer with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).delete(`/api/reports/${REPORT_ID}/resolutions/${RESOLUTION_ID}`);
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.unresolve).not.toHaveBeenCalled();
+  });
+
+  it('404s on a malformed resolution id before reaching the service', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+
+    const res = await request(app).delete(`/api/reports/${REPORT_ID}/resolutions/not-a-uuid`);
+
+    expect(res.status).toBe(404);
+    expect(mockReportService.unresolve).not.toHaveBeenCalled();
   });
 });
 

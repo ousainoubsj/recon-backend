@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/authenticate.js';
 import { requirePermission } from '../middleware/authorize.js';
-import { validate } from '../middleware/validate.js';
+import { validate, validateParams } from '../middleware/validate.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import * as reportsController from '../controllers/reports.controller.js';
 
@@ -362,6 +362,40 @@ reportsRouter.patch(
   catchAsync(requirePermission('report', 'create')),
   validate(markReviewedSchema),
   catchAsync(reportsController.markRowReviewed),
+);
+
+// Manual resolution: a match pairs one unmatched internal row with one unmatched counterparty row;
+// an explanation accepts 1–100 breaks. Neither changes the rows' status or amounts.
+const resolveRowsSchema = z
+  .object({
+    kind: z.enum(['matched', 'explained']),
+    rowIds: z
+      .array(z.string().uuid())
+      .min(1)
+      .max(100)
+      .refine((ids) => new Set(ids).size === ids.length, 'Each transaction can only be listed once'),
+    note: z.string().trim().min(1).max(1000),
+  })
+  .refine((body) => body.kind !== 'matched' || body.rowIds.length === 2, {
+    message: 'A match pairs exactly two transactions',
+    path: ['rowIds'],
+  });
+
+reportsRouter.post(
+  '/:id/resolutions',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validateParams(z.object({ id: z.string().uuid() })),
+  validate(resolveRowsSchema),
+  catchAsync(reportsController.resolveRows),
+);
+
+reportsRouter.delete(
+  '/:id/resolutions/:resolutionId',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validateParams(z.object({ id: z.string().uuid(), resolutionId: z.string().uuid() })),
+  catchAsync(reportsController.unresolve),
 );
 
 reportsRouter.get(

@@ -829,8 +829,22 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
   }
 
   const runDurationMs = report.status === 'completed' ? await getRunDurationMs(reportId) : null;
+  // Only completed reports can carry resolutions; skipping the query keeps the 1s processing poll as cheap as before.
+  const resolutionSummary =
+    report.status === 'completed' ? await getResolutionSummary(reportId) : { resolvedCount: 0, unresolvedExceptionCount: 0 };
 
-  return { ...withDraftProgress(report), priorRun, runDurationMs };
+  return { ...withDraftProgress(report), priorRun, runDurationMs, resolutionSummary };
+}
+
+// Shown beside the engine's counts, never folded into them: matchedCount and the match rate stay as computed.
+async function getResolutionSummary(reportId) {
+  const [counts] = await prisma.$queryRaw`
+    SELECT
+      COUNT(*) FILTER (WHERE resolution_id IS NOT NULL)::int AS "resolvedCount",
+      COUNT(*) FILTER (WHERE resolution_id IS NULL AND status <> 'matched')::int AS "unresolvedExceptionCount"
+    FROM report_rows
+    WHERE report_id = ${reportId}::uuid`;
+  return counts;
 }
 
 // Lighter-weight than getReport's own access check (no rows include) — used
@@ -867,10 +881,21 @@ function mapRowForExplorer(row) {
     reviewed: row.reviewed,
     type,
     reason,
+    resolution: row.resolution ? { id: row.resolution.id, kind: row.resolution.kind } : null,
   };
 }
 
 const EXPLORER_SORT_FIELD_MAP = { date: 'dateA', amount: 'amountA', reference: 'ref' };
+
+// 'unmatched' covers both sides for the explorer filter; the explicit sides serve the match picker.
+const EXPLORER_STATUS_FILTERS = new Map([
+  ['matched', 'matched'],
+  ['mismatched', 'mismatched'],
+  ['unmatched', { in: ['unmatched_a', 'unmatched_b'] }],
+  ['unmatched_a', 'unmatched_a'],
+  ['unmatched_b', 'unmatched_b'],
+  ['duplicate', 'duplicate'],
+]);
 
 // Transaction Explorer listing — search/filter/sort/paginate over a single
 // report's rows. `status` accepts the mock's 4-way vocabulary
@@ -878,7 +903,7 @@ const EXPLORER_SORT_FIELD_MAP = { date: 'dateA', amount: 'amountA', reference: '
 // unmatched_a and unmatched_b since ReconRowStatus keeps them distinct.
 export async function getTransactions(userId, reportId, filters = {}) {
   await assertReportAccess(userId, reportId);
-  const { search, status, amountMin, amountMax, dateFrom, dateTo, sortBy, sortDir, limit, offset } = filters;
+  const { search, status, resolution, amountMin, amountMax, dateFrom, dateTo, sortBy, sortDir, limit, offset } = filters;
 
   const and = [];
   if (search?.trim()) and.push({ ref: { contains: search.trim(), mode: 'insensitive' } });
@@ -895,15 +920,26 @@ export async function getTransactions(userId, reportId, filters = {}) {
     and.push({ OR: [{ dateA: range }, { dateB: range }] });
   }
 
+  if (resolution === 'resolved') and.push({ resolutionId: { not: null } });
+  if (resolution === 'unresolved') and.push({ resolutionId: null });
+
+  // An unknown status is ignored rather than passed to Prisma, which rejects it with a 500.
+  const statusFilter = EXPLORER_STATUS_FILTERS.get(status);
   const where = {
     reportId,
-    ...(status ? { status: status === 'unmatched' ? { in: ['unmatched_a', 'unmatched_b'] } : status } : {}),
+    ...(statusFilter ? { status: statusFilter } : {}),
     ...(and.length > 0 ? { AND: and } : {}),
   };
   const orderBy = { [EXPLORER_SORT_FIELD_MAP[sortBy] ?? 'ref']: sortDir === 'desc' ? 'desc' : 'asc' };
 
   const [rows, total] = await Promise.all([
-    prisma.reportRow.findMany({ where, orderBy, take: limit ?? 50, skip: offset ?? 0 }),
+    prisma.reportRow.findMany({
+      where,
+      orderBy,
+      take: limit ?? 50,
+      skip: offset ?? 0,
+      include: { resolution: { select: { id: true, kind: true } } },
+    }),
     prisma.reportRow.count({ where }),
   ]);
 
@@ -915,7 +951,10 @@ export async function getTransactions(userId, reportId, filters = {}) {
 // action, derived from the report's own stored rulesConfig.
 export async function getTransaction(userId, reportId, rowId) {
   const report = await assertReportAccess(userId, reportId);
-  const row = await prisma.reportRow.findFirst({ where: { id: rowId, reportId } });
+  const row = await prisma.reportRow.findFirst({
+    where: { id: rowId, reportId },
+    include: { resolution: { select: RESOLUTION_SELECT } },
+  });
   if (!row) throw new NotFoundError();
 
   return {
@@ -924,7 +963,108 @@ export async function getTransaction(userId, reportId, rowId) {
     rawB: row.rawB,
     matchAnalysis: buildMatchAnalysis(row, report.rulesConfig ?? report.config ?? {}),
     recommendedAction: buildRecommendedAction(row),
+    resolution: row.resolution ? mapResolution(row.resolution) : null,
   };
+}
+
+const RESOLUTION_SELECT = {
+  id: true,
+  kind: true,
+  note: true,
+  resolvedAt: true,
+  resolvedByUser: { select: { id: true, name: true } },
+  rows: { select: { id: true, ref: true, status: true } },
+};
+
+// Only an unmatched_b row exists solely in the counterparty file; every other status has an internal side.
+function rowSide(status) {
+  return status === 'unmatched_b' ? 'B' : 'A';
+}
+
+function mapResolution(resolution) {
+  return {
+    id: resolution.id,
+    kind: resolution.kind,
+    note: resolution.note,
+    resolvedAt: resolution.resolvedAt,
+    resolvedBy: resolution.resolvedByUser ? { id: resolution.resolvedByUser.id, name: resolution.resolvedByUser.name } : null,
+    rows: resolution.rows.map((row) => ({ id: row.id, reference: row.ref, side: rowSide(row.status) })),
+  };
+}
+
+// Resolutions annotate a final result, so they exist only on completed reports.
+async function assertCompletedReportAccess(userId, reportId) {
+  const report = await assertReportAccess(userId, reportId);
+  if (report.status !== 'completed') throw new NotFoundError();
+  return report;
+}
+
+export async function resolveRows(userId, reportId, { kind, rowIds, note }, { ip, userAgent } = {}) {
+  const report = await assertCompletedReportAccess(userId, reportId);
+  const rows = await prisma.reportRow.findMany({
+    where: { id: { in: rowIds }, reportId },
+    select: { id: true, ref: true, status: true, resolutionId: true },
+  });
+  if (rows.length !== rowIds.length) throw new NotFoundError();
+  if (rows.some((row) => row.resolutionId)) throw new ConflictError('One of these transactions is already resolved');
+  if (rows.some((row) => row.status === 'matched')) throw new ValidationError('Matched transactions cannot be resolved');
+  if (kind === 'matched') {
+    const statuses = rows.map((row) => row.status).sort();
+    const isOneOfEachSide = statuses.length === 2 && statuses[0] === 'unmatched_a' && statuses[1] === 'unmatched_b';
+    if (!isOneOfEachSide) {
+      throw new ValidationError('A match pairs one unmatched internal transaction with one unmatched counterparty transaction');
+    }
+  }
+
+  const resolution = await prisma.$transaction(async (tx) => {
+    const created = await tx.reportRowResolution.create({ data: { reportId, kind, note, resolvedBy: userId }, select: { id: true } });
+    // resolutionId: null makes the write conditional, so a concurrent resolve of the same row leaves count short.
+    const { count } = await tx.reportRow.updateMany({
+      where: { id: { in: rowIds }, reportId, resolutionId: null },
+      data: { resolutionId: created.id },
+    });
+    if (count !== rowIds.length) throw new ConflictError('One of these transactions was just resolved by someone else');
+    return tx.reportRowResolution.findUnique({ where: { id: created.id }, select: RESOLUTION_SELECT });
+  });
+
+  await logAuditSafely(userId, {
+    action: 'report.row.resolve',
+    entityType: 'report',
+    entityId: reportId,
+    status: 'info',
+    ip,
+    userAgent,
+    metadata: withSubject({ resolutionId: resolution.id, kind, note, transactionRefs: rows.map((row) => row.ref) }, reportSubject(report)),
+  });
+
+  return mapResolution(resolution);
+}
+
+export async function unresolve(userId, reportId, resolutionId, { ip, userAgent } = {}) {
+  const report = await assertCompletedReportAccess(userId, reportId);
+  // Read first: the audit entry records what was undone, and the delete below clears the rows' link.
+  const resolution = await prisma.reportRowResolution.findFirst({
+    where: { id: resolutionId, reportId },
+    select: { id: true, kind: true, note: true, rows: { select: { ref: true } } },
+  });
+  if (!resolution) throw new NotFoundError();
+
+  // The rows' resolution_id FK is ON DELETE SET NULL, so this one delete unresolves them.
+  const { count } = await prisma.reportRowResolution.deleteMany({ where: { id: resolutionId, reportId } });
+  if (count === 0) throw new NotFoundError();
+
+  await logAuditSafely(userId, {
+    action: 'report.row.unresolve',
+    entityType: 'report',
+    entityId: reportId,
+    status: 'warning',
+    ip,
+    userAgent,
+    metadata: withSubject(
+      { resolutionId, kind: resolution.kind, note: resolution.note, transactionRefs: resolution.rows.map((row) => row.ref) },
+      reportSubject(report),
+    ),
+  });
 }
 
 export async function markRowReviewed(userId, reportId, rowId, reviewed = true, { ip, userAgent } = {}) {
