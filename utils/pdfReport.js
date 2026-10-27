@@ -3,7 +3,15 @@ import path from 'node:path';
 import React from 'react';
 import { Circle, Document, Image, Page, Path, StyleSheet, Svg, Text, View, renderToBuffer } from '@react-pdf/renderer';
 import { formatReportReference } from './reportReference.js';
-import { BREAK_REASON_LABELS, MAX_DETAIL_ROWS, computeCategoryStats, exceptionReason, getBreakRows, getNonMatchedRows } from './reportSections.js';
+import {
+  BREAK_REASON_LABELS,
+  MAX_DETAIL_ROWS,
+  computeCategoryStats,
+  exceptionReason,
+  getBreakRows,
+  getNonMatchedRows,
+  resolvedSummaryLine,
+} from './reportSections.js';
 
 // No JSX transform is configured for this backend (plain Node ESM, no
 // build step) — React.createElement directly, same component model minus
@@ -578,6 +586,7 @@ function ReportDocument({ report, sections, generatedByName, organizationName, o
         rows: [...reasonCounts.entries()].map(([reason, count]) => ({ reason, count })),
         emptyLabel: 'No exceptions found.',
       }),
+      h(Text, { key: 'exceptions-resolved', style: { fontSize: 8.5, color: TEXT_GRAY, marginTop: 4 } }, resolvedSummaryLine(nonMatched)),
 
       h(SectionHeader, { key: 'unmatched-header', title: 'Unmatched Details' }),
       h(

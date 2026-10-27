@@ -7,6 +7,8 @@ import {
   BREAK_REASON_LABELS,
   MAX_DETAIL_ROWS,
   NON_MATCHED_STATUSES,
+  RESOLUTION_LABELS,
+  resolvedSummaryLine,
   computeCategoryStats,
   exceptionReason,
   getBreakRows,
@@ -522,6 +524,7 @@ async function buildOverviewSheet(wb, report, sections, meta) {
       [...reasonCounts.entries()].map(([reason, count]) => ({ reason, count })),
       'No exceptions found.',
     );
+    row = writeNote(ws, row, resolvedSummaryLine(nonMatched));
 
     const sorted = [...nonMatched].sort(
       (a, b) => Math.abs(Number(b.amountA ?? b.amountB ?? 0)) - Math.abs(Number(a.amountA ?? a.amountB ?? 0)),
@@ -581,6 +584,10 @@ function appendStatusSheet(wb, report, status) {
     { header: 'Break Reason', key: 'breakReasonLabel', width: 22 },
     { header: 'Reviewed', key: 'reviewedLabel', width: 12 },
   ];
+  // Matched rows can never be resolved, so only the exception sheets carry these.
+  if (status !== 'matched') {
+    columns.push({ header: 'Resolution', key: 'resolutionLabel', width: 18 }, { header: 'Resolution Note', key: 'resolutionNote', width: 48 });
+  }
   ws.columns = columns.map(({ header, key, width }) => ({ header, key, width }));
   // `numFmt` in the columns array above is silently ignored by ExcelJS for
   // cells added later via addRow — it only takes effect set directly on the
@@ -608,6 +615,8 @@ function appendStatusSheet(wb, report, status) {
       amountDiff: r.amountDiff != null ? Number(r.amountDiff) : null,
       breakReasonLabel: r.breakReason ? (BREAK_REASON_LABELS[exceptionReason(r)] ?? r.breakReason) : '',
       reviewedLabel: r.reviewed ? 'Yes' : 'No',
+      resolutionLabel: r.resolution ? RESOLUTION_LABELS[r.resolution.kind] : '',
+      resolutionNote: r.resolution?.note ?? '',
     });
     if (i % 2 === 1) excelRow.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TINT_GRAY } }));
   });

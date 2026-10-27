@@ -118,4 +118,37 @@ describe('buildXlsxReport', () => {
     expect(csv.split('\n')[0]).toBe('Reference,Status,Date A,Date B,Amount A,Amount B,Amount Diff,Break Reason,Reviewed');
     expect(csv).toContain('REF1,Matched');
   });
+
+  describe('manual resolutions', () => {
+    const resolvedReport = {
+      ...report,
+      rows: report.rows.map((row) =>
+        row.ref === 'REF3' ? { ...row, resolution: { kind: 'explained', note: 'Timing difference, clears next statement' } } : row,
+      ),
+    };
+
+    it('notes how many exceptions were resolved by hand, without changing the exception counts', async () => {
+      const csv = overviewCsv(await buildXlsxReport(resolvedReport, ALL_SECTIONS));
+
+      expect(csv).toContain('Resolved manually: 1 of 3 exceptions');
+    });
+
+    it('reads 0 of M when nothing is resolved', async () => {
+      const csv = overviewCsv(await buildXlsxReport(report, ALL_SECTIONS));
+
+      expect(csv).toContain('Resolved manually: 0 of 3 exceptions');
+    });
+
+    it('adds Resolution and Resolution Note columns to the exception sheets only', async () => {
+      const wb = readWorkbook(await buildXlsxReport(resolvedReport, ALL_SECTIONS));
+      const matchedHeader = XLSX.utils.sheet_to_json(wb.Sheets['Matched'], { header: 1 })[0];
+      const [header, ...rows] = XLSX.utils.sheet_to_json(wb.Sheets['Unmatched (A)'], { header: 1 });
+
+      expect(matchedHeader).not.toContain('Resolution');
+      expect(header).toEqual(expect.arrayContaining(['Resolution', 'Resolution Note']));
+      const ref3 = rows.find((cells) => cells[0] === 'REF3');
+      expect(ref3[header.indexOf('Resolution')]).toBe('Explained');
+      expect(ref3[header.indexOf('Resolution Note')]).toBe('Timing difference, clears next statement');
+    });
+  });
 });

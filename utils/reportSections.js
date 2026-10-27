@@ -42,6 +42,14 @@ export function getBreakRows(report) {
   return report.rows.filter((r) => r.amountDiff != null && Number(r.amountDiff) !== 0);
 }
 
+export const RESOLUTION_LABELS = { matched: 'Matched manually', explained: 'Explained' };
+
+// Shown beside the exception counts, never subtracted from them: resolving a row leaves its status as reconciled.
+export function resolvedSummaryLine(nonMatchedRows) {
+  const resolved = nonMatchedRows.filter((row) => row.resolution).length;
+  return `Resolved manually: ${resolved} of ${nonMatchedRows.length} exception${nonMatchedRows.length === 1 ? '' : 's'}`;
+}
+
 export function getNonMatchedRows(report) {
   return report.rows.filter((r) => r.status !== 'matched');
 }

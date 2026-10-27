@@ -782,11 +782,14 @@ async function getRunDurationMs(reportId) {
 // from empty to several MB. Only the export/email code paths actually build
 // row-level content (buildPdfReport/buildXlsxReport/sendReportEmail) and
 // opt in explicitly.
+// Rows as the exports need them: each with the kind and note of its manual resolution, if any.
+const ROWS_WITH_RESOLUTION = { include: { resolution: { select: { kind: true, note: true } } } };
+
 export async function getReport(userId, reportId, { includeRows = false } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    include: includeRows ? { rows: true } : undefined,
+    include: includeRows ? { rows: ROWS_WITH_RESOLUTION } : undefined,
   });
   if (!report) throw new NotFoundError();
   // Drafts are private to their creator — org membership alone isn't enough,
@@ -2044,7 +2047,7 @@ export async function getReportsByIds(userId, ids, { requireCompleted = false, i
   const { organizationId } = await getUserMembership(userId);
   const reports = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId, ...(requireCompleted ? { status: 'completed' } : {}) },
-    include: { rows: includeRows },
+    include: includeRows ? { rows: ROWS_WITH_RESOLUTION } : undefined,
   });
 
   const byId = new Map(reports.map((r) => [r.id, r]));

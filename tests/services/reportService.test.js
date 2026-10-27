@@ -502,7 +502,7 @@ describe('getReport', () => {
 
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
-      include: { rows: true },
+      include: { rows: { include: { resolution: { select: { kind: true, note: true } } } } },
     });
   });
 
@@ -2951,7 +2951,7 @@ describe('getReportsByIds', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { id: { in: ['r1'] }, organizationId: ORG_ID, status: 'completed' },
-      include: { rows: true },
+      include: { rows: { include: { resolution: { select: { kind: true, note: true } } } } },
     });
   });
 });
@@ -2968,7 +2968,7 @@ describe('getComparisonReports', () => {
 
     const result = await getComparisonReports(USER_ID, ['r1', 'r2']);
 
-    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ include: { rows: false } }));
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ include: undefined }));
     expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(mockPrisma.$queryRaw.mock.calls[0]).toContainEqual(['r1', 'r2']);
     expect(result[0].rowStats).toEqual({
