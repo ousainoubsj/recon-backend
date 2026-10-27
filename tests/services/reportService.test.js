@@ -41,6 +41,7 @@ const mockPrisma = {
   },
   member: {
     findFirst: jest.fn(),
+    findMany: jest.fn(),
   },
   organization: {
     findFirst: jest.fn().mockResolvedValue({ defaultAmountTolerance: null, defaultDateToleranceDays: null }),
@@ -135,6 +136,7 @@ const {
   saveReport,
   listReports,
   getReport,
+  rerunReport,
   deleteReport,
   getReportsSummary,
   getReportsTrend,
@@ -470,7 +472,13 @@ describe('getReport', () => {
 
     const result = await getReport(USER_ID, 'r1');
 
-    expect(result).toEqual({ ...report, priorRun: null, runDurationMs: null, resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 } });
+    expect(result).toEqual({
+      ...report,
+      priorRun: null,
+      runDurationMs: null,
+      resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
+      rerunOf: null,
+    });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
       include: undefined,
@@ -514,6 +522,38 @@ describe('getReport', () => {
     });
   });
 
+  it('compares a rerun against the report it was rerun from, and names that report', async () => {
+    const report = {
+      id: 'rerun-1',
+      organizationId: ORG_ID,
+      status: 'completed',
+      sourceReportId: 'source-1',
+      runDate: new Date('2026-07-15T00:00:00.000Z'),
+    };
+    mockPrisma.report.findFirst
+      .mockResolvedValueOnce(report)
+      .mockResolvedValueOnce({ matchedCount: 40, totalRows: 50, totalBreakValue: 30 })
+      .mockResolvedValueOnce({ id: 'source-1', name: 'June Bank', sequenceYear: 2026, sequenceNumber: 11 });
+
+    const result = await getReport(USER_ID, 'rerun-1');
+
+    expect(mockPrisma.report.findFirst).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      where: { id: 'source-1', organizationId: ORG_ID, status: 'completed' },
+    }));
+    expect(result.priorRun).toEqual({ matchRate: 80, totalBreakValue: 30 });
+    expect(result.rerunOf).toEqual({ id: 'source-1', name: 'June Bank', reference: 'REC-2026-000011' });
+  });
+
+  it('returns rerunOf: null once the source report is gone', async () => {
+    const report = { id: 'rerun-1', organizationId: ORG_ID, status: 'completed', sourceReportId: 'source-1', runDate: new Date() };
+    mockPrisma.report.findFirst.mockResolvedValueOnce(report).mockResolvedValueOnce(null).mockResolvedValueOnce(null);
+
+    const result = await getReport(USER_ID, 'rerun-1');
+
+    expect(result.priorRun).toBeNull();
+    expect(result.rerunOf).toBeNull();
+  });
+
   it('returns a null priorRun when no other completed report exists in the org', async () => {
     const report = { id: 'r1', status: 'completed', rows: [], runDate: new Date('2026-07-15T00:00:00.000Z') };
     mockPrisma.report.findFirst.mockResolvedValueOnce(report).mockResolvedValueOnce(null);
@@ -545,6 +585,7 @@ describe('getReport', () => {
       priorRun: null,
       runDurationMs: null,
       resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
+      rerunOf: null,
     });
     // A draft can't carry resolutions, so the summary query is skipped (getReport is polled while runs process).
     expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
@@ -869,6 +910,136 @@ describe('saveDraft', () => {
         config: { amountTolerance: undefined, dateToleranceDays: null },
       },
     });
+  });
+});
+
+describe('rerunReport', () => {
+  const source = {
+    id: 'source-1',
+    name: 'June Bank',
+    tag: 'bank',
+    fileAKey: `uploads/${OTHER_USER_ID}/a.csv`,
+    fileBKey: `uploads/${OTHER_USER_ID}/b.csv`,
+    fileAName: 'ledger.csv',
+    fileBName: 'statement.csv',
+    fileASummary: { rows: 10, columns: 4, fileSizeBytes: 100 },
+    fileBSummary: { rows: 9, columns: 5, fileSizeBytes: 90 },
+    columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Reference' } },
+    rulesConfig: { amountTolerance: 0.5, duplicateHandling: 'flag-all' },
+    config: { amountTolerance: 0 },
+    sequenceYear: 2026,
+    sequenceNumber: 11,
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(source);
+    mockPrisma.report.create.mockResolvedValue({ id: 'draft-9' });
+  });
+
+  it("404s on another organization's report, and on one that isn't completed, without creating anything", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(rerunReport(USER_ID, 'foreign-or-draft')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'foreign-or-draft', organizationId: ORG_ID, status: 'completed' },
+    }));
+    expect(mockPrisma.report.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a report with no stored files (legacy client-computed saves)', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...source, fileAKey: null });
+
+    await expect(rerunReport(USER_ID, 'source-1')).rejects.toBeInstanceOf(ValidationError);
+    expect(mockPrisma.report.create).not.toHaveBeenCalled();
+  });
+
+  it("creates the caller's own draft from the source's files, mapping and rules, linked back to it", async () => {
+    const result = await rerunReport(USER_ID, 'source-1', { ip: '1.2.3.4', userAgent: 'jest' });
+
+    expect(result).toEqual({ id: 'draft-9' });
+    expect(mockPrisma.report.create).toHaveBeenCalledWith({
+      data: {
+        userId: USER_ID,
+        organizationId: ORG_ID,
+        status: 'draft',
+        progress: 0,
+        name: 'June Bank',
+        tag: 'bank',
+        fileAKey: source.fileAKey,
+        fileBKey: source.fileBKey,
+        fileAName: 'ledger.csv',
+        fileBName: 'statement.csv',
+        fileASummary: source.fileASummary,
+        fileBSummary: source.fileBSummary,
+        columnMapping: source.columnMapping,
+        // The full rules the source actually ran with, not its older tolerance-only config.
+        config: source.rulesConfig,
+        sourceReportId: 'source-1',
+      },
+      select: { id: true },
+    });
+    expect(mockPrisma.report.update).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'report.rerun', entityId: 'draft-9', metadata: expect.objectContaining({ sourceReportId: 'source-1' }) }),
+    );
+  });
+});
+
+describe('updateDraft — replacing a file', () => {
+  const OLD_B = `uploads/${USER_ID}/old-b.csv`;
+  const NEW_B = `uploads/${USER_ID}/new-b.csv`;
+  const before = {
+    columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Reference' } },
+    config: null,
+    name: 'June',
+    sequenceYear: null,
+    sequenceNumber: null,
+    fileAKey: `uploads/${USER_ID}/a.csv`,
+    fileBKey: OLD_B,
+  };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(before);
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.member.findMany.mockResolvedValue([{ userId: USER_ID }]);
+    mockPrisma.report.findMany.mockResolvedValue([]);
+  });
+
+  it("drops only the replaced side's mapping, summary and sample marker", async () => {
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: NEW_B, fileBName: 'new-b.csv' });
+
+    const { data } = mockPrisma.report.updateMany.mock.calls[0][0];
+    expect(data).toEqual({
+      fileBName: 'new-b.csv',
+      fileBKey: NEW_B,
+      columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: undefined },
+      fileBSummary: null,
+      fileBSampleRows: null,
+    });
+  });
+
+  it('deletes the replaced upload when no other report uses it', async () => {
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: NEW_B });
+
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([OLD_B]);
+  });
+
+  it("keeps the replaced upload when another report still uses it (a rerun's inherited file)", async () => {
+    mockPrisma.report.findMany.mockResolvedValue([{ fileAKey: null, fileBKey: OLD_B }]);
+
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: NEW_B });
+
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([]);
+  });
+
+  it('treats a first upload as nothing replaced: no mapping change, no deletion', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...before, fileBKey: null, columnMapping: null });
+
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: NEW_B });
+
+    expect(mockPrisma.report.updateMany.mock.calls[0][0].data).toEqual({ fileBKey: NEW_B });
+    expect(mockDeleteR2Objects).not.toHaveBeenCalled();
   });
 });
 
@@ -1322,16 +1493,15 @@ describe('executeReconciliationRun', () => {
     expect(mockPrisma.report.update).toHaveBeenCalledWith({ where: { id: 'draft-1' }, data: { progress: 60 } });
   });
 
-  it('auto-detects sourceReportId from a completed report sharing the same file pair', async () => {
-    mockPrisma.report.findFirst
-      .mockResolvedValueOnce(draft) // the report lookup
-      .mockResolvedValueOnce({ id: 'prior-report' }); // findSourceReportId's lookup
+  it("never writes sourceReportId, so a rerun's link from creation survives the run", async () => {
+    mockPrisma.report.findFirst.mockResolvedValueOnce({ ...draft, sourceReportId: 'source-report' });
 
     await executeReconciliationRun(jobPayload);
 
-    expect(mockTx.report.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ sourceReportId: 'prior-report' }) }),
-    );
+    const completionData = mockTx.report.update.mock.calls[0][0].data;
+    expect(completionData).not.toHaveProperty('sourceReportId');
+    // No file-pair lookup any more: the draft lookup is the only report read.
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledTimes(1);
   });
 
   it('throws NotFoundError when the report no longer exists', async () => {
@@ -1475,6 +1645,15 @@ describe('getMappingPreview', () => {
 
     const call = mockPrisma.report.update.mock.calls[0][0];
     expect(call.data.columnMapping).toBeUndefined();
+  });
+
+  it('re-suggests only the side whose file was replaced, keeping the other saved side', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, columnMapping: { fileA: { referenceNumber: 'Saved' } } });
+
+    await getMappingPreview(USER_ID, 'draft-1');
+
+    const call = mockPrisma.report.update.mock.calls[0][0];
+    expect(call.data.columnMapping).toEqual({ fileA: { referenceNumber: 'Saved' }, fileB: { referenceNumber: 'Ref' } });
   });
 
   it('throws ValidationError when either file has not been uploaded yet', async () => {
@@ -2551,6 +2730,12 @@ describe('addFavorite / removeFavorite', () => {
 });
 
 describe('report file cleanup in R2', () => {
+  beforeEach(() => {
+    // Both test users are org members; no other report shares these files unless a test says so.
+    mockPrisma.member.findMany.mockResolvedValue([{ userId: USER_ID }, { userId: OTHER_USER_ID }]);
+    mockPrisma.report.findMany.mockResolvedValue([]);
+  });
+
   const owned = {
     id: 'r1',
     userId: USER_ID,
@@ -2612,9 +2797,35 @@ describe('report file cleanup in R2', () => {
     consoleError.mockRestore();
   });
 
+  it('keeps an upload that a rerun of this report still uses', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
+    mockPrisma.report.findFirst.mockResolvedValue(owned);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+    // The rerun points at both of the source's files.
+    mockPrisma.report.findMany.mockResolvedValue([{ fileAKey: owned.fileAKey, fileBKey: owned.fileBKey }]);
+
+    await deleteReport(USER_ID, 'r1');
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
+      where: { id: { notIn: ['r1'] }, OR: [{ fileAKey: { in: [owned.fileAKey, owned.fileBKey] } }, { fileBKey: { in: [owned.fileAKey, owned.fileBKey] } }] },
+      select: { fileAKey: true, fileBKey: true },
+    });
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([]);
+  });
+
+  it("deletes a rerun's inherited uploads once no report uses them, even though they sit under the source owner's prefix", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin' });
+    mockPrisma.report.findFirst.mockResolvedValue({ ...owned, id: 'rerun-1', userId: OTHER_USER_ID });
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
+
+    await deleteReport(USER_ID, 'rerun-1');
+
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([owned.fileAKey, owned.fileBKey]);
+  });
+
   it("bulk: a non-admin's request only removes files of their own reports", async () => {
     mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
-    mockPrisma.report.findMany.mockResolvedValue([
+    mockPrisma.report.findMany.mockResolvedValueOnce([
       owned,
       { ...owned, id: 'r2', userId: OTHER_USER_ID, fileAKey: `uploads/${OTHER_USER_ID}/2-a.csv`, fileBKey: `uploads/${OTHER_USER_ID}/2-b.csv` },
     ]);
@@ -2623,6 +2834,18 @@ describe('report file cleanup in R2', () => {
     await bulkDeleteReports(USER_ID, ['r1', 'r2']);
 
     expect(mockPrisma.reportExport.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining({ reportId: { in: ['r1'] } }) }));
+    expect(mockDeleteR2Objects).toHaveBeenCalledWith([owned.fileAKey, owned.fileBKey]);
+  });
+
+  it('bulk: deleting a source and its rerun together removes their shared files once', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin' });
+    mockPrisma.report.findMany.mockResolvedValueOnce([owned, { ...owned, id: 'rerun-1', userId: OTHER_USER_ID }]);
+    mockPrisma.report.deleteMany.mockResolvedValue({ count: 2 });
+
+    await bulkDeleteReports(USER_ID, ['r1', 'rerun-1']);
+
+    // Survivors exclude both reports being deleted, so neither keeps the other's files alive.
+    expect(mockPrisma.report.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ where: expect.objectContaining({ id: { notIn: ['r1', 'rerun-1'] } }) }));
     expect(mockDeleteR2Objects).toHaveBeenCalledWith([owned.fileAKey, owned.fileBKey]);
   });
 });

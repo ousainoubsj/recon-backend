@@ -313,7 +313,6 @@ async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
         config: dto.config,
         columnMapping: dto.columnMapping ?? undefined,
         rulesConfig: dto.config,
-        sourceReportId: dto.sourceReportId ?? null,
         // Cleared once a run completes — no longer needed after the full
         // files have been re-parsed for the real result.
         fileASampleRows: null,
@@ -323,22 +322,6 @@ async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
       },
     });
   });
-}
-
-async function findSourceReportId(organizationId, fileAName, fileBName, excludeReportId) {
-  if (!fileAName || !fileBName) return null;
-  const match = await prisma.report.findFirst({
-    where: {
-      organizationId,
-      status: 'completed',
-      id: { not: excludeReportId },
-      fileAName: { equals: fileAName, mode: 'insensitive' },
-      fileBName: { equals: fileBName, mode: 'insensitive' },
-    },
-    orderBy: { runDate: 'desc' },
-    select: { id: true },
-  });
-  return match?.id ?? null;
 }
 
 function aggregatePeriod(reports) {
@@ -810,13 +793,16 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
   // unlike a completed report which is shared org-wide.
   if (report.status === 'draft' && report.userId !== userId) throw new NotFoundError();
 
-  // "vs last run" compares against the most recent completed run in the org
-  // overall — not scoped to this report's file pair — matching the "All
-  // Reconciliations" default used elsewhere (getFilePairTrend's 'overall' scope).
+  // "vs last run" compares a rerun against the report it was rerun from. Any other run compares against
+  // the most recent completed run in the org overall, matching the "All Reconciliations" default used
+  // elsewhere (getFilePairTrend's 'overall' scope).
   let priorRun = null;
   if (report.status === 'completed') {
+    const priorWhere = report.sourceReportId
+      ? { id: report.sourceReportId, organizationId, status: 'completed' }
+      : { organizationId, status: 'completed', id: { not: reportId }, runDate: { lt: report.runDate } };
     const prior = await prisma.report.findFirst({
-      where: { organizationId, status: 'completed', id: { not: reportId }, runDate: { lt: report.runDate } },
+      where: priorWhere,
       orderBy: { runDate: 'desc' },
       select: { matchedCount: true, totalRows: true, totalBreakValue: true },
     });
@@ -833,7 +819,20 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
   const resolutionSummary =
     report.status === 'completed' ? await getResolutionSummary(reportId) : { resolvedCount: 0, unresolvedExceptionCount: 0 };
 
-  return { ...withDraftProgress(report), priorRun, runDurationMs, resolutionSummary };
+  const rerunOf = report.status === 'completed' ? await getRerunOf(report) : null;
+
+  return { ...withDraftProgress(report), priorRun, runDurationMs, resolutionSummary, rerunOf };
+}
+
+// null for a first run, or once the source is deleted (the FK is ON DELETE SET NULL).
+async function getRerunOf(report) {
+  if (!report.sourceReportId) return null;
+  const source = await prisma.report.findFirst({
+    where: { id: report.sourceReportId, organizationId: report.organizationId },
+    select: { id: true, name: true, sequenceYear: true, sequenceNumber: true },
+  });
+  if (!source) return null;
+  return { id: source.id, name: source.name, reference: formatReportReference(source.sequenceYear, source.sequenceNumber) };
 }
 
 // Shown beside the engine's counts, never folded into them: matchedCount and the match rate stay as computed.
@@ -1276,13 +1275,34 @@ function assertOwnUploadKey(userId, key) {
 export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {}) {
   assertOwnUploadKey(userId, dto.fileAKey);
   assertOwnUploadKey(userId, dto.fileBKey);
-  const needsBefore = dto.columnMapping !== undefined || dto.config !== undefined;
+  const setsFileKey = dto.fileAKey !== undefined || dto.fileBKey !== undefined;
+  const needsBefore = dto.columnMapping !== undefined || dto.config !== undefined || setsFileKey;
   const before = needsBefore
     ? await prisma.report.findFirst({
         where: { id: reportId, userId },
-        select: { columnMapping: true, config: true, name: true, sequenceYear: true, sequenceNumber: true },
+        select: {
+          columnMapping: true,
+          config: true,
+          name: true,
+          sequenceYear: true,
+          sequenceNumber: true,
+          fileAKey: true,
+          fileBKey: true,
+        },
       })
     : null;
+
+  // A replaced file's columns may not match the old mapping: that side is dropped so the next mapping
+  // preview re-suggests it, and its summary and sample marker go with it. A first upload replaces nothing.
+  const replacedKeyA = dto.fileAKey !== undefined && before?.fileAKey && before.fileAKey !== dto.fileAKey ? before.fileAKey : null;
+  const replacedKeyB = dto.fileBKey !== undefined && before?.fileBKey && before.fileBKey !== dto.fileBKey ? before.fileBKey : null;
+  const replacementData = {};
+  if (replacedKeyA || replacedKeyB) {
+    const { fileA, fileB } = before.columnMapping ?? {};
+    if (dto.columnMapping === undefined) replacementData.columnMapping = { fileA: replacedKeyA ? undefined : fileA, fileB: replacedKeyB ? undefined : fileB };
+    if (replacedKeyA) Object.assign(replacementData, { fileASummary: null, fileASampleRows: null });
+    if (replacedKeyB) Object.assign(replacementData, { fileBSummary: null, fileBSampleRows: null });
+  }
 
   const { count } = await prisma.report.updateMany({
     where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
@@ -1295,9 +1315,16 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
       ...(dto.fileAKey !== undefined ? { fileAKey: dto.fileAKey } : {}),
       ...(dto.fileBKey !== undefined ? { fileBKey: dto.fileBKey } : {}),
       ...(dto.columnMapping !== undefined ? { columnMapping: dto.columnMapping } : {}),
+      ...replacementData,
     },
   });
   if (count === 0) throw new NotFoundError();
+
+  if (replacedKeyA || replacedKeyB) {
+    // The old upload is deleted only if nothing else points at it: a rerun's inherited file stays with its source.
+    const { organizationId } = await getUserMembership(userId);
+    await deleteReportFiles(await reportFileKeys([{ id: reportId, fileAKey: replacedKeyA, fileBKey: replacedKeyB }], organizationId));
+  }
 
   if (dto.columnMapping !== undefined) {
     const changes = diffColumnMapping(before?.columnMapping, dto.columnMapping);
@@ -1393,6 +1420,67 @@ export async function completeDraft(userId, reportId, dto, { ip, userAgent } = {
 // every draft lookup on a large file pair take several seconds for nothing.
 // getRulePreview queries directly instead of going through this helper,
 // since it's the one place that actually needs the cached sample.
+// A completed report becomes a new draft with the same files, mapping and rules; the source is never modified.
+// The draft belongs to the caller, so any admin or analyst can rerun a report someone else ran.
+export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}) {
+  const { organizationId } = await getUserMembership(userId);
+  const source = await prisma.report.findFirst({
+    where: { id: sourceReportId, organizationId, status: 'completed' },
+    select: {
+      id: true,
+      name: true,
+      tag: true,
+      fileAKey: true,
+      fileBKey: true,
+      fileAName: true,
+      fileBName: true,
+      fileASummary: true,
+      fileBSummary: true,
+      columnMapping: true,
+      rulesConfig: true,
+      config: true,
+      sequenceYear: true,
+      sequenceNumber: true,
+    },
+  });
+  if (!source) throw new NotFoundError();
+  // Reports saved through the legacy client-computed endpoint never had files in R2.
+  if (!source.fileAKey || !source.fileBKey) throw new ValidationError('This reconciliation has no stored files to rerun');
+
+  const draft = await prisma.report.create({
+    data: {
+      userId,
+      organizationId,
+      status: 'draft',
+      progress: 0,
+      name: source.name,
+      tag: source.tag,
+      fileAKey: source.fileAKey,
+      fileBKey: source.fileBKey,
+      fileAName: source.fileAName,
+      fileBName: source.fileBName,
+      fileASummary: source.fileASummary ?? undefined,
+      fileBSummary: source.fileBSummary ?? undefined,
+      columnMapping: source.columnMapping ?? undefined,
+      config: source.rulesConfig ?? source.config ?? undefined,
+      sourceReportId: source.id,
+    },
+    select: { id: true },
+  });
+
+  await logAuditSafely(userId, {
+    action: 'report.rerun',
+    entityType: 'report',
+    entityId: draft.id,
+    status: 'info',
+    ip,
+    userAgent,
+    metadata: withSubject({ sourceReportId: source.id, filePair: `${source.fileAName ?? 'File A'} vs ${source.fileBName ?? 'File B'}` }, reportSubject(source)),
+  });
+
+  return { id: draft.id };
+}
+
 function findDraftOrFailedRun(userId, reportId) {
   return prisma.report.findFirst({
     where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
@@ -1546,8 +1634,6 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
     // enqueueReconciliationRun — not re-fetched here. It never changes for
     // an in-flight run, and getUserMembership is a real DB round-trip; this
     // avoids paying it twice per run for the same answer.
-    const sourceReportId = await findSourceReportId(organizationId, draft.fileAName, draft.fileBName, reportId);
-
     const report = await persistCompletedRun(
       reportId,
       {
@@ -1559,7 +1645,6 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
         rows,
         config,
         columnMapping: dto.columnMapping,
-        sourceReportId,
       },
       {
         onCopyProgress: (written, total) => {
@@ -1640,8 +1725,10 @@ export async function getMappingPreview(userId, reportId) {
     fileASummary,
     fileBSummary,
   };
-  if (!draft.columnMapping) {
-    data.columnMapping = { fileA: mappingA, fileB: mappingB };
+  // Per side: a replaced file clears only its own side (updateDraft), and the other side's saved mapping stays.
+  const savedMapping = draft.columnMapping ?? {};
+  if (!savedMapping.fileA || !savedMapping.fileB) {
+    data.columnMapping = { fileA: savedMapping.fileA ?? mappingA, fileB: savedMapping.fileB ?? mappingB };
   }
   await Promise.all([
     prisma.report.update({ where: { id: reportId }, data }),
@@ -1713,19 +1800,36 @@ export async function getRulePreview(userId, reportId, dto) {
 }
 
 /**
- * R2 objects a deleted report leaves behind: its two uploads and its stored exports. Only keys under
- * the report's own prefixes are returned, so a stored key pointing anywhere else is never deleted.
+ * R2 objects the deleted reports leave behind: their uploads and stored exports. An upload is returned only
+ * if it sits under an org member's prefix and no surviving report still points at it (a rerun shares its
+ * source's files), so a stored key pointing anywhere else is never deleted.
  */
 async function reportFileKeys(reports, organizationId) {
   if (reports.length === 0) return [];
+  const reportIds = reports.map((r) => r.id);
   const exports = await prisma.reportExport.findMany({
-    where: { reportId: { in: reports.map((r) => r.id) }, organizationId, fileKey: { not: null } },
+    where: { reportId: { in: reportIds }, organizationId, fileKey: { not: null } },
     select: { fileKey: true },
   });
-  const uploadKeys = reports.flatMap((r) =>
-    [r.fileAKey, r.fileBKey].filter((key) => key?.startsWith(`uploads/${r.userId}/`)),
-  );
   const exportKeys = exports.map((e) => e.fileKey).filter((key) => key.startsWith(`exports/${organizationId}/`));
+
+  // A rerun reuses its source's uploads, which sit under the source owner's prefix, not the rerun owner's.
+  const candidateUploadKeys = [...new Set(reports.flatMap((r) => [r.fileAKey, r.fileBKey]).filter((key) => key?.startsWith('uploads/')))];
+  if (candidateUploadKeys.length === 0) return exportKeys;
+
+  // Only an org member's uploads are ours to delete; a stray key pointing elsewhere never is.
+  const uploaderIds = [...new Set(candidateUploadKeys.map((key) => key.split('/')[1]))];
+  const members = await prisma.member.findMany({ where: { organizationId, userId: { in: uploaderIds } }, select: { userId: true } });
+  const memberIds = new Set(members.map((m) => m.userId));
+
+  // Not org-scoped on purpose: any surviving report anywhere that points at a key keeps the file alive.
+  const survivors = await prisma.report.findMany({
+    where: { id: { notIn: reportIds }, OR: [{ fileAKey: { in: candidateUploadKeys } }, { fileBKey: { in: candidateUploadKeys } }] },
+    select: { fileAKey: true, fileBKey: true },
+  });
+  const stillUsedKeys = new Set(survivors.flatMap((r) => [r.fileAKey, r.fileBKey]));
+
+  const uploadKeys = candidateUploadKeys.filter((key) => memberIds.has(key.split('/')[1]) && !stillUsedKeys.has(key));
   return [...uploadKeys, ...exportKeys];
 }
 

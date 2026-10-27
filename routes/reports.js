@@ -282,6 +282,15 @@ const runReconciliationSchema = z.object({
 // The actual matching engine: re-downloads+re-parses the full files (not
 // the cached sample), computes real results, and persists them exactly like
 // completeDraft does.
+// Creates a new draft from a completed report's files, mapping and rules; the source is left as it is.
+reportsRouter.post(
+  '/:id/rerun',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validateParams(z.object({ id: z.string().uuid() })),
+  catchAsync(reportsController.rerunReport),
+);
+
 reportsRouter.post(
   '/:id/run',
   authenticate,

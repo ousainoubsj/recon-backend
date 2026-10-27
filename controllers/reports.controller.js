@@ -115,6 +115,11 @@ export const getRulePreview = async (req, res) => {
   res.json(preview);
 };
 
+export const rerunReport = async (req, res) => {
+  const draft = await reportService.rerunReport(req.session.user.id, req.params.id, auditContext(req));
+  res.status(201).json(draft);
+};
+
 export const runReconciliation = async (req, res) => {
   const id = await reportService.enqueueReconciliationRun(req.session.user.id, req.params.id, req.body, auditContext(req));
   res.status(202).json({ id, status: 'processing' });

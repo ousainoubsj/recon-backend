@@ -43,6 +43,7 @@ const mockReportService = {
   getTransaction: jest.fn(),
   markRowReviewed: jest.fn(),
   resolveRows: jest.fn(),
+  rerunReport: jest.fn(),
   unresolve: jest.fn(),
   getBreakBreakdown: jest.fn(),
   getFilePairTrend: jest.fn(),
@@ -509,6 +510,37 @@ describe('POST /api/reports/:id/resolutions', () => {
     const res = await request(app).post(url).send({ kind: 'explained', rowIds: [ROW_A], note: 'n' });
 
     expect(res.status).toBe(409);
+  });
+});
+
+describe('POST /api/reports/:id/rerun', () => {
+  const REPORT_ID = '123e4567-e89b-12d3-a456-426614174000';
+
+  it('creates a rerun draft for an analyst and returns 201 with its id', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
+    mockReportService.rerunReport.mockResolvedValue({ id: 'draft-9' });
+
+    const res = await request(app).post(`/api/reports/${REPORT_ID}/rerun`);
+
+    expect(res.status).toBe(201);
+    expect(res.body).toEqual({ id: 'draft-9' });
+    expect(mockReportService.rerunReport).toHaveBeenCalledWith(USER_ID, REPORT_ID, { ip: expect.any(String), userAgent: null });
+  });
+
+  it('rejects a viewer with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).post(`/api/reports/${REPORT_ID}/rerun`);
+
+    expect(res.status).toBe(403);
+    expect(mockReportService.rerunReport).not.toHaveBeenCalled();
+  });
+
+  it('404s on a malformed report id before reaching the service', async () => {
+    const res = await request(app).post('/api/reports/not-a-uuid/rerun');
+
+    expect(res.status).toBe(404);
+    expect(mockReportService.rerunReport).not.toHaveBeenCalled();
   });
 });
 

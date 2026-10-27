@@ -167,9 +167,9 @@ model Report {
   // match engine's row output at completion time (rows themselves are
   // paginated/queried per-status, not cheaply summable per stat tile).
   valueBreakdown  Json?    @map("value_breakdown")
-  // Auto-detected at /run time: the most recent completed report in the org
-  // with the same case-insensitive file-pair name, for "vs prior run" deltas
-  // and the match-rate trend. Not a user-facing "compare against" picker.
+  // The completed report this one was rerun from (POST /reports/:id/rerun). Null for a first run.
+  // Results' "vs last run" compares against it. Before 2026-10-27 it was auto-set from matching
+  // file names and never read; that data was cleared and the auto-detection removed.
   sourceReportId  String?  @map("source_report_id") @db.Uuid
   sourceReport    Report?  @relation("ReportRerun", fields: [sourceReportId], references: [id], onDelete: SetNull)
   rerunsOf        Report[] @relation("ReportRerun")
