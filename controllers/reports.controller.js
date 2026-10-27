@@ -4,6 +4,8 @@ import * as reportService from '../services/reportService.js';
 import { sendReportEmail, sendComparisonReportEmail } from '../services/emailService.js';
 import { filterEmailNotificationOptedIn } from '../services/settingsService.js';
 import { logAuditSafely, logResultsViewedOnce } from '../services/auditLogService.js';
+import { reportSubject } from '../utils/reportReference.js';
+import { auditContext, withSubject } from '../utils/audit.js';
 import { resolveSections, getTemplateName } from '../services/reportTemplateService.js';
 import { getOrganizationBrand } from '../services/organizationService.js';
 import {
@@ -79,7 +81,7 @@ export const getReportsTrend = async (req, res) => {
 };
 
 export const saveReport = async (req, res) => {
-  const id = await reportService.saveReport(req.session.user.id, req.body, { ip: req.ip });
+  const id = await reportService.saveReport(req.session.user.id, req.body, auditContext(req));
   res.status(201).json({ id });
 };
 
@@ -89,7 +91,7 @@ export const saveDraft = async (req, res) => {
 };
 
 export const updateDraft = async (req, res) => {
-  const draft = await reportService.updateDraft(req.session.user.id, req.params.id, req.body, { ip: req.ip });
+  const draft = await reportService.updateDraft(req.session.user.id, req.params.id, req.body, auditContext(req));
   res.json(draft);
 };
 
@@ -99,7 +101,7 @@ export const listDrafts = async (req, res) => {
 };
 
 export const completeDraft = async (req, res) => {
-  const id = await reportService.completeDraft(req.session.user.id, req.params.id, req.body, { ip: req.ip });
+  const id = await reportService.completeDraft(req.session.user.id, req.params.id, req.body, auditContext(req));
   res.status(200).json({ id });
 };
 
@@ -114,7 +116,7 @@ export const getRulePreview = async (req, res) => {
 };
 
 export const runReconciliation = async (req, res) => {
-  const id = await reportService.enqueueReconciliationRun(req.session.user.id, req.params.id, req.body, { ip: req.ip });
+  const id = await reportService.enqueueReconciliationRun(req.session.user.id, req.params.id, req.body, auditContext(req));
   res.status(202).json({ id, status: 'processing' });
 };
 
@@ -133,8 +135,8 @@ export const getReport = async (req, res) => {
   if (report.status === 'completed' && !preview) {
     await logResultsViewedOnce(req.session.user.id, report.id, {
       status: 'info',
-      ip: req.ip,
-      metadata: { reportName: report.name ?? 'Untitled Reconciliation' },
+      ...auditContext(req),
+      metadata: withSubject({}, reportSubject(report)),
     });
   }
 };
@@ -167,7 +169,7 @@ export const markRowReviewed = async (req, res) => {
     req.params.id,
     req.params.rowId,
     req.body.reviewed ?? true,
-    { ip: req.ip },
+    auditContext(req),
   );
   res.json(row);
 };
@@ -185,17 +187,17 @@ export const getFilePairTrend = async (req, res) => {
 };
 
 export const deleteReport = async (req, res) => {
-  await reportService.deleteReport(req.session.user.id, req.params.id, { ip: req.ip });
+  await reportService.deleteReport(req.session.user.id, req.params.id, auditContext(req));
   res.status(204).end();
 };
 
 export const updateReportTag = async (req, res) => {
-  const report = await reportService.updateReportTag(req.session.user.id, req.params.id, req.body.tag ?? null);
+  const report = await reportService.updateReportTag(req.session.user.id, req.params.id, req.body.tag ?? null, auditContext(req));
   res.json(report);
 };
 
 export const updateReportName = async (req, res) => {
-  const report = await reportService.updateReportName(req.session.user.id, req.params.id, req.body.name);
+  const report = await reportService.updateReportName(req.session.user.id, req.params.id, req.body.name, auditContext(req));
   res.json(report);
 };
 
@@ -210,7 +212,7 @@ export const removeFavorite = async (req, res) => {
 };
 
 export const bulkDeleteReports = async (req, res) => {
-  const result = await reportService.bulkDeleteReports(req.session.user.id, req.body.ids, { ip: req.ip });
+  const result = await reportService.bulkDeleteReports(req.session.user.id, req.body.ids, auditContext(req));
   res.json(result);
 };
 
@@ -267,11 +269,11 @@ export const bulkExportReports = async (req, res) => {
     action: 'report.bulk_export',
     entityType: 'report',
     status: 'info',
-    ip: req.ip,
+    ...auditContext(req),
     metadata: {
       references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
       format,
-      templateId: templateId ?? null,
+      template: reportMeta.templateName,
     },
   });
 
@@ -334,13 +336,14 @@ export const exportReport = async (req, res) => {
   // preview doesn't spawn a phantom row in RecentExports every time.
   if (preview) return;
 
+  const templateName = await getTemplateName(report.organizationId, templateId);
   await logAuditSafely(req.session.user.id, {
     action: 'report.export',
     entityType: 'report',
     entityId: report.id,
     status: 'info',
-    ip: req.ip,
-    metadata: { format, templateId: templateId ?? null },
+    ...auditContext(req),
+    metadata: withSubject({ format, template: templateName }, reportSubject(report)),
   });
 
   // Best-effort, like recordExport right below — persisting lets a later
@@ -399,7 +402,7 @@ export const comparisonExport = async (req, res) => {
         action: 'report.comparison_export',
         entityType: 'report',
         status: 'failed',
-        ip: req.ip,
+        ...auditContext(req),
         metadata: {
           references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
           format,
@@ -424,7 +427,7 @@ export const comparisonExport = async (req, res) => {
     action: 'report.comparison_export',
     entityType: 'report',
     status: 'info',
-    ip: req.ip,
+    ...auditContext(req),
     metadata: {
       references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
       format,
@@ -467,7 +470,7 @@ export const listExports = async (req, res) => {
 };
 
 export const deleteExport = async (req, res) => {
-  await deleteReportExport(req.session.user.id, req.params.exportId);
+  await deleteReportExport(req.session.user.id, req.params.exportId, auditContext(req));
   res.status(204).send();
 };
 
@@ -486,8 +489,8 @@ export const emailReport = async (req, res) => {
     entityType: 'report',
     entityId: report.id,
     status: 'info',
-    ip: req.ip,
-    metadata: { to: req.body.to },
+    ...auditContext(req),
+    metadata: withSubject({ to: req.body.to, delivered: recipients.length }, reportSubject(report)),
   });
 };
 
@@ -508,10 +511,11 @@ export const comparisonEmailReport = async (req, res) => {
     action: 'report.comparison_email',
     entityType: 'report',
     status: 'info',
-    ip: req.ip,
+    ...auditContext(req),
     metadata: {
       references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
       to,
+      delivered: recipients.length,
     },
   });
 };

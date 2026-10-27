@@ -25,6 +25,8 @@ const mockTeamService = {
   listMembers: jest.fn(),
   getTeamStats: jest.fn(),
   updateMember: jest.fn(),
+  updateMemberRole: jest.fn(),
+  removeMember: jest.fn(),
   getDepartments: jest.fn(),
   addDepartment: jest.fn(),
 };
@@ -120,7 +122,7 @@ describe('PATCH /api/team/members/:id', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 'm1', status: 'inactive' });
-    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { status: 'inactive' }, { ip: expect.anything() });
+    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { status: 'inactive' }, { ip: expect.anything(), userAgent: null });
   });
 
   it('accepts department alone', async () => {
@@ -129,7 +131,7 @@ describe('PATCH /api/team/members/:id', () => {
     const res = await request(app).patch('/api/team/members/m1').send({ department: 'Finance' });
 
     expect(res.status).toBe(200);
-    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { department: 'Finance' }, { ip: expect.anything() });
+    expect(mockTeamService.updateMember).toHaveBeenCalledWith(USER_ID, 'm1', { department: 'Finance' }, { ip: expect.anything(), userAgent: null });
   });
 
   it('rejects an invalid status value with a 422', async () => {
@@ -203,7 +205,7 @@ describe('POST /api/team/departments', () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toEqual(['Finance', 'Engineering']);
-    expect(mockTeamService.addDepartment).toHaveBeenCalledWith(USER_ID, 'Engineering', { ip: expect.anything() });
+    expect(mockTeamService.addDepartment).toHaveBeenCalledWith(USER_ID, 'Engineering', { ip: expect.anything(), userAgent: null });
   });
 
   it('rejects an empty name with a 422', async () => {
@@ -228,5 +230,52 @@ describe('POST /api/team/departments', () => {
 
     expect(res.status).toBe(403);
     expect(mockTeamService.addDepartment).not.toHaveBeenCalled();
+  });
+});
+
+describe('PATCH /api/team/members/:id/role', () => {
+  it('changes the role for an admin, passing the request context for the audit row', async () => {
+    mockTeamService.updateMemberRole.mockResolvedValue({ id: 'm2', role: 'viewer' });
+
+    const res = await request(app).patch('/api/team/members/m2/role').set('User-Agent', 'UA').send({ role: 'viewer' });
+
+    expect(res.status).toBe(200);
+    expect(mockTeamService.updateMemberRole).toHaveBeenCalledWith(USER_ID, 'm2', 'viewer', { ip: expect.any(String), userAgent: 'UA' });
+  });
+
+  it('rejects an unknown role with a 422', async () => {
+    const res = await request(app).patch('/api/team/members/m2/role').send({ role: 'owner' });
+
+    expect(res.status).toBe(422);
+    expect(mockTeamService.updateMemberRole).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-admin with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
+
+    const res = await request(app).patch('/api/team/members/m2/role').send({ role: 'viewer' });
+
+    expect(res.status).toBe(403);
+    expect(mockTeamService.updateMemberRole).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/team/members/:id', () => {
+  it('removes the member for an admin and returns 204', async () => {
+    mockTeamService.removeMember.mockResolvedValue(undefined);
+
+    const res = await request(app).delete('/api/team/members/m3');
+
+    expect(res.status).toBe(204);
+    expect(mockTeamService.removeMember).toHaveBeenCalledWith(USER_ID, 'm3', { ip: expect.any(String), userAgent: null });
+  });
+
+  it('rejects a non-admin with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    const res = await request(app).delete('/api/team/members/m3');
+
+    expect(res.status).toBe(403);
+    expect(mockTeamService.removeMember).not.toHaveBeenCalled();
   });
 });

@@ -48,7 +48,7 @@ describe('GET /api/audit-logs', () => {
     expect(res.status).toBe(200);
     expect(res.body).toEqual([{ id: 'log-1' }]);
     expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, {
-      limit: undefined,
+      limit: 50,
       offset: undefined,
       q: undefined,
       action: undefined,
@@ -58,6 +58,14 @@ describe('GET /api/audit-logs', () => {
       dateTo: undefined,
       status: undefined,
     });
+  });
+
+  it('caps ?limit= at 200', async () => {
+    mockAuditLogService.listAuditLogs.mockResolvedValue([]);
+
+    await request(app).get('/api/audit-logs?limit=5000');
+
+    expect(mockAuditLogService.listAuditLogs).toHaveBeenCalledWith(USER_ID, expect.objectContaining({ limit: 200 }));
   });
 
   it('passes a valid ?limit= through', async () => {
@@ -161,52 +169,10 @@ describe('GET /api/audit-logs/top-users', () => {
 });
 
 describe('POST /api/audit-logs', () => {
-  const body = { action: 'report.delete', entityType: 'report', entityId: '123e4567-e89b-12d3-a456-426614174000' };
+  it('no longer exists — audit entries are only written server-side', async () => {
+    const res = await request(app).post('/api/audit-logs').send({ action: 'report.delete' });
 
-  it('creates an entry for an admin', async () => {
-    mockAuditLogService.createAuditLog.mockResolvedValue({ id: 'log-1' });
-
-    const res = await request(app).post('/api/audit-logs').send(body);
-
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: 'log-1' });
-    expect(mockAuditLogService.createAuditLog).toHaveBeenCalledWith(
-      USER_ID,
-      expect.objectContaining({ action: 'report.delete' }),
-    );
-  });
-
-  it('creates an entry for an analyst (create is not admin-only)', async () => {
-    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
-    mockAuditLogService.createAuditLog.mockResolvedValue({ id: 'log-1' });
-
-    const res = await request(app).post('/api/audit-logs').send(body);
-
-    expect(res.status).toBe(201);
-  });
-
-  it('rejects a viewer with a 403', async () => {
-    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
-
-    const res = await request(app).post('/api/audit-logs').send(body);
-
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockAuditLogService.createAuditLog).not.toHaveBeenCalled();
-  });
-
-  it('rejects a body missing the required action field with a 422', async () => {
-    const res = await request(app).post('/api/audit-logs').send({ entityType: 'report' });
-
-    expect(res.status).toBe(422);
-    expect(res.body.type).toBe('https://recon.app/errors/validation-error');
-    expect(mockAuditLogService.createAuditLog).not.toHaveBeenCalled();
-  });
-
-  it('rejects a non-uuid entityId with a 422', async () => {
-    const res = await request(app)
-      .post('/api/audit-logs')
-      .send({ action: 'report.delete', entityId: 'not-a-uuid' });
-
-    expect(res.status).toBe(422);
   });
 });

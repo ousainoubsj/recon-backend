@@ -45,7 +45,7 @@ export async function getOrganizationInfo(userId) {
   });
 }
 
-export async function updateOrganizationInfo(userId, dto, { ip } = {}) {
+export async function updateOrganizationInfo(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const provided = pickProvided(dto, ORG_INFO_FIELDS);
 
@@ -69,6 +69,7 @@ export async function updateOrganizationInfo(userId, dto, { ip } = {}) {
       entityType: 'organization',
       entityId: organizationId,
       ip,
+      userAgent,
       metadata: { changes },
     });
   }
@@ -84,7 +85,7 @@ export async function getReconciliationDefaults(userId) {
   });
 }
 
-export async function updateReconciliationDefaults(userId, dto, { ip } = {}) {
+export async function updateReconciliationDefaults(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const provided = pickProvided(dto, RECONCILIATION_DEFAULT_FIELDS);
 
@@ -118,6 +119,7 @@ export async function updateReconciliationDefaults(userId, dto, { ip } = {}) {
       entityType: 'organization',
       entityId: organizationId,
       ip,
+      userAgent,
       metadata: { changes },
     });
   }
@@ -139,7 +141,7 @@ export async function getNotificationPreferences(userId) {
   return { emailNotificationsEnabled: user.emailNotificationsEnabled, weeklyDigestEnabled: org.weeklyDigestEnabled };
 }
 
-export async function updateNotificationPreferences(userId, dto, { ip } = {}) {
+export async function updateNotificationPreferences(userId, dto, { ip, userAgent } = {}) {
   const userData = pickProvided(dto, ['emailNotificationsEnabled']);
   const orgData = pickProvided(dto, ['weeklyDigestEnabled']);
   const { organizationId, role } = await getUserMembership(userId);
@@ -166,6 +168,7 @@ export async function updateNotificationPreferences(userId, dto, { ip } = {}) {
       entityId: userId,
       status: 'info',
       ip,
+      userAgent,
       metadata: { changes: userChanges },
     });
   }
@@ -178,6 +181,7 @@ export async function updateNotificationPreferences(userId, dto, { ip } = {}) {
       entityId: organizationId,
       status: 'info',
       ip,
+      userAgent,
       metadata: { changes: orgChanges },
     });
   }

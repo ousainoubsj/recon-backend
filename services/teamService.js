@@ -1,7 +1,8 @@
 import { prisma } from '../config/prisma.config.js';
 import { ConflictError, NotFoundError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
-import { logAuditSafely } from './auditLogService.js';
+import { createAuditLog, logAuditSafely } from './auditLogService.js';
+import { withSubject } from '../utils/audit.js';
 import { createNotification } from './notificationService.js';
 
 const MEMBER_STATUSES = ['active', 'inactive'];
@@ -68,36 +69,69 @@ export async function getTeamStats(userId) {
   };
 }
 
+// Serializes every role change, removal and deactivation in one org, so two admins demoting each other at once
+// can't both pass the last-admin check and leave the org without one.
+async function lockOrganization(tx, organizationId) {
+  await tx.$queryRaw`SELECT id FROM "organization" WHERE id = ${organizationId} FOR UPDATE`;
+}
+
+async function assertNotLastActiveAdmin(tx, organizationId, member) {
+  if (member.role !== 'admin' || member.status !== 'active') return;
+  const activeAdmins = await tx.member.count({ where: { organizationId, role: 'admin', status: 'active' } });
+  if (activeAdmins <= 1) throw new ConflictError('The organization needs at least one active administrator');
+}
+
 // Deactivating someone is a sensitive action (same reasoning as §5's
 // role_update/remove) — audited as a warning, not a plain success, and the
 // affected member is notified, mirroring the existing role_changed pattern.
-export async function updateMember(userId, memberId, { department, status }, { ip } = {}) {
+export async function updateMember(userId, memberId, { department, status }, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
 
-  const { count } = await prisma.member.updateMany({
-    where: { id: memberId, organizationId },
-    data: {
-      ...(department !== undefined ? { department } : {}),
-      ...(status !== undefined ? { status } : {}),
-    },
-  });
-  if (count === 0) throw new NotFoundError();
+  // Deactivation revokes access, so its audit row commits or rolls back with the change itself.
+  const member = await prisma.$transaction(async (tx) => {
+    if (status === 'inactive') await lockOrganization(tx, organizationId);
+    const before = await tx.member.findFirst({
+      where: { id: memberId, organizationId },
+      select: { department: true, status: true, role: true },
+    });
+    if (!before) throw new NotFoundError();
+    if (status === 'inactive') await assertNotLastActiveAdmin(tx, organizationId, before);
 
-  const member = await prisma.member.findFirst({
-    where: { id: memberId, organizationId },
-    include: { user: { select: { name: true, email: true, image: true } } },
+    await tx.member.updateMany({
+      where: { id: memberId, organizationId },
+      data: {
+        ...(department !== undefined ? { department } : {}),
+        ...(status !== undefined ? { status } : {}),
+      },
+    });
+
+    const updated = await tx.member.findFirst({
+      where: { id: memberId, organizationId },
+      include: { user: { select: { name: true, email: true, image: true } } },
+    });
+
+    const changes = {};
+    if (department !== undefined && department !== before.department) changes.department = { from: before.department, to: department };
+    if (status !== undefined && status !== before.status) changes.status = { from: before.status, to: status };
+
+    await createAuditLog(
+      userId,
+      {
+        action: 'member.update',
+        entityType: 'member',
+        entityId: memberId,
+        status: status === 'inactive' ? 'warning' : 'success',
+        ip,
+        userAgent,
+        metadata: withSubject({ changes }, { name: updated.user.name, code: updated.user.email }),
+      },
+      tx,
+    );
+
+    return updated;
   });
 
   const isDeactivating = status === 'inactive' && member.userId !== userId;
-  await logAuditSafely(userId, {
-    action: 'member.update',
-    entityType: 'member',
-    entityId: memberId,
-    status: status === 'inactive' ? 'warning' : 'success',
-    ip,
-    metadata: { department, status },
-  });
-
   if (isDeactivating) {
     await createNotification(member.userId, {
       type: 'member.deactivated',
@@ -110,13 +144,94 @@ export async function updateMember(userId, memberId, { department, status }, { i
   return member;
 }
 
+// Owned here rather than by Better Auth's /organization/update-member-role (blocked in auth.js) so the
+// change, its previous value and its audit row commit in one transaction.
+export async function updateMemberRole(userId, memberId, role, { ip, userAgent } = {}) {
+  const { organizationId } = await getUserMembership(userId);
+
+  const result = await prisma.$transaction(async (tx) => {
+    await lockOrganization(tx, organizationId);
+    const member = await tx.member.findFirst({
+      where: { id: memberId, organizationId },
+      include: { user: { select: { name: true, email: true, image: true } } },
+    });
+    if (!member) throw new NotFoundError();
+    if (member.role === role) return { member, changed: false };
+
+    if (role !== 'admin') await assertNotLastActiveAdmin(tx, organizationId, member);
+
+    await tx.member.updateMany({ where: { id: memberId, organizationId }, data: { role } });
+    await createAuditLog(
+      userId,
+      {
+        action: 'organization.member.role_update',
+        entityType: 'member',
+        entityId: memberId,
+        status: 'warning',
+        ip,
+        userAgent,
+        metadata: withSubject({ changes: { role: { from: member.role, to: role } } }, { name: member.user.name, code: member.user.email }),
+      },
+      tx,
+    );
+    return { member: { ...member, role }, changed: true };
+  });
+
+  if (result.changed && result.member.userId !== userId) {
+    await createNotification(result.member.userId, {
+      type: 'member.role_changed',
+      message: `Your role was changed to ${role}.`,
+      entityType: 'member',
+      entityId: memberId,
+    });
+  }
+
+  return result.member;
+}
+
+// Same reasoning as updateMemberRole: replaces Better Auth's /organization/remove-member.
+export async function removeMember(userId, memberId, { ip, userAgent } = {}) {
+  const { organizationId } = await getUserMembership(userId);
+
+  await prisma.$transaction(async (tx) => {
+    await lockOrganization(tx, organizationId);
+    const member = await tx.member.findFirst({
+      where: { id: memberId, organizationId },
+      include: { user: { select: { name: true, email: true } } },
+    });
+    if (!member) throw new NotFoundError();
+
+    await assertNotLastActiveAdmin(tx, organizationId, member);
+
+    await tx.member.deleteMany({ where: { id: memberId, organizationId } });
+    // Better Auth only reset the remover's own session; any session of the removed user still pointing here is stale.
+    await tx.session.updateMany({
+      where: { userId: member.userId, activeOrganizationId: organizationId },
+      data: { activeOrganizationId: null },
+    });
+    await createAuditLog(
+      userId,
+      {
+        action: 'organization.member.remove',
+        entityType: 'member',
+        entityId: memberId,
+        status: 'warning',
+        ip,
+        userAgent,
+        metadata: withSubject({ role: member.role }, { name: member.user.name, code: member.user.email }),
+      },
+      tx,
+    );
+  });
+}
+
 export async function getDepartments(userId) {
   const { organizationId } = await getUserMembership(userId);
   const org = await prisma.organization.findFirst({ where: { id: organizationId }, select: { departments: true } });
   return org.departments;
 }
 
-export async function addDepartment(userId, name, { ip } = {}) {
+export async function addDepartment(userId, name, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const trimmed = name.trim();
 
@@ -133,6 +248,7 @@ export async function addDepartment(userId, name, { ip } = {}) {
     entityType: 'organization',
     entityId: organizationId,
     ip,
+    userAgent,
     metadata: { department: trimmed },
   });
 

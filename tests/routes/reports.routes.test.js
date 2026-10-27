@@ -235,7 +235,7 @@ describe('POST /api/reports/bulk-delete', () => {
     expect(mockReportService.bulkDeleteReports).toHaveBeenCalledWith(
       USER_ID,
       ['123e4567-e89b-12d3-a456-426614174000', '223e4567-e89b-12d3-a456-426614174001'],
-      { ip: expect.any(String) },
+      { ip: expect.any(String), userAgent: null },
     );
   });
 
@@ -272,7 +272,7 @@ describe('PATCH /api/reports/:id/tag', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 'r1', tag: 'bank' });
-    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', 'bank');
+    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', 'bank', { ip: expect.any(String), userAgent: null });
   });
 
   it('accepts null to clear a tag', async () => {
@@ -281,7 +281,7 @@ describe('PATCH /api/reports/:id/tag', () => {
     const res = await request(app).patch('/api/reports/r1/tag').send({ tag: null });
 
     expect(res.status).toBe(200);
-    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', null);
+    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', null, { ip: expect.any(String), userAgent: null });
   });
 
   it('rejects an invalid tag value with a 422', async () => {
@@ -308,7 +308,7 @@ describe('PATCH /api/reports/:id/name', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ id: 'r1', name: 'July Bank Reconciliation' });
-    expect(mockReportService.updateReportName).toHaveBeenCalledWith(USER_ID, 'r1', 'July Bank Reconciliation');
+    expect(mockReportService.updateReportName).toHaveBeenCalledWith(USER_ID, 'r1', 'July Bank Reconciliation', { ip: expect.any(String), userAgent: null });
   });
 
   it('rejects an empty name with a 422', async () => {
@@ -419,6 +419,7 @@ describe('PATCH /api/reports/:id/transactions/:rowId/review', () => {
     expect(res.body).toEqual({ id: 'row-1', reviewed: true });
     expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1', true, {
       ip: expect.any(String),
+      userAgent: null,
     });
   });
 
@@ -588,7 +589,7 @@ describe('POST /api/reports', () => {
     expect(mockReportService.saveReport).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ fileAName: 'a.csv', fileBName: 'b.csv' }),
-      { ip: expect.any(String) },
+      { ip: expect.any(String), userAgent: null },
     );
   });
 
@@ -672,6 +673,7 @@ describe('PATCH /api/reports/draft/:id', () => {
     expect(res.body).toEqual({ id: 'draft-1', name: 'Updated' });
     expect(mockReportService.updateDraft).toHaveBeenCalledWith(USER_ID, 'draft-1', { name: 'Updated' }, {
       ip: expect.any(String),
+      userAgent: null,
     });
   });
 
@@ -696,7 +698,7 @@ describe('POST /api/reports/draft/:id/complete', () => {
       USER_ID,
       'draft-1',
       expect.objectContaining({ fileAName: 'a.csv' }),
-      { ip: expect.any(String) },
+      { ip: expect.any(String), userAgent: null },
     );
   });
 
@@ -805,7 +807,7 @@ describe('POST /api/reports/:id/run', () => {
       USER_ID,
       'draft-1',
       expect.objectContaining({ columnMapping }),
-      { ip: expect.any(String) },
+      { ip: expect.any(String), userAgent: null },
     );
   });
 
@@ -858,7 +860,8 @@ describe('GET /api/reports/:id', () => {
     expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(USER_ID, 'r1', {
       status: 'info',
       ip: expect.any(String),
-      metadata: { reportName: 'Bank Reconciliation Q2' },
+      userAgent: null,
+      metadata: { subject: { name: 'Bank Reconciliation Q2' } },
     });
   });
 
@@ -870,7 +873,7 @@ describe('GET /api/reports/:id', () => {
     expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(
       USER_ID,
       'r1',
-      expect.objectContaining({ metadata: { reportName: 'Untitled Reconciliation' } }),
+      expect.objectContaining({ metadata: { subject: { name: 'Untitled Reconciliation' } } }),
     );
   });
 

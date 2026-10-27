@@ -1,6 +1,8 @@
 import { prisma } from '../config/prisma.config.js';
 import { NotFoundError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
+import { logAuditSafely } from './auditLogService.js';
+import { withSubject } from '../utils/audit.js';
 
 export const SECTION_KEYS = ['summary', 'matchStatistics', 'breakAnalysis', 'unmatchedDetails', 'chartsAndGraphs'];
 
@@ -17,9 +19,9 @@ export async function listTemplates(userId) {
   });
 }
 
-export async function createTemplate(userId, dto) {
+export async function createTemplate(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
-  return prisma.reportTemplate.create({
+  const template = await prisma.reportTemplate.create({
     data: {
       organizationId,
       isSystem: false,
@@ -28,12 +30,36 @@ export async function createTemplate(userId, dto) {
       sections: { ...DEFAULT_SECTIONS, ...(dto.sections ?? {}) },
     },
   });
+
+  const includedSections = SECTION_KEYS.filter((key) => template.sections[key]);
+  await logAuditSafely(userId, {
+    action: 'reportTemplate.create',
+    entityType: 'reportTemplate',
+    entityId: template.id,
+    ip,
+    userAgent,
+    metadata: withSubject({ sections: includedSections }, { name: template.name }),
+  });
+
+  return template;
 }
 
-export async function deleteTemplate(userId, templateId) {
+export async function deleteTemplate(userId, templateId, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  const template = await prisma.reportTemplate.findFirst({ where: { id: templateId, organizationId }, select: { name: true } });
+  if (!template) throw new NotFoundError();
+
   const { count } = await prisma.reportTemplate.deleteMany({ where: { id: templateId, organizationId } });
   if (count === 0) throw new NotFoundError();
+
+  await logAuditSafely(userId, {
+    action: 'reportTemplate.delete',
+    entityType: 'reportTemplate',
+    entityId: templateId,
+    ip,
+    userAgent,
+    metadata: withSubject({}, { name: template.name }),
+  });
 }
 
 /**

@@ -1,5 +1,5 @@
 import { betterAuth } from 'better-auth';
-import { createAuthMiddleware } from 'better-auth/api';
+import { APIError, createAuthMiddleware } from 'better-auth/api';
 import { prismaAdapter } from 'better-auth/adapters/prisma';
 import { organization, emailOTP } from 'better-auth/plugins';
 import { createAccessControl } from 'better-auth/plugins/access';
@@ -22,12 +22,18 @@ const statement = {
   invitation: ['create', 'cancel'],
   report: ['create', 'read', 'delete', 'export', 'email'],
   file: ['upload'],
-  auditLog: ['create', 'read'],
+  auditLog: ['read'],
 };
 const ac = createAccessControl(statement);
 const roles = Object.fromEntries(
   Object.entries(ROLE_PERMISSIONS).map(([name, perms]) => [name, ac.newRole(perms)]),
 );
+
+// Role changes and removals run through teamService so the change and its audit row share one
+// transaction; Better Auth's own endpoints would bypass that.
+// /organization/leave has no UI and would remove a membership with neither an audit row nor our locked
+// last-admin check.
+const OWNED_MEMBER_PATHS = new Set(['/organization/update-member-role', '/organization/remove-member', '/organization/leave']);
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
@@ -98,6 +104,9 @@ export const auth = betterAuth({
     // regardless of that race.
     before: createAuthMiddleware(async (ctx) => {
       if (!ctx.path.startsWith('/organization')) return;
+      if (OWNED_MEMBER_PATHS.has(ctx.path)) {
+        throw new APIError('FORBIDDEN', { message: 'Membership changes go through /api/team/members' });
+      }
       const session = await auth.api.getSession({ headers: ctx.headers }).catch(() => null);
       await repairActiveOrganization(session?.session ?? null, { prisma });
     }),

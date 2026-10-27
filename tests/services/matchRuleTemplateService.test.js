@@ -14,6 +14,9 @@ const mockPrisma = {
 
 jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({ logAuditSafely: mockLogAuditSafely }));
+
 const { listTemplates, createTemplate, deleteTemplate, recordUsage } = await import('../../services/matchRuleTemplateService.js');
 const { NotFoundError, AuthorisationError } = await import('../../errors.js');
 
@@ -65,13 +68,21 @@ describe('listTemplates', () => {
 
 describe('createTemplate', () => {
   it('creates a template scoped to the caller and their org', async () => {
-    mockPrisma.matchRuleTemplate.create.mockResolvedValue({ id: 't1' });
+    mockPrisma.matchRuleTemplate.create.mockResolvedValue({ id: 't1', name: 'Bank Recon Rules', description: null });
     const config = { amountTolerance: 0.5, dateToleranceDays: 1 };
 
-    await createTemplate(USER_ID, { name: 'Bank Recon Rules', config });
+    await createTemplate(USER_ID, { name: 'Bank Recon Rules', config }, { ip: '10.0.0.1', userAgent: 'UA' });
 
     expect(mockPrisma.matchRuleTemplate.create).toHaveBeenCalledWith({
       data: { organizationId: ORG_ID, userId: USER_ID, name: 'Bank Recon Rules', description: null, config },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'matchRuleTemplate.create',
+      entityType: 'matchRuleTemplate',
+      entityId: 't1',
+      ip: '10.0.0.1',
+      userAgent: 'UA',
+      metadata: { description: null, subject: { name: 'Bank Recon Rules' } },
     });
   });
 });
@@ -79,17 +90,28 @@ describe('createTemplate', () => {
 describe('deleteTemplate', () => {
   it('deletes a template in the org', async () => {
     mockPrisma.organization.findFirst.mockResolvedValue({ enforcedMatchRuleTemplateId: null });
+    mockPrisma.matchRuleTemplate.findFirst.mockResolvedValue({ name: 'Bank Recon Rules', useCount: 7 });
     mockPrisma.matchRuleTemplate.deleteMany.mockResolvedValue({ count: 1 });
 
     await expect(deleteTemplate(USER_ID, 't1')).resolves.toBeUndefined();
     expect(mockPrisma.matchRuleTemplate.deleteMany).toHaveBeenCalledWith({ where: { id: 't1', organizationId: ORG_ID } });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        action: 'matchRuleTemplate.delete',
+        entityId: 't1',
+        metadata: { timesUsed: 7, subject: { name: 'Bank Recon Rules' } },
+      }),
+    );
   });
 
   it("throws NotFoundError for another org's template", async () => {
     mockPrisma.organization.findFirst.mockResolvedValue({ enforcedMatchRuleTemplateId: null });
-    mockPrisma.matchRuleTemplate.deleteMany.mockResolvedValue({ count: 0 });
+    mockPrisma.matchRuleTemplate.findFirst.mockResolvedValue(null);
 
     await expect(deleteTemplate(USER_ID, 'not-mine')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.matchRuleTemplate.deleteMany).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 
   it("throws AuthorisationError when deleting the org's enforced default template", async () => {

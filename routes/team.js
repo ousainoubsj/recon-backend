@@ -35,6 +35,25 @@ teamRouter.patch(
   catchAsync(teamController.updateMember),
 );
 
+const updateMemberRoleSchema = z.object({
+  role: z.enum(['admin', 'analyst', 'viewer']),
+});
+
+teamRouter.patch(
+  '/members/:id/role',
+  authenticate,
+  catchAsync(requirePermission('member', 'update')),
+  validate(updateMemberRoleSchema),
+  catchAsync(teamController.updateMemberRole),
+);
+
+teamRouter.delete(
+  '/members/:id',
+  authenticate,
+  catchAsync(requirePermission('member', 'delete')),
+  catchAsync(teamController.removeMember),
+);
+
 teamRouter.get(
   '/departments',
   authenticate,

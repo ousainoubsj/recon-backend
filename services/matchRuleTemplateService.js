@@ -1,6 +1,8 @@
 import { prisma } from '../config/prisma.config.js';
 import { NotFoundError, AuthorisationError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
+import { logAuditSafely } from './auditLogService.js';
+import { withSubject } from '../utils/audit.js';
 
 // Template creation is admin-only (routes/matchRuleTemplates.js's
 // 'matchRuleTemplate:create' permission), so in practice every template in
@@ -30,9 +32,9 @@ export async function listTemplates(userId) {
   return enforced ? [enforced] : [];
 }
 
-export async function createTemplate(userId, dto) {
+export async function createTemplate(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
-  return prisma.matchRuleTemplate.create({
+  const template = await prisma.matchRuleTemplate.create({
     data: {
       organizationId,
       userId,
@@ -41,12 +43,23 @@ export async function createTemplate(userId, dto) {
       config: dto.config,
     },
   });
+
+  await logAuditSafely(userId, {
+    action: 'matchRuleTemplate.create',
+    entityType: 'matchRuleTemplate',
+    entityId: template.id,
+    ip,
+    userAgent,
+    metadata: withSubject({ description: template.description }, { name: template.name }),
+  });
+
+  return template;
 }
 
 // Org-scoped (not creator-scoped) — template management is now a shared,
 // admin-only catalog (see listTemplates), so any admin can delete any
 // template in their org, not just the one they personally created.
-export async function deleteTemplate(userId, templateId) {
+export async function deleteTemplate(userId, templateId, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const org = await prisma.organization.findFirst({
     where: { id: organizationId },
@@ -55,8 +68,23 @@ export async function deleteTemplate(userId, templateId) {
   if (org?.enforcedMatchRuleTemplateId === templateId) {
     throw new AuthorisationError('Cannot delete the org\'s enforced default template — clear the default first');
   }
+  const template = await prisma.matchRuleTemplate.findFirst({
+    where: { id: templateId, organizationId },
+    select: { name: true, useCount: true },
+  });
+  if (!template) throw new NotFoundError();
+
   const { count } = await prisma.matchRuleTemplate.deleteMany({ where: { id: templateId, organizationId } });
   if (count === 0) throw new NotFoundError();
+
+  await logAuditSafely(userId, {
+    action: 'matchRuleTemplate.delete',
+    entityType: 'matchRuleTemplate',
+    entityId: templateId,
+    ip,
+    userAgent,
+    metadata: withSubject({ timesUsed: template.useCount }, { name: template.name }),
+  });
 }
 
 // Org-scoped (not creator-scoped) — a non-admin "using" the org's enforced

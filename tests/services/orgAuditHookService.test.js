@@ -19,7 +19,7 @@ describe('auditOrgAction', () => {
     const ctx = {
       path: '/organization/invite-member',
       body: { email: 'invitee@example.com', role: 'analyst' },
-      headers: { some: 'headers' },
+      headers: new Headers({ 'user-agent': 'Mozilla/5.0', 'x-forwarded-for': '10.0.0.1' }),
       context: { returned: { id: 'invite-1', email: 'invitee@example.com' } },
     };
 
@@ -30,25 +30,26 @@ describe('auditOrgAction', () => {
       action: 'organization.member.invite',
       entityType: 'organization',
       status: 'success',
-      ip: null,
-      metadata: ctx.body,
+      ip: '10.0.0.1',
+      userAgent: 'Mozilla/5.0',
+      metadata: { role: 'analyst', subject: { name: 'invitee@example.com' } },
     });
   });
 
+  // Each `returned` mirrors what that Better Auth endpoint actually responds with.
   it.each([
-    ['/organization/remove-member', 'organization.member.remove', 'warning'],
-    ['/organization/update-member-role', 'organization.member.role_update', 'warning'],
-    ['/organization/accept-invitation', 'organization.invitation.accept', 'success'],
-    ['/organization/cancel-invitation', 'organization.invitation.cancel', 'success'],
-    ['/organization/update', 'organization.update', 'success'],
-    ['/organization/delete', 'organization.delete', 'warning'],
-  ])('maps %s to action %s with status %s', async (path, expectedAction, expectedStatus) => {
+    ['/organization/accept-invitation', { invitation: { role: 'viewer' }, member: {} }, 'organization.invitation.accept', 'success', { role: 'viewer' }],
+    ['/organization/cancel-invitation', { email: 'invitee@example.com', role: 'analyst' }, 'organization.invitation.cancel', 'success', { role: 'analyst', subject: { name: 'invitee@example.com' } }],
+    ['/organization/update', {}, 'organization.update', 'success', { name: 'Datafin Ltd' }],
+    ['/organization/delete', { name: 'Datafin Ltd' }, 'organization.delete', 'warning', { subject: { name: 'Datafin Ltd' } }],
+  ])('maps %s to its action, status and explicit metadata', async (path, returned, expectedAction, expectedStatus, expectedMetadata) => {
     const deps = makeDeps();
-    await auditOrgAction({ path, body: {}, headers: {}, context: { returned: {} } }, deps);
+    const body = { memberId: 'member-2', role: 'admin', data: { name: 'Datafin Ltd' }, organizationId: 'org-1' };
+    await auditOrgAction({ path, body, headers: {}, context: { returned } }, deps);
 
     expect(deps.logAuditSafely).toHaveBeenCalledWith(
       'user-1',
-      expect.objectContaining({ action: expectedAction, status: expectedStatus }),
+      expect.objectContaining({ action: expectedAction, status: expectedStatus, metadata: expectedMetadata }),
     );
   });
 
@@ -68,6 +69,15 @@ describe('auditOrgAction', () => {
       expect.objectContaining({ metadata: { name: 'Datafin Ltd' } }),
     );
   });
+
+  it.each(['/organization/remove-member', '/organization/update-member-role'])(
+    'no longer logs %s — teamService owns it and writes the audit row in its own transaction',
+    async (path) => {
+      const deps = makeDeps();
+      await auditOrgAction({ path, body: {}, headers: {}, context: { returned: {} } }, deps);
+      expect(deps.logAuditSafely).not.toHaveBeenCalled();
+    },
+  );
 
   it('does nothing for an unmapped path', async () => {
     const deps = makeDeps();
@@ -146,6 +156,7 @@ describe('auditOrgAction', () => {
         entityType: null,
         status: 'info',
         ip: null,
+        userAgent: null,
         metadata: { method },
       });
     });
@@ -201,44 +212,9 @@ describe('auditOrgAction', () => {
         entityType: null,
         status: 'failed',
         ip: null,
+        userAgent: null,
         metadata: { method: 'email' },
       });
-    });
-  });
-
-  describe('role_update notification', () => {
-    it("notifies the affected member when someone else's role changes", async () => {
-      const deps = makeDeps({ member: { userId: 'user-2' } });
-      const ctx = {
-        path: '/organization/update-member-role',
-        body: { memberId: 'member-2', role: 'admin' },
-        headers: {},
-        context: { returned: {} },
-      };
-
-      await auditOrgAction(ctx, deps);
-
-      expect(deps.prisma.member.findUnique).toHaveBeenCalledWith({ where: { id: 'member-2' }, select: { userId: true } });
-      expect(deps.createNotification).toHaveBeenCalledWith('user-2', {
-        type: 'member.role_changed',
-        message: 'Your role was changed to admin.',
-        entityType: 'member',
-        entityId: 'member-2',
-      });
-    });
-
-    it('does not notify when the acting user changed their own role', async () => {
-      const deps = makeDeps({ member: { userId: 'user-1' } });
-      const ctx = {
-        path: '/organization/update-member-role',
-        body: { memberId: 'member-1', role: 'admin' },
-        headers: {},
-        context: { returned: {} },
-      };
-
-      await auditOrgAction(ctx, deps);
-
-      expect(deps.createNotification).not.toHaveBeenCalled();
     });
   });
 
@@ -263,3 +239,4 @@ describe('auditOrgAction', () => {
     });
   });
 });
+

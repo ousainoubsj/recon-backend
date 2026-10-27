@@ -270,11 +270,13 @@ model AuditLog {
   entityId       String?        @map("entity_id") @db.VarChar(64)
   status         AuditLogStatus @default(success)
   ip             String?        @map("ip_address")
+  userAgent      String?        @map("user_agent")
   ts             DateTime       @default(now())
   metadata       Json?
 
   @@index([userId, ts(sort: Desc)], map: "idx_audit_user_ts")
-  @@index([organizationId], map: "idx_audit_organization_id")
+  // Backs the audit list: WHERE organization_id = ? ORDER BY ts DESC LIMIT n.
+  @@index([organizationId, ts(sort: Desc)], map: "idx_audit_organization_ts")
   @@index([organizationId, status], map: "idx_audit_organization_status")
   // Backs getReport's run-duration lookup (report.run.started/completed
   // pair for a given report), which filters on entityType+entityId directly.

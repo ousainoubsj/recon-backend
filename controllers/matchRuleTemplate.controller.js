@@ -1,4 +1,5 @@
 import * as matchRuleTemplateService from '../services/matchRuleTemplateService.js';
+import { auditContext } from '../utils/audit.js';
 
 export const listTemplates = async (req, res) => {
   const templates = await matchRuleTemplateService.listTemplates(req.session.user.id);
@@ -6,12 +7,12 @@ export const listTemplates = async (req, res) => {
 };
 
 export const createTemplate = async (req, res) => {
-  const template = await matchRuleTemplateService.createTemplate(req.session.user.id, req.body);
+  const template = await matchRuleTemplateService.createTemplate(req.session.user.id, req.body, auditContext(req));
   res.status(201).json(template);
 };
 
 export const deleteTemplate = async (req, res) => {
-  await matchRuleTemplateService.deleteTemplate(req.session.user.id, req.params.id);
+  await matchRuleTemplateService.deleteTemplate(req.session.user.id, req.params.id, auditContext(req));
   res.status(204).end();
 };
 

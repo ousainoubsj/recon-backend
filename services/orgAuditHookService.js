@@ -1,3 +1,5 @@
+import { withSubject } from '../utils/audit.js';
+
 // Maps Better Auth request paths to audit action names.
 // Confirmed empirically against the running plugin: '/organization/create'
 // and '/organization/invite-member' both matched this kebab-case naming
@@ -8,8 +10,6 @@
 // social sign-in testable end-to-end.
 const AUDIT_ACTIONS = {
   '/organization/invite-member': 'organization.member.invite',
-  '/organization/remove-member': 'organization.member.remove',
-  '/organization/update-member-role': 'organization.member.role_update',
   '/organization/accept-invitation': 'organization.invitation.accept',
   '/organization/cancel-invitation': 'organization.invitation.cancel',
   '/organization/update': 'organization.update',
@@ -43,8 +43,6 @@ function isFailedResponse(returned) {
 // bulkDeleteReports for the equivalent report-side rule.
 const STATUS_BY_ACTION = {
   'auth.login': 'info',
-  'organization.member.remove': 'warning',
-  'organization.member.role_update': 'warning',
   'organization.delete': 'warning',
 };
 
@@ -53,6 +51,30 @@ const STATUS_BY_ACTION = {
 // Fetch-standard Headers-like object with no guaranteed client-IP field.
 function extractIp(headers) {
   return headers?.get?.('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
+}
+
+function extractUserAgent(headers) {
+  return headers?.get?.('user-agent') ?? null;
+}
+
+// One explicit shape per path, never the raw request body: the body carries
+// routing ids (organizationId, memberId) that mean nothing in the audit feed.
+function describeOrgAction(ctx) {
+  const returned = ctx.context?.returned;
+  switch (ctx.path) {
+    case '/organization/invite-member':
+      return withSubject({ role: ctx.body.role }, { name: ctx.body.email });
+    case '/organization/accept-invitation':
+      return { role: returned.invitation.role };
+    case '/organization/cancel-invitation':
+      return withSubject({ role: returned.role }, { name: returned.email });
+    case '/organization/update':
+      return ctx.body?.data ?? null;
+    case '/organization/delete':
+      return withSubject({}, { name: returned?.name });
+    default:
+      return { method: LOGIN_METHOD_BY_PATH[ctx.path] };
+  }
 }
 
 /**
@@ -80,6 +102,7 @@ export async function auditOrgAction(ctx, { getSession, logAuditSafely, createNo
           entityType: null,
           status: 'failed',
           ip: extractIp(ctx.headers),
+          userAgent: extractUserAgent(ctx.headers),
           metadata: { method: 'email' },
         });
       }
@@ -101,27 +124,9 @@ export async function auditOrgAction(ctx, { getSession, logAuditSafely, createNo
     entityType: SELF_CONTAINED_USER_PATHS.has(ctx.path) ? null : 'organization',
     status: STATUS_BY_ACTION[action] ?? 'success',
     ip: extractIp(ctx.headers),
-    // For '/organization/update', ctx.body.data is the actual set of fields
-    // being changed (name/logo/slug/metadata) — the rest of ctx.body is just
-    // routing (organizationId), not a "what changed" detail worth logging.
-    metadata: SELF_CONTAINED_USER_PATHS.has(ctx.path)
-      ? { method: LOGIN_METHOD_BY_PATH[ctx.path] }
-      : ctx.path === '/organization/update'
-        ? (ctx.body?.data ?? null)
-        : (ctx.body ?? null),
+    userAgent: extractUserAgent(ctx.headers),
+    metadata: describeOrgAction(ctx),
   });
-
-  if (ctx.path === '/organization/update-member-role') {
-    const member = await prisma.member.findUnique({ where: { id: ctx.body.memberId }, select: { userId: true } });
-    if (member && member.userId !== actingUser.id) {
-      await createNotification(member.userId, {
-        type: 'member.role_changed',
-        message: `Your role was changed to ${ctx.body.role}.`,
-        entityType: 'member',
-        entityId: ctx.body.memberId,
-      });
-    }
-  }
 
   if (ctx.path === '/organization/accept-invitation') {
     const inviterId = ctx.context?.returned?.invitation?.inviterId;

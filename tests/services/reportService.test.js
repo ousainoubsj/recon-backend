@@ -257,7 +257,8 @@ describe('saveReport', () => {
       entityType: 'report',
       entityId: 'report-1',
       ip: undefined,
-      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%' },
+      userAgent: undefined,
+      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%', subject: { name: 'Untitled Reconciliation' } },
     });
   });
 });
@@ -570,10 +571,13 @@ describe('deleteReport', () => {
       name: 'June Bank Reconciliation',
       fileAName: 'a.csv',
       fileBName: 'b.csv',
+      status: 'completed',
+      sequenceYear: 2026,
+      sequenceNumber: 4,
     });
     mockPrisma.report.deleteMany.mockResolvedValue({ count: 1 });
 
-    await expect(deleteReport(USER_ID, 'r1', { ip: '10.0.0.1' })).resolves.toBeUndefined();
+    await expect(deleteReport(USER_ID, 'r1', { ip: '10.0.0.1', userAgent: 'UA' })).resolves.toBeUndefined();
     expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID, userId: USER_ID },
     });
@@ -583,7 +587,12 @@ describe('deleteReport', () => {
       entityId: 'r1',
       status: 'success',
       ip: '10.0.0.1',
-      metadata: { reportName: 'June Bank Reconciliation', filePair: 'a.csv vs b.csv' },
+      userAgent: 'UA',
+      metadata: {
+        filePair: 'a.csv vs b.csv',
+        wasDraft: false,
+        subject: { name: 'June Bank Reconciliation', code: 'REC-2026-000004' },
+      },
     });
     expect(mockCreateNotification).not.toHaveBeenCalled();
   });
@@ -872,11 +881,13 @@ describe('updateDraft', () => {
       entityType: 'report',
       entityId: 'draft-1',
       ip: '10.0.0.1',
+      userAgent: undefined,
       metadata: {
         changes: {
           fileAReferenceNumber: { from: 'Ref', to: 'Reference No' },
           fileBAmount: { from: null, to: 'Amount' },
         },
+        subject: { name: 'Untitled Reconciliation' },
       },
     });
   });
@@ -909,7 +920,8 @@ describe('updateDraft', () => {
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
-      metadata: { changes: { amountTolerance: { from: 0.5, to: 0.01 } } },
+      userAgent: undefined,
+      metadata: { changes: { amountTolerance: { from: 0.5, to: 0.01 } }, subject: { name: 'Untitled Reconciliation' } },
     });
   });
 
@@ -1050,7 +1062,8 @@ describe('completeDraft', () => {
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
-      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%' },
+      userAgent: undefined,
+      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%', subject: { name: 'Untitled Reconciliation' } },
     });
   });
 
@@ -1157,6 +1170,7 @@ describe('enqueueReconciliationRun', () => {
       userId: USER_ID,
       organizationId: ORG_ID,
       ip: null,
+      userAgent: null,
       dto: { name: runDto.name, columnMapping: runDto.columnMapping },
       config: runDto.config,
     });
@@ -1169,7 +1183,8 @@ describe('enqueueReconciliationRun', () => {
       entityId: 'draft-1',
       status: 'info',
       ip: undefined,
-      metadata: { filePair: 'a.csv vs b.csv' },
+      userAgent: undefined,
+      metadata: { filePair: 'a.csv vs b.csv', subject: { name: 'Old name' } },
     });
   });
 
@@ -1261,7 +1276,8 @@ describe('executeReconciliationRun', () => {
       entityType: 'report',
       entityId: 'draft-1',
       ip: undefined,
-      metadata: { matchRate: '50.00%', totalBreakValue: 50 },
+      userAgent: undefined,
+      metadata: { matchRate: '50.00%', totalBreakValue: 50, subject: { name: 'Untitled Reconciliation' } },
     });
   });
 
@@ -1316,7 +1332,8 @@ describe('executeReconciliationRun', () => {
       entityId: 'draft-1',
       status: 'failed',
       ip: '10.0.0.1',
-      metadata: { reason: 'R2 object not found' },
+      userAgent: undefined,
+      metadata: { reason: 'R2 object not found', subject: { name: 'Old name' } },
     });
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
@@ -1614,11 +1631,13 @@ describe('markRowReviewed', () => {
 
   it('marks a row reviewed and audit-logs it with the formatted report reference, not the raw id', async () => {
     mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', reviewed: true });
+    const row = { id: 'row-1', ref: 'TXN-00042', status: 'mismatched', reviewed: true };
+    mockPrisma.reportRow.findFirst.mockResolvedValue(row);
 
     const result = await markRowReviewed(USER_ID, 'r1', 'row-1', true, { ip: '10.0.0.1' });
 
-    expect(result).toEqual({ id: 'row-1', reviewed: true });
+    expect(result).toEqual(row);
+    expect(mockPrisma.reportRow.findFirst).toHaveBeenCalledWith({ where: { id: 'row-1', reportId: 'r1' } });
     expect(mockPrisma.reportRow.updateMany).toHaveBeenCalledWith({
       where: { id: 'row-1', reportId: 'r1' },
       data: expect.objectContaining({ reviewed: true, reviewedBy: USER_ID }),
@@ -1627,21 +1646,28 @@ describe('markRowReviewed', () => {
       USER_ID,
       expect.objectContaining({
         action: 'report.row.review',
-        metadata: { reportReference: 'REC-2026-000008', reviewed: true },
+        metadata: {
+          transactionRef: 'TXN-00042',
+          rowStatus: 'mismatched',
+          reviewed: true,
+          subject: { name: 'Untitled Reconciliation', code: 'REC-2026-000008' },
+        },
       }),
     );
   });
 
-  it('falls back to the raw report id when the report has no sequence number yet', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed', sequenceYear: null, sequenceNumber: null });
+  it('names the report without a reference when it has no sequence number yet', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', name: 'Q2 Bank', organizationId: ORG_ID, status: 'completed', sequenceYear: null, sequenceNumber: null });
     mockPrisma.reportRow.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', reviewed: true });
+    mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', ref: 'TXN-1', status: 'matched', reviewed: true });
 
     await markRowReviewed(USER_ID, 'r1', 'row-1', true);
 
     expect(mockLogAuditSafely).toHaveBeenCalledWith(
       USER_ID,
-      expect.objectContaining({ metadata: { reportReference: 'r1', reviewed: true } }),
+      expect.objectContaining({
+        metadata: { transactionRef: 'TXN-1', rowStatus: 'matched', reviewed: true, subject: { name: 'Q2 Bank' } },
+      }),
     );
   });
 
@@ -2089,6 +2115,65 @@ describe('updateReportTag', () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(updateReportTag(USER_ID, 'missing', 'bank')).rejects.toBeInstanceOf(NotFoundError);
+  });
+});
+
+describe('updateReportTag / updateReportName audit', () => {
+  const before = { tag: 'bank', name: 'June Bank', sequenceYear: 2026, sequenceNumber: 3 };
+
+  it('logs report.tag.update with the from/to tag when it changes', async () => {
+    mockPrisma.report.findFirst.mockResolvedValueOnce(before).mockResolvedValueOnce({ id: 'r1', tag: 'mobile-money' });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+
+    await updateReportTag(USER_ID, 'r1', 'mobile-money', { ip: '10.0.0.1', userAgent: 'UA' });
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.tag.update',
+      entityType: 'report',
+      entityId: 'r1',
+      ip: '10.0.0.1',
+      userAgent: 'UA',
+      metadata: {
+        changes: { tag: { from: 'bank', to: 'mobile-money' } },
+        subject: { name: 'June Bank', code: 'REC-2026-000003' },
+      },
+    });
+  });
+
+  it('logs report.rename under the new name, with the old one in the diff', async () => {
+    mockPrisma.report.findFirst.mockResolvedValueOnce(before).mockResolvedValueOnce({ id: 'r1', name: 'June Bank (GTB)' });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+
+    await updateReportName(USER_ID, 'r1', 'June Bank (GTB)');
+
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        action: 'report.rename',
+        metadata: {
+          changes: { name: { from: 'June Bank', to: 'June Bank (GTB)' } },
+          subject: { name: 'June Bank (GTB)', code: 'REC-2026-000003' },
+        },
+      }),
+    );
+  });
+
+  it('does not log when the value is unchanged', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(before);
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+
+    await updateReportTag(USER_ID, 'r1', 'bank');
+    await updateReportName(USER_ID, 'r1', 'June Bank');
+
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+
+  it('does not log or write when the report is not a completed report in the org', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await expect(updateReportTag(USER_ID, 'r1', 'x')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.report.updateMany).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });
 

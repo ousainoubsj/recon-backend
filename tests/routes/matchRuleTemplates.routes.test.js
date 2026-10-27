@@ -67,6 +67,7 @@ describe('POST /api/match-rule-templates', () => {
     expect(mockMatchRuleTemplateService.createTemplate).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ name: 'Bank Recon Rules', config: expect.objectContaining(validBody.config) }),
+      { ip: expect.any(String), userAgent: null },
     );
   });
 
@@ -101,7 +102,7 @@ describe('DELETE /api/match-rule-templates/:id', () => {
     const res = await request(app).delete('/api/match-rule-templates/t1');
 
     expect(res.status).toBe(204);
-    expect(mockMatchRuleTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, 't1');
+    expect(mockMatchRuleTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, 't1', { ip: expect.any(String), userAgent: null });
   });
 
   it("returns a 404 RFC 7807 error for another user's template", async () => {

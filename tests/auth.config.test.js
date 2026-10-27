@@ -31,4 +31,21 @@ describe('auth.js config', () => {
 
     expect(emailOtpPlugin).toBeDefined();
   });
+
+  it.each(['/organization/update-member-role', '/organization/remove-member', '/organization/leave'])(
+    'refuses %s so membership changes only go through the audited /api/team/members endpoints',
+    async (path) => {
+      const res = await auth.handler(
+        new Request(`http://localhost:4000/api/auth${path}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', origin: 'http://localhost:4000' },
+          body: JSON.stringify({ memberId: 'm1', memberIdOrEmail: 'm1', role: 'admin', organizationId: 'org-1' }),
+        }),
+      );
+
+      expect(res.status).toBe(403);
+      expect((await res.json()).message).toBe('Membership changes go through /api/team/members');
+      expect(mockPrisma.member.findFirst).not.toHaveBeenCalled();
+    },
+  );
 });

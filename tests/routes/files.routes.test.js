@@ -45,6 +45,7 @@ describe('POST /api/files/presign', () => {
 
     const res = await request(app)
       .post('/api/files/presign')
+      .set('User-Agent', 'Mozilla/5.0 (Macintosh)')
       .send({ filename: 'transactions.csv', contentType: 'text/csv', size: 1024 });
 
     expect(res.status).toBe(200);
@@ -60,7 +61,8 @@ describe('POST /api/files/presign', () => {
       entityType: 'file',
       status: 'info',
       ip: expect.any(String),
-      metadata: { filename: 'transactions.csv', contentType: 'text/csv' },
+      userAgent: 'Mozilla/5.0 (Macintosh)',
+      metadata: { filename: 'transactions.csv', contentType: 'text/csv', sizeBytes: 1024 },
     });
   });
 

@@ -61,7 +61,7 @@ describe('POST /api/report-templates', () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toEqual({ id: 't1', name: 'Custom' });
-    expect(mockReportTemplateService.createTemplate).toHaveBeenCalledWith(USER_ID, { name: 'Custom' });
+    expect(mockReportTemplateService.createTemplate).toHaveBeenCalledWith(USER_ID, { name: 'Custom' }, { ip: expect.any(String), userAgent: null });
   });
 
   it('rejects a missing name with a 422', async () => {
@@ -88,7 +88,7 @@ describe('DELETE /api/report-templates/:id', () => {
     const res = await request(app).delete('/api/report-templates/t1');
 
     expect(res.status).toBe(204);
-    expect(mockReportTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, 't1');
+    expect(mockReportTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, 't1', { ip: expect.any(String), userAgent: null });
   });
 
   it('returns a 404 RFC 7807 error for a system template or anything not owned', async () => {

@@ -3,6 +3,7 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { FileTooLargeError, ValidationError } from '../errors.js';
 import { logAuditSafely } from '../services/auditLogService.js';
 import { r2 } from '../utils/r2Client.js';
+import { auditContext } from '../utils/audit.js';
 
 const ALLOWED_CONTENT_TYPES = new Set([
   'text/csv',
@@ -39,7 +40,7 @@ export const createPresignedUpload = async (req, res) => {
     action: 'file.upload_initiated',
     entityType: 'file',
     status: 'info',
-    ip: req.ip,
-    metadata: { filename, contentType },
+    ...auditContext(req),
+    metadata: { filename, contentType, sizeBytes: size },
   });
 };

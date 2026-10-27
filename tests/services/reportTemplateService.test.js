@@ -12,6 +12,9 @@ const mockPrisma = {
 
 jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
 
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({ logAuditSafely: mockLogAuditSafely }));
+
 const { listTemplates, createTemplate, deleteTemplate, resolveSections, SECTION_KEYS } = await import(
   '../../services/reportTemplateService.js'
 );
@@ -42,9 +45,13 @@ describe('listTemplates', () => {
 
 describe('createTemplate', () => {
   it('creates an org-scoped, non-system template with default-filled sections', async () => {
-    mockPrisma.reportTemplate.create.mockResolvedValue({ id: 't1' });
+    mockPrisma.reportTemplate.create.mockResolvedValue({
+      id: 't1',
+      name: 'My Template',
+      sections: { summary: false, matchStatistics: true, breakAnalysis: true, unmatchedDetails: true, chartsAndGraphs: true },
+    });
 
-    await createTemplate(USER_ID, { name: 'My Template', sections: { summary: false } });
+    await createTemplate(USER_ID, { name: 'My Template', sections: { summary: false } }, { ip: '10.0.0.1', userAgent: 'UA' });
 
     expect(mockPrisma.reportTemplate.create).toHaveBeenCalledWith({
       data: {
@@ -61,21 +68,39 @@ describe('createTemplate', () => {
         },
       },
     });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'reportTemplate.create',
+      entityType: 'reportTemplate',
+      entityId: 't1',
+      ip: '10.0.0.1',
+      userAgent: 'UA',
+      metadata: {
+        sections: ['matchStatistics', 'breakAnalysis', 'unmatchedDetails', 'chartsAndGraphs'],
+        subject: { name: 'My Template' },
+      },
+    });
   });
 });
 
 describe('deleteTemplate', () => {
   it("deletes the org's own template", async () => {
+    mockPrisma.reportTemplate.findFirst.mockResolvedValue({ name: 'Monthly Pack' });
     mockPrisma.reportTemplate.deleteMany.mockResolvedValue({ count: 1 });
 
     await expect(deleteTemplate(USER_ID, 't1')).resolves.toBeUndefined();
     expect(mockPrisma.reportTemplate.deleteMany).toHaveBeenCalledWith({ where: { id: 't1', organizationId: ORG_ID } });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({ action: 'reportTemplate.delete', entityId: 't1', metadata: { subject: { name: 'Monthly Pack' } } }),
+    );
   });
 
   it('throws NotFoundError for a system template (organizationId never matches) or anything not owned', async () => {
-    mockPrisma.reportTemplate.deleteMany.mockResolvedValue({ count: 0 });
+    mockPrisma.reportTemplate.findFirst.mockResolvedValue(null);
 
     await expect(deleteTemplate(USER_ID, 'system-template')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.reportTemplate.deleteMany).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
   });
 });
 

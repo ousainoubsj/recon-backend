@@ -2,6 +2,7 @@ import { getUserMembership } from '../services/organizationService.js';
 import { hasPermission } from '../services/permissions.js';
 import { logAuditSafely } from '../services/auditLogService.js';
 import { AuthorisationError } from '../errors.js';
+import { auditContext } from '../utils/audit.js';
 
 export function requirePermission(resource, action) {
   return async (req, res, next) => {
@@ -13,7 +14,7 @@ export function requirePermission(resource, action) {
         entityType: resource,
         entityId: req.params?.id ?? null,
         status: 'failed',
-        ip: req.ip,
+        ...auditContext(req),
         metadata: { role, reason: isInactive ? 'inactive' : 'insufficient_role' },
       });
       return next(new AuthorisationError());

@@ -36,6 +36,7 @@ describe('createAuditLog', () => {
       entityId: 'r1',
       status: 'warning',
       ip: '10.0.0.1',
+      userAgent: 'Mozilla/5.0',
       metadata: { reason: 'duplicate' },
     });
 
@@ -49,6 +50,7 @@ describe('createAuditLog', () => {
         entityId: 'r1',
         status: 'warning',
         ip: '10.0.0.1',
+        userAgent: 'Mozilla/5.0',
         metadata: { reason: 'duplicate' },
       },
     });
@@ -68,6 +70,7 @@ describe('createAuditLog', () => {
         entityId: null,
         status: 'success',
         ip: null,
+        userAgent: null,
         metadata: undefined,
       },
     });
@@ -126,7 +129,7 @@ describe('listAuditLogs', () => {
       expect.objectContaining({
         where: {
           organizationId: ORG_ID,
-          action: 'report.delete',
+          AND: [{ OR: [{ action: { in: ['report.delete'] } }] }],
           entityType: 'report',
           userId: 'user-2',
           status: 'failed',
@@ -146,10 +149,21 @@ describe('listAuditLogs', () => {
       expect.objectContaining({
         where: {
           organizationId: ORG_ID,
-          action: { in: ['settings.organization_info.update', 'organization.update'] },
+          AND: [{ OR: [{ action: { in: ['settings.organization_info.update', 'organization.update'] } }] }],
         },
       }),
     );
+  });
+
+  it('matches a *-prefixed action by suffix, alongside exact actions', async () => {
+    mockPrisma.auditLog.findMany.mockResolvedValue([]);
+
+    await listAuditLogs(USER_ID, { action: ['auth.login', '*.denied'], q: 'awa' });
+
+    const { where } = mockPrisma.auditLog.findMany.mock.calls[0][0];
+    expect(where.AND).toEqual([{ OR: [{ action: { endsWith: '.denied' } }, { action: { in: ['auth.login'] } }] }]);
+    // The search's own OR stays separate, so the two filters intersect rather than merge.
+    expect(where.OR).toHaveLength(3);
   });
 
   it('ignores an unrecognized status value', async () => {

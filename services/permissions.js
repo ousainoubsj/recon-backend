@@ -10,7 +10,7 @@ export const ROLE_PERMISSIONS = {
     // deliberately curated set an admin can designate a default from.
     matchRuleTemplate: ['create'],
     file: ['upload'],
-    auditLog: ['create', 'read'],
+    auditLog: ['read'],
   },
   analyst: {
     organization: ['read'],
@@ -19,7 +19,7 @@ export const ROLE_PERMISSIONS = {
     report: ['create', 'read', 'export', 'email'],
     matchRuleTemplate: [],
     file: ['upload'],
-    auditLog: ['create'],
+    auditLog: [],
   },
   viewer: {
     organization: ['read'],

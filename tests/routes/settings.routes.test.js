@@ -86,7 +86,7 @@ describe('PATCH /api/settings/organization-info', () => {
     expect(mockSettingsService.updateOrganizationInfo).toHaveBeenCalledWith(
       USER_ID,
       { orgType: 'Financial Services' },
-      { ip: expect.anything() },
+      { ip: expect.anything(), userAgent: null },
     );
   });
 
@@ -142,7 +142,7 @@ describe('PATCH /api/settings/reconciliation-defaults', () => {
     expect(mockSettingsService.updateReconciliationDefaults).toHaveBeenCalledWith(
       USER_ID,
       { defaultDateToleranceDays: 5 },
-      { ip: expect.anything() },
+      { ip: expect.anything(), userAgent: null },
     );
   });
 
@@ -191,7 +191,7 @@ describe('PATCH /api/settings/notifications', () => {
     expect(mockSettingsService.updateNotificationPreferences).toHaveBeenCalledWith(
       USER_ID,
       { emailNotificationsEnabled: false },
-      { ip: expect.anything() },
+      { ip: expect.anything(), userAgent: null },
     );
   });
 
@@ -220,6 +220,7 @@ describe('POST /api/settings/organization-logo/presign', () => {
       entityId: 'org-1',
       status: 'info',
       ip: expect.any(String),
+      userAgent: null,
       metadata: { filename: 'logo.png', contentType: 'image/png' },
     });
   });

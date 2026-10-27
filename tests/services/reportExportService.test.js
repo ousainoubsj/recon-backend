@@ -10,6 +10,9 @@ jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockP
 const mockSend = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../utils/r2Client.js', () => ({ r2: { send: mockSend } }));
 
+const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/auditLogService.js', () => ({ logAuditSafely: mockLogAuditSafely }));
+
 const { recordExport, listExports, uploadExportFile, getExportForDownload, deleteExport } = await import(
   '../../services/reportExportService.js'
 );
@@ -232,18 +235,35 @@ describe('deleteExport', () => {
       id: 'exp-1',
       organizationId: ORG_ID,
       fileKey: 'exports/org-1/r1/abc.pdf',
+      format: 'pdf',
+      source: 'manual',
+      createdAt: new Date('2026-06-01T10:00:00Z'),
+      report: { name: 'June Bank Reconciliation', sequenceYear: 2026, sequenceNumber: 12 },
     });
 
-    await deleteExport(USER_ID, 'exp-1');
+    await deleteExport(USER_ID, 'exp-1', { ip: '10.0.0.1', userAgent: 'UA' });
 
     expect(mockSend).toHaveBeenCalledWith(
       expect.objectContaining({ input: { Bucket: process.env.R2_BUCKET_NAME, Key: 'exports/org-1/r1/abc.pdf' } }),
     );
     expect(mockPrisma.reportExport.delete).toHaveBeenCalledWith({ where: { id: 'exp-1' } });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
+      action: 'report.export.delete',
+      entityType: 'reportExport',
+      entityId: 'exp-1',
+      ip: '10.0.0.1',
+      userAgent: 'UA',
+      metadata: {
+        format: 'pdf',
+        source: 'manual',
+        exportedAt: new Date('2026-06-01T10:00:00Z'),
+        subject: { name: 'June Bank Reconciliation', code: 'REC-2026-000012' },
+      },
+    });
   });
 
   it('deletes the tracking row without touching R2 when there is no fileKey', async () => {
-    mockPrisma.reportExport.findFirst.mockResolvedValue({ id: 'exp-1', organizationId: ORG_ID, fileKey: null });
+    mockPrisma.reportExport.findFirst.mockResolvedValue({ id: 'exp-1', fileKey: null, report: { name: 'June Bank Reconciliation', sequenceYear: 2026, sequenceNumber: 12 } });
 
     await deleteExport(USER_ID, 'exp-1');
 
@@ -256,6 +276,7 @@ describe('deleteExport', () => {
       id: 'exp-1',
       organizationId: ORG_ID,
       fileKey: 'exports/org-1/r1/abc.pdf',
+      report: { name: 'June Bank Reconciliation', sequenceYear: 2026, sequenceNumber: 12 },
     });
     mockSend.mockRejectedValueOnce(new Error('R2 unreachable'));
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -272,6 +293,7 @@ describe('deleteExport', () => {
     mockPrisma.reportExport.findFirst.mockResolvedValue(null);
 
     await expect(deleteExport(USER_ID, 'missing')).rejects.toThrow(NotFoundError);
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
     expect(mockPrisma.reportExport.delete).not.toHaveBeenCalled();
   });
 });

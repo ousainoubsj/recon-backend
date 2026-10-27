@@ -123,7 +123,8 @@ describe('POST /api/reports/:id/export', () => {
       entityId: 'r1',
       status: 'info',
       ip: expect.any(String),
-      metadata: { format: 'xlsx', templateId: null },
+      userAgent: null,
+      metadata: { format: 'xlsx', template: null, subject: { name: 'June Bank Reconciliation' } },
     });
     expect(mockRecordExport).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -312,7 +313,7 @@ describe('DELETE /api/reports/exports/:exportId', () => {
     const res = await request(app).delete('/api/reports/exports/exp-1');
 
     expect(res.status).toBe(204);
-    expect(mockDeleteExport).toHaveBeenCalledWith(USER_ID, 'exp-1');
+    expect(mockDeleteExport).toHaveBeenCalledWith(USER_ID, 'exp-1', { ip: expect.any(String), userAgent: null });
   });
 
   it('returns a 404 RFC 7807 error when the export does not exist or is not in the org', async () => {
@@ -507,7 +508,8 @@ describe('POST /api/reports/:id/email', () => {
       entityId: 'r1',
       status: 'info',
       ip: expect.any(String),
-      metadata: { to: ['analyst@example.com'] },
+      userAgent: null,
+      metadata: { to: ['analyst@example.com'], delivered: 1, subject: { name: 'June Bank Reconciliation' } },
     });
   });
 

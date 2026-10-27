@@ -25,9 +25,10 @@ describe('hasPermission', () => {
     ['viewer', 'member', 'create', false],
     ['viewer', 'organization', 'read', true],
     ['viewer', 'organization', 'update', false],
-    ['admin', 'auditLog', 'create', true],
+    // No role can write audit entries directly — the POST endpoint was removed.
+    ['admin', 'auditLog', 'create', false],
     ['admin', 'auditLog', 'read', true],
-    ['analyst', 'auditLog', 'create', true],
+    ['analyst', 'auditLog', 'create', false],
     ['analyst', 'auditLog', 'read', false],
     ['viewer', 'auditLog', 'create', false],
     ['viewer', 'auditLog', 'read', false],

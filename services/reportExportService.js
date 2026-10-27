@@ -3,6 +3,9 @@ import { prisma } from '../config/prisma.config.js';
 import { NotFoundError } from '../errors.js';
 import { r2 } from '../utils/r2Client.js';
 import { getUserMembership } from './organizationService.js';
+import { logAuditSafely } from './auditLogService.js';
+import { withSubject } from '../utils/audit.js';
+import { reportSubject } from '../utils/reportReference.js';
 
 /**
  * Best-effort, like logAuditSafely right next to it in the controller — a
@@ -54,9 +57,19 @@ export async function getExportForDownload(userId, exportId) {
 // failure to delete the object shouldn't block removing the row the user
 // asked to delete — same "don't let storage-side flakiness surface as a
 // harder error" reasoning as uploadExportFile's caller).
-export async function deleteExport(userId, exportId) {
+export async function deleteExport(userId, exportId, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
-  const exportRow = await prisma.reportExport.findFirst({ where: { id: exportId, organizationId } });
+  const exportRow = await prisma.reportExport.findFirst({
+    where: { id: exportId, organizationId },
+    select: {
+      id: true,
+      fileKey: true,
+      format: true,
+      source: true,
+      createdAt: true,
+      report: { select: { name: true, sequenceYear: true, sequenceNumber: true } },
+    },
+  });
   if (!exportRow) throw new NotFoundError();
 
   if (exportRow.fileKey) {
@@ -68,6 +81,18 @@ export async function deleteExport(userId, exportId) {
   }
 
   await prisma.reportExport.delete({ where: { id: exportId } });
+
+  await logAuditSafely(userId, {
+    action: 'report.export.delete',
+    entityType: 'reportExport',
+    entityId: exportId,
+    ip,
+    userAgent,
+    metadata: withSubject(
+      { format: exportRow.format, source: exportRow.source, exportedAt: exportRow.createdAt },
+      reportSubject(exportRow.report),
+    ),
+  });
 }
 
 export async function listExports(userId, { limit, offset, q } = {}) {

@@ -3,11 +3,12 @@ import { getUserMembership } from './organizationService.js';
 
 /**
  * @param {string} userId
- * @param {{action: string, entityType?: string|null, entityId?: string|null, status?: 'success'|'info'|'warning'|'failed', ip?: string|null, metadata?: object|null}} entry
+ * @param {{action: string, entityType?: string|null, entityId?: string|null, status?: 'success'|'info'|'warning'|'failed', ip?: string|null, userAgent?: string|null, metadata?: object|null}} entry
+ * @param {object} [db] - a `$transaction` client, when the entry must commit or roll back with the change it records
  */
-export async function createAuditLog(userId, entry) {
+export async function createAuditLog(userId, entry, db = prisma) {
   const { organizationId } = await getUserMembership(userId);
-  return prisma.auditLog.create({
+  return db.auditLog.create({
     data: {
       userId,
       organizationId,
@@ -16,9 +17,20 @@ export async function createAuditLog(userId, entry) {
       entityId: entry.entityId ?? null,
       status: entry.status ?? 'success',
       ip: entry.ip ?? null,
+      userAgent: entry.userAgent ?? null,
       metadata: entry.metadata ?? undefined,
     },
   });
+}
+
+// A value starting with `*` matches by suffix: permission denials log a dynamic `<resource>.<action>.denied`,
+// so the frontend filters them as `*.denied` rather than mirroring every route's permission gate.
+function buildActionFilter(action) {
+  const actions = Array.isArray(action) ? action : [action];
+  const exact = actions.filter((value) => !value.startsWith('*'));
+  const clauses = actions.filter((value) => value.startsWith('*')).map((value) => ({ action: { endsWith: value.slice(1) } }));
+  if (exact.length > 0) clauses.push({ action: { in: exact } });
+  return { OR: clauses };
 }
 
 export async function listAuditLogs(
@@ -46,7 +58,7 @@ export async function listAuditLogs(
             ],
           }
         : {}),
-      ...(action ? (Array.isArray(action) ? { action: { in: action } } : { action }) : {}),
+      ...(action ? { AND: [buildActionFilter(action)] } : {}),
       ...(entityType ? { entityType } : {}),
       ...(actorUserId ? { userId: actorUserId } : {}),
       ...(AUDIT_LOG_STATUSES.includes(status) ? { status } : {}),

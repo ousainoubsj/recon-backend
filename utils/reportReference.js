@@ -8,3 +8,11 @@ export function formatReportReference(sequenceYear, sequenceNumber) {
   if (sequenceYear == null || sequenceNumber == null) return null;
   return `REC-${sequenceYear}-${String(sequenceNumber).padStart(6, '0')}`;
 }
+
+// The audit-log `subject` for a report: its name plus REC- reference (null for drafts, which have none yet).
+export function reportSubject(report) {
+  return {
+    name: report.name ?? 'Untitled Reconciliation',
+    code: formatReportReference(report.sequenceYear, report.sequenceNumber),
+  };
+}

@@ -2,6 +2,8 @@ import { prisma } from '../config/prisma.config.js';
 import { NotFoundError, ValidationError, ConflictError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
+import { withSubject } from '../utils/audit.js';
+import { reportSubject } from '../utils/reportReference.js';
 import { createNotification } from './notificationService.js';
 import { downloadFromR2, parseTabularFile } from '../utils/fileParser.js';
 import {
@@ -351,7 +353,7 @@ function aggregatePeriod(reports) {
  * @param {import('../types/recon.js').SaveReportDto} dto
  * @returns {Promise<string>} the new report's id
  */
-export async function saveReport(userId, dto, { ip } = {}) {
+export async function saveReport(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const config = await withOrgToleranceDefaults(organizationId, dto.config);
 
@@ -396,10 +398,14 @@ export async function saveReport(userId, dto, { ip } = {}) {
     entityType: 'report',
     entityId: report.id,
     ip,
-    metadata: {
-      filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
-      matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
-    },
+    userAgent,
+    metadata: withSubject(
+      {
+        filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
+        matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+      },
+      reportSubject(report),
+    ),
   });
 
   return report.id;
@@ -917,7 +923,7 @@ export async function getTransaction(userId, reportId, rowId) {
   };
 }
 
-export async function markRowReviewed(userId, reportId, rowId, reviewed = true, { ip } = {}) {
+export async function markRowReviewed(userId, reportId, rowId, reviewed = true, { ip, userAgent } = {}) {
   const report = await assertReportAccess(userId, reportId);
   const { count } = await prisma.reportRow.updateMany({
     where: { id: rowId, reportId },
@@ -927,16 +933,19 @@ export async function markRowReviewed(userId, reportId, rowId, reviewed = true, 
   });
   if (count === 0) throw new NotFoundError();
 
+  const row = await prisma.reportRow.findFirst({ where: { id: rowId, reportId } });
+
   await logAuditSafely(userId, {
     action: 'report.row.review',
     entityType: 'reportRow',
     entityId: rowId,
     status: 'info',
     ip,
-    metadata: { reportReference: formatReportReference(report.sequenceYear, report.sequenceNumber) ?? reportId, reviewed },
+    userAgent,
+    metadata: withSubject({ transactionRef: row.ref, rowStatus: row.status, reviewed }, reportSubject(report)),
   });
 
-  return prisma.reportRow.findFirst({ where: { id: rowId } });
+  return row;
 }
 
 const BREAK_REASON_CATEGORY_LABELS = {
@@ -1097,10 +1106,13 @@ export async function saveDraft(userId, dto) {
 // mock Audit Log's granular vocabulary, distinct from the single
 // `report.run.*` events below. Not logged on every PATCH, only when that
 // specific field is part of it (e.g. a progress-only autosave stays silent).
-export async function updateDraft(userId, reportId, dto, { ip } = {}) {
+export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {}) {
   const needsBefore = dto.columnMapping !== undefined || dto.config !== undefined;
   const before = needsBefore
-    ? await prisma.report.findFirst({ where: { id: reportId, userId }, select: { columnMapping: true, config: true } })
+    ? await prisma.report.findFirst({
+        where: { id: reportId, userId },
+        select: { columnMapping: true, config: true, name: true, sequenceYear: true, sequenceNumber: true },
+      })
     : null;
 
   const { count } = await prisma.report.updateMany({
@@ -1126,7 +1138,8 @@ export async function updateDraft(userId, reportId, dto, { ip } = {}) {
         entityType: 'report',
         entityId: reportId,
         ip,
-        metadata: { changes },
+        userAgent,
+        metadata: withSubject({ changes }, reportSubject(before)),
       });
     }
   }
@@ -1138,7 +1151,8 @@ export async function updateDraft(userId, reportId, dto, { ip } = {}) {
         entityType: 'report',
         entityId: reportId,
         ip,
-        metadata: { changes },
+        userAgent,
+        metadata: withSubject({ changes }, reportSubject(before)),
       });
     }
   }
@@ -1165,7 +1179,7 @@ export async function listDrafts(userId) {
 
 // Promotes a draft into a completed report: same shape as a fresh saveReport,
 // applied to the existing draft row instead of a new one.
-export async function completeDraft(userId, reportId, dto, { ip } = {}) {
+export async function completeDraft(userId, reportId, dto, { ip, userAgent } = {}) {
   const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
   if (!draft) throw new NotFoundError();
   const { role } = await getUserMembership(userId);
@@ -1186,10 +1200,14 @@ export async function completeDraft(userId, reportId, dto, { ip } = {}) {
     entityType: 'report',
     entityId: report.id,
     ip,
-    metadata: {
-      filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
-      matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
-    },
+    userAgent,
+    metadata: withSubject(
+      {
+        filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
+        matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+      },
+      reportSubject(report),
+    ),
   });
 
   return report.id;
@@ -1219,7 +1237,7 @@ function findDraftOrFailedRun(userId, reportId) {
 // so there's no HTTP-timeout ceiling on how large a file pair can be. Flips
 // the report to `processing` synchronously so the caller/poller sees that
 // state immediately, without waiting on the worker to even pick the job up.
-export async function enqueueReconciliationRun(userId, reportId, dto, { ip } = {}) {
+export async function enqueueReconciliationRun(userId, reportId, dto, { ip, userAgent } = {}) {
   const draft = await findDraftOrFailedRun(userId, reportId);
   if (!draft) throw new NotFoundError();
   if (!draft.fileAKey || !draft.fileBKey) {
@@ -1240,7 +1258,8 @@ export async function enqueueReconciliationRun(userId, reportId, dto, { ip } = {
     entityId: reportId,
     status: 'info',
     ip,
-    metadata: { filePair: `${draft.fileAName ?? 'File A'} vs ${draft.fileBName ?? 'File B'}` },
+    userAgent,
+    metadata: withSubject({ filePair: `${draft.fileAName ?? 'File A'} vs ${draft.fileBName ?? 'File B'}` }, reportSubject(draft)),
   });
 
   await enqueueReconciliationJob({
@@ -1248,6 +1267,7 @@ export async function enqueueReconciliationRun(userId, reportId, dto, { ip } = {
     userId,
     organizationId,
     ip: ip ?? null,
+    userAgent: userAgent ?? null,
     dto: { name: dto.name, columnMapping: dto.columnMapping },
     config,
   });
@@ -1304,7 +1324,7 @@ function createProgressReporter(reportId) {
 // parse, match, or the bulk row write — persists a `status: 'failed'` row
 // with the real error message rather than leaving the report silently stuck
 // in whatever state it was already in.
-export async function executeReconciliationRun({ reportId, userId, ip, dto, config, organizationId }) {
+export async function executeReconciliationRun({ reportId, userId, ip, userAgent, dto, config, organizationId }) {
   const draft = await prisma.report.findFirst({
     where: { id: reportId },
     omit: { fileASampleRows: true, fileBSampleRows: true },
@@ -1384,10 +1404,14 @@ export async function executeReconciliationRun({ reportId, userId, ip, dto, conf
       entityType: 'report',
       entityId: report.id,
       ip,
-      metadata: {
-        matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
-        totalBreakValue: toNum(report.totalBreakValue),
-      },
+      userAgent,
+      metadata: withSubject(
+        {
+          matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
+          totalBreakValue: toNum(report.totalBreakValue),
+        },
+        reportSubject(report),
+      ),
     });
 
     return report.id;
@@ -1399,7 +1423,8 @@ export async function executeReconciliationRun({ reportId, userId, ip, dto, conf
       entityId: reportId,
       status: 'failed',
       ip,
-      metadata: { reason: err.message },
+      userAgent,
+      metadata: withSubject({ reason: err.message }, reportSubject(draft)),
     });
     throw err;
   }
@@ -1520,7 +1545,7 @@ export async function getRulePreview(userId, reportId, dto) {
 
 // Org admins can delete any report in the org; everyone else may only
 // delete a report they created themselves.
-export async function deleteReport(userId, reportId, { ip } = {}) {
+export async function deleteReport(userId, reportId, { ip, userAgent } = {}) {
   const { organizationId, role } = await getUserMembership(userId);
 
   // Read first to know the original owner (needed for the notification
@@ -1528,7 +1553,7 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
   // so a report that no longer matches still correctly 404s either way.
   const existing = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    select: { userId: true, name: true, fileAName: true, fileBName: true, status: true },
+    select: { userId: true, name: true, fileAName: true, fileBName: true, status: true, sequenceYear: true, sequenceNumber: true },
   });
   if (!existing) throw new NotFoundError();
 
@@ -1544,11 +1569,14 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
     entityId: reportId,
     status: isAdminActingOnAnother ? 'warning' : 'success',
     ip,
-    metadata: {
-      reportName: existing.name ?? 'Untitled Reconciliation',
-      filePair: `${existing.fileAName ?? 'File A'} vs ${existing.fileBName ?? 'File B'}`,
-      wasDraft: existing.status === 'draft',
-    },
+    userAgent,
+    metadata: withSubject(
+      {
+        filePair: `${existing.fileAName ?? 'File A'} vs ${existing.fileBName ?? 'File B'}`,
+        wasDraft: existing.status === 'draft',
+      },
+      reportSubject(existing),
+    ),
   });
 
   if (isAdminActingOnAnother) {
@@ -1565,26 +1593,62 @@ export async function deleteReport(userId, reportId, { ip } = {}) {
 // shown) — scoping to status: 'completed' here means this can never be used
 // to reach into another user's private draft the way a plain org-scoped
 // updateMany could.
-export async function updateReportTag(userId, reportId, tag) {
+export async function updateReportTag(userId, reportId, tag, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  const before = await prisma.report.findFirst({
+    where: { id: reportId, organizationId, status: 'completed' },
+    select: { tag: true, name: true, sequenceYear: true, sequenceNumber: true },
+  });
+  if (!before) throw new NotFoundError();
+
   const { count } = await prisma.report.updateMany({
     where: { id: reportId, organizationId, status: 'completed' },
     data: { tag },
   });
   if (count === 0) throw new NotFoundError();
+
+  if (before.tag !== tag) {
+    await logAuditSafely(userId, {
+      action: 'report.tag.update',
+      entityType: 'report',
+      entityId: reportId,
+      ip,
+      userAgent,
+      metadata: withSubject({ changes: { tag: { from: before.tag, to: tag } } }, reportSubject(before)),
+    });
+  }
+
   return prisma.report.findFirst({ where: { id: reportId, organizationId } });
 }
 
 // Same scoping rationale as updateReportTag above — renaming is only ever
 // exposed on a completed report (Results page), and a draft's name is
 // already covered by the plain draft-update PATCH.
-export async function updateReportName(userId, reportId, name) {
+export async function updateReportName(userId, reportId, name, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  const before = await prisma.report.findFirst({
+    where: { id: reportId, organizationId, status: 'completed' },
+    select: { name: true, sequenceYear: true, sequenceNumber: true },
+  });
+  if (!before) throw new NotFoundError();
+
   const { count } = await prisma.report.updateMany({
     where: { id: reportId, organizationId, status: 'completed' },
     data: { name },
   });
   if (count === 0) throw new NotFoundError();
+
+  if (before.name !== name) {
+    await logAuditSafely(userId, {
+      action: 'report.rename',
+      entityType: 'report',
+      entityId: reportId,
+      ip,
+      userAgent,
+      metadata: withSubject({ changes: { name: { from: before.name, to: name } } }, reportSubject({ ...before, name })),
+    });
+  }
+
   return prisma.report.findFirst({ where: { id: reportId, organizationId } });
 }
 
@@ -1607,7 +1671,7 @@ export async function removeFavorite(userId, reportId) {
 // Same admin-vs-owner scoping as deleteReport, applied to a set of ids at
 // once. Notifies each distinct non-caller owner once (with a count), not
 // once per deleted report.
-export async function bulkDeleteReports(userId, ids, { ip } = {}) {
+export async function bulkDeleteReports(userId, ids, { ip, userAgent } = {}) {
   const { organizationId, role } = await getUserMembership(userId);
 
   const existing = await prisma.report.findMany({
@@ -1633,6 +1697,7 @@ export async function bulkDeleteReports(userId, ids, { ip } = {}) {
     entityType: 'report',
     status: deletedCountByOwner.size > 0 ? 'warning' : 'success',
     ip,
+    userAgent,
     metadata: {
       references: existing.map((r) => formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
       count,

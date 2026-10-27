@@ -5,6 +5,7 @@ import { getUserMembership } from '../services/organizationService.js';
 import { logAuditSafely } from '../services/auditLogService.js';
 import { r2 } from '../utils/r2Client.js';
 import { FileTooLargeError, ValidationError } from '../errors.js';
+import { auditContext } from '../utils/audit.js';
 
 const LOGO_ALLOWED_CONTENT_TYPES = new Set(['image/png', 'image/svg+xml']);
 const LOGO_MAX_SIZE_BYTES = 2 * 1024 * 1024;
@@ -18,7 +19,7 @@ export const getOrganizationInfo = async (req, res) => {
 };
 
 export const updateOrganizationInfo = async (req, res) => {
-  const info = await settingsService.updateOrganizationInfo(req.session.user.id, req.body, { ip: req.ip });
+  const info = await settingsService.updateOrganizationInfo(req.session.user.id, req.body, auditContext(req));
   res.json(info);
 };
 
@@ -28,7 +29,7 @@ export const getReconciliationDefaults = async (req, res) => {
 };
 
 export const updateReconciliationDefaults = async (req, res) => {
-  const defaults = await settingsService.updateReconciliationDefaults(req.session.user.id, req.body, { ip: req.ip });
+  const defaults = await settingsService.updateReconciliationDefaults(req.session.user.id, req.body, auditContext(req));
   res.json(defaults);
 };
 
@@ -38,7 +39,7 @@ export const getNotificationPreferences = async (req, res) => {
 };
 
 export const updateNotificationPreferences = async (req, res) => {
-  const prefs = await settingsService.updateNotificationPreferences(req.session.user.id, req.body, { ip: req.ip });
+  const prefs = await settingsService.updateNotificationPreferences(req.session.user.id, req.body, auditContext(req));
   res.json(prefs);
 };
 
@@ -77,7 +78,7 @@ export const createOrganizationLogoPresignedUpload = async (req, res) => {
     entityType: 'organization',
     entityId: organizationId,
     status: 'info',
-    ip: req.ip,
+    ...auditContext(req),
     metadata: { filename, contentType },
   });
 };
@@ -115,7 +116,7 @@ export const createAvatarPresignedUpload = async (req, res) => {
     entityType: 'user',
     entityId: userId,
     status: 'info',
-    ip: req.ip,
+    ...auditContext(req),
     metadata: { filename, contentType },
   });
 };
