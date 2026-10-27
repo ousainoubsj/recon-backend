@@ -39,7 +39,15 @@ app.use(helmet({
 }));
 app.use(cors({ origin: process.env.FRONTEND_URL, credentials: true }));
 app.use(cookieParser());
-app.use(pinoHttp());
+// Method, path and status only: headers carry session cookies and the query string carries OAuth codes.
+app.use(
+  pinoHttp({
+    serializers: {
+      req: (req) => ({ id: req.id, method: req.method, path: req.url.split('?')[0] }),
+      res: (res) => ({ statusCode: res.statusCode }),
+    },
+  }),
+);
 
 // Browsers that signed in before COOKIE_DOMAIN/crossSubDomainCookies was
 // enabled are stuck holding a host-only cookie (Domain=api.recon-cil.com)
