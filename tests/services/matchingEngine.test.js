@@ -74,11 +74,11 @@ describe('normalizeRef', () => {
 
 describe('parseAmount', () => {
   it('strips currency symbols and commas', () => {
-    expect(parseAmount('$12,450.00')).toBe(12450);
+    expect(parseAmount('$12,450.00')?.toString()).toBe('12450');
   });
 
   it('handles negative values', () => {
-    expect(parseAmount('-12.50')).toBe(-12.5);
+    expect(parseAmount('-12.50')?.toString()).toBe('-12.5');
   });
 
   it('returns null for empty/nullish input', () => {
@@ -92,23 +92,23 @@ describe('parseAmount', () => {
   });
 
   it('reads parenthesized amounts as negative', () => {
-    expect(parseAmount('(100.00)')).toBe(-100);
+    expect(parseAmount('(100.00)')?.toString()).toBe('-100');
   });
 
   it('reads parenthesized amounts with currency symbols and commas as negative', () => {
-    expect(parseAmount('($1,250.75)')).toBe(-1250.75);
+    expect(parseAmount('($1,250.75)')?.toString()).toBe('-1250.75');
   });
 
   it('reads trailing-minus amounts as negative', () => {
-    expect(parseAmount('100.00-')).toBe(-100);
+    expect(parseAmount('100.00-')?.toString()).toBe('-100');
   });
 
   it('does not double-negate a value with a real leading minus', () => {
-    expect(parseAmount('-12.50')).toBe(-12.5);
+    expect(parseAmount('-12.50')?.toString()).toBe('-12.5');
   });
 
   it('requires both parens — a lone opening paren is not treated as negative', () => {
-    expect(parseAmount('(100.00')).toBe(100);
+    expect(parseAmount('(100.00')?.toString()).toBe('100');
   });
 
   it('fails safe to null for a garbled leading-and-trailing minus', () => {
@@ -272,7 +272,7 @@ describe('runMatch — non-transaction rows (blank ref, amount, and date)', () =
     const fileB = { rows: [] };
     const { rows } = runMatch(fileA, fileB, mapping, mapping, {});
     expect(rows).toHaveLength(1);
-    expect(rows[0].amountA).toBe(-100);
+    expect(rows[0].amountA.toString()).toBe('-100');
     expect(rows[0].status).toBe('unmatched_a');
   });
 });
@@ -316,7 +316,7 @@ describe('runMatch — duplicate handling policies', () => {
     expect(summary.duplicates).toBe(2);
     expect(summary.unmatchedA).toBe(1);
     const survivorRow = rows.find((r) => r.status === 'unmatched_a');
-    expect(survivorRow.amountA).toBe(100);
+    expect(survivorRow.amountA.toString()).toBe('100');
   });
 
   it('keep-last keeps the last entry as survivor, rest as duplicates', () => {
@@ -324,7 +324,7 @@ describe('runMatch — duplicate handling policies', () => {
     expect(summary.duplicates).toBe(2);
     expect(summary.unmatchedA).toBe(1);
     const survivorRow = rows.find((r) => r.status === 'unmatched_a');
-    expect(survivorRow.amountA).toBe(120);
+    expect(survivorRow.amountA.toString()).toBe('120');
   });
 
   it('flag-all treats every entry in the group as a duplicate, no survivor', () => {
@@ -509,5 +509,37 @@ describe('extrapolatePreview', () => {
     const sampleSummary = { matched: 0, mismatched: 0, duplicates: 0, unmatchedA: 0, unmatchedB: 0 };
     const result = extrapolatePreview(sampleSummary, 0, 100, 0, 100);
     expect(result.estimatedMatches).toBe(0);
+  });
+});
+
+// Each of these comes out wrong with JS floats: 1.1 - 1.0 is 0.10000000000000009, ten 0.1s sum to 0.9999999999999999.
+describe('money is exact decimal arithmetic', () => {
+  it('matches a difference exactly at the tolerance', () => {
+    const fileA = { rows: [row('REF1', '1.1', '2026-06-30')] };
+    const fileB = { rows: [row('REF1', '1.0', '2026-06-30')] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, { amountTolerance: 0.1 });
+    expect(rows[0].status).toBe('matched');
+    expect(rows[0].amountDiff.toString()).toBe('0.1');
+  });
+
+  it('sums the break value exactly', () => {
+    const fileA = { rows: Array.from({ length: 10 }, (_, i) => row(`A${i}`, '0.10', '2026-06-30')) };
+    const { summary } = runMatch(fileA, { rows: [] }, mapping, mapping, {});
+    expect(summary.totalBreakValue.toString()).toBe('1');
+  });
+
+  it('keeps amounts beyond float precision intact', () => {
+    expect(parseAmount('12,345,678,901,234.5678')?.toString()).toBe('12345678901234.5678');
+  });
+
+  it('rounds to the 4 decimal places the amount columns store, half away from zero', () => {
+    expect(parseAmount('1.23456')?.toString()).toBe('1.2346');
+    expect(parseAmount('-1.00005')?.toString()).toBe('-1.0001');
+    expect(parseAmount('(2.00005)')?.toString()).toBe('-2.0001');
+  });
+
+  it('rejects a malformed number instead of throwing', () => {
+    expect(parseAmount('1.2.3')).toBeNull();
+    expect(parseAmount('5-3')).toBeNull();
   });
 });

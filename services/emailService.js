@@ -1,4 +1,5 @@
 import { Resend } from 'resend';
+import { Prisma } from '@prisma/client';
 import { renderEmailTemplate, escapeHtmlForEmail, htmlToText } from '../utils/emailTemplate.js';
 import { formatReportReference } from '../utils/reportReference.js';
 
@@ -118,7 +119,7 @@ export async function sendComparisonReportEmail(reports, to) {
   });
 
   const avgMatchRate = runStats.length > 0 ? runStats.reduce((sum, r) => sum + r.matchPercent, 0) / runStats.length : 0;
-  const totalBreakValue = sorted.reduce((sum, r) => sum + Number(r.totalBreakValue ?? 0), 0);
+  const totalBreakValue = sorted.reduce((sum, r) => sum.plus(r.totalBreakValue ?? 0), new Prisma.Decimal(0));
   const dateRangeFormatted =
     runStats.length > 0 ? `${formatDate(runStats[0].runDate)} – ${formatDate(runStats[runStats.length - 1].runDate)}` : 'see link';
 

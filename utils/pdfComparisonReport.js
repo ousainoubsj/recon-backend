@@ -2,6 +2,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import React from 'react';
 import { Document, Image, Page, StyleSheet, Text, View, renderToBuffer } from '@react-pdf/renderer';
+import { Prisma } from '@prisma/client';
 import { computeCategoryStats } from './reportSections.js';
 
 // Deliberately self-contained rather than importing from pdfReport.js — same
@@ -261,12 +262,9 @@ function deriveRunStats(report) {
   const matchPercent = totalRows > 0 ? (matchedCount / totalRows) * 100 : 0;
   const breakValue = Number(report.totalBreakValue ?? 0);
   const exceptionCount = mismatchedCount + unmatchedCount;
-  const avgBreakSize = exceptionCount > 0 ? breakValue / exceptionCount : 0;
-
-  const rows = report.rows ?? [];
-  const largestBreak = rows.reduce((max, r) => Math.max(max, Math.abs(Number(r.amountDiff ?? 0))), 0);
-  const unmatchedACount = rows.filter((r) => r.status === 'unmatched_a').length;
-  const unmatchedBCount = rows.filter((r) => r.status === 'unmatched_b').length;
+  const avgBreakSize = exceptionCount > 0 ? new Prisma.Decimal(report.totalBreakValue ?? 0).div(exceptionCount).toNumber() : 0;
+  // From reportService.getComparisonReports' SQL aggregate; the rows themselves are never loaded.
+  const { largestBreak, unmatchedACount, unmatchedBCount, duplicateRowCount } = report.rowStats;
 
   return {
     name: report.name || 'Untitled Reconciliation',
@@ -279,10 +277,10 @@ function deriveRunStats(report) {
     matchPercent,
     breakValue,
     avgBreakSize,
-    largestBreak,
+    largestBreak: Number(largestBreak),
     unmatchedACount,
     unmatchedBCount,
-    duplicateRowCount: rows.filter((r) => r.status === 'duplicate').length,
+    duplicateRowCount,
     categoryStats: computeCategoryStats(report),
   };
 }
@@ -295,7 +293,7 @@ function ComparisonDocument({ reports, sections, generatedByName, organizationNa
       ? `${new Date(runs[0].runDate).toLocaleDateString()} – ${new Date(runs[runs.length - 1].runDate).toLocaleDateString()}`
       : '—';
   const avgMatchRate = runs.length > 0 ? runs.reduce((sum, r) => sum + r.matchPercent, 0) / runs.length : 0;
-  const totalBreakValue = runs.reduce((sum, r) => sum + r.breakValue, 0);
+  const totalBreakValue = sorted.reduce((sum, r) => sum.plus(r.totalBreakValue ?? 0), new Prisma.Decimal(0)).toNumber();
 
   const children = [
     h(ComparisonHeader, { key: 'header', runCount: runs.length, dateRangeLabel, generatedByName, organizationName, organizationLogo, organizationType }),

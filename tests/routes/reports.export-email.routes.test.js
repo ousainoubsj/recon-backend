@@ -21,6 +21,7 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
 const mockReportService = {
   getReport: jest.fn(),
   getReportsByIds: jest.fn(),
+  getComparisonReports: jest.fn(),
   formatReportReference: (sequenceYear, sequenceNumber) =>
     sequenceYear == null || sequenceNumber == null ? null : `REC-${sequenceYear}-${String(sequenceNumber).padStart(6, '0')}`,
 };
@@ -394,11 +395,14 @@ describe('POST /api/reports/bulk-export', () => {
   });
 });
 
+// What getComparisonReports attaches in place of rows.
+const COMPARISON_ROW_STATS = { largestBreak: 25, unmatchedACount: 1, unmatchedBCount: 0, duplicateRowCount: 0 };
+
 describe('POST /api/reports/comparison-export', () => {
   it('builds a single stats-comparison file (not a zip) across 2 reports, with no recordExport (no single reportId to attach to)', async () => {
-    mockReportService.getReportsByIds.mockResolvedValue([
-      { ...sampleReport, id: REPORT_ID_1 },
-      { ...sampleReport, id: REPORT_ID_2, name: 'May Bank Reconciliation', matchedCount: 5 },
+    mockReportService.getComparisonReports.mockResolvedValue([
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_1 },
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_2, name: 'May Bank Reconciliation', matchedCount: 5 },
     ]);
 
     const res = await request(app)
@@ -409,9 +413,7 @@ describe('POST /api/reports/comparison-export', () => {
     expect(res.headers['content-type']).toContain('spreadsheetml.sheet');
     expect(res.headers['content-disposition']).toContain('attachment; filename="combined_report_');
     expect(Number(res.headers['content-length'])).toBeGreaterThan(0);
-    expect(mockReportService.getReportsByIds).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2], {
-      requireCompleted: true,
-    });
+    expect(mockReportService.getComparisonReports).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2]);
     expect(mockRecordExport).not.toHaveBeenCalled();
     expect(mockLogAuditSafely).toHaveBeenCalledWith(
       USER_ID,
@@ -420,9 +422,9 @@ describe('POST /api/reports/comparison-export', () => {
   });
 
   it('returns a real PDF when format is "pdf"', async () => {
-    mockReportService.getReportsByIds.mockResolvedValue([
-      { ...sampleReport, id: REPORT_ID_1 },
-      { ...sampleReport, id: REPORT_ID_2 },
+    mockReportService.getComparisonReports.mockResolvedValue([
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_1 },
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_2 },
     ]);
 
     const res = await request(app)
@@ -440,11 +442,11 @@ describe('POST /api/reports/comparison-export', () => {
       .send({ ids: [REPORT_ID_1] });
 
     expect(res.status).toBe(422);
-    expect(mockReportService.getReportsByIds).not.toHaveBeenCalled();
+    expect(mockReportService.getComparisonReports).not.toHaveBeenCalled();
   });
 
   it('returns a 404 RFC 7807 error when any id is missing or inaccessible', async () => {
-    mockReportService.getReportsByIds.mockRejectedValue(new NotFoundError());
+    mockReportService.getComparisonReports.mockRejectedValue(new NotFoundError());
 
     const res = await request(app)
       .post('/api/reports/comparison-export')
@@ -454,9 +456,9 @@ describe('POST /api/reports/comparison-export', () => {
   });
 
   it('skips the audit log and recordExport when preview is true', async () => {
-    mockReportService.getReportsByIds.mockResolvedValue([
-      { ...sampleReport, id: REPORT_ID_1 },
-      { ...sampleReport, id: REPORT_ID_2 },
+    mockReportService.getComparisonReports.mockResolvedValue([
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_1 },
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_2 },
     ]);
 
     const res = await request(app)
@@ -469,9 +471,9 @@ describe('POST /api/reports/comparison-export', () => {
   });
 
   it('audit-logs a failed attempt and propagates the error when building the file throws', async () => {
-    mockReportService.getReportsByIds.mockResolvedValue([
-      { ...sampleReport, id: REPORT_ID_1 },
-      { ...sampleReport, id: REPORT_ID_2 },
+    mockReportService.getComparisonReports.mockResolvedValue([
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_1 },
+      { ...sampleReport, rowStats: COMPARISON_ROW_STATS, id: REPORT_ID_2 },
     ]);
     // Forces a real TypeError inside buildComparisonXlsxReport (`sections.summary`
     // on undefined) — exercises the actual failure path instead of mocking it.
@@ -567,8 +569,10 @@ describe('POST /api/reports/comparison-email', () => {
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ sent: true });
+    // The email shows per-run totals only, so it never loads rows.
     expect(mockReportService.getReportsByIds).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2], {
       requireCompleted: true,
+      includeRows: false,
     });
     expect(mockSend).toHaveBeenCalledWith(
       expect.objectContaining({ to: ['analyst@example.com'], from: process.env.EMAIL_FROM }),

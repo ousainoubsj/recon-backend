@@ -379,7 +379,7 @@ export const exportReport = async (req, res) => {
 // ReportTemplate row, so sections come straight from the request body.
 export const comparisonExport = async (req, res) => {
   const { ids, format = 'xlsx', sections: overrideSections, preview = false } = req.body;
-  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
+  const reports = await reportService.getComparisonReports(req.session.user.id, ids);
 
   const sections = await resolveSections({
     organizationId: reports[0].organizationId,
@@ -498,7 +498,7 @@ export const emailReport = async (req, res) => {
 // and sending the comparison template instead of the single-report one.
 export const comparisonEmailReport = async (req, res) => {
   const { ids, to } = req.body;
-  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
+  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true, includeRows: false });
   const recipients = await filterEmailNotificationOptedIn(to);
   if (recipients.length === 0) {
     res.status(202).json({ sent: false, reason: 'All recipients have opted out of email notifications' });

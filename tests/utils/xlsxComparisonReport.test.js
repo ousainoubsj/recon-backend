@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import * as XLSX from 'xlsx';
 import { buildComparisonXlsxReport } from '../../utils/xlsxComparisonReport.js';
 
@@ -27,10 +28,7 @@ const reportA = {
   unmatchedCount: 1,
   duplicateCount: 0,
   totalBreakValue: 50,
-  rows: [
-    { ref: 'A1', status: 'unmatched_a', amountA: 50, amountB: null, amountDiff: null },
-    { ref: 'A2', status: 'mismatched', amountA: 100, amountB: 70, amountDiff: 30 },
-  ],
+  rowStats: { largestBreak: new Prisma.Decimal(30), unmatchedACount: 1, unmatchedBCount: 0, duplicateRowCount: 0 },
 };
 
 const reportB = {
@@ -43,11 +41,7 @@ const reportB = {
   unmatchedCount: 1,
   duplicateCount: 0,
   totalBreakValue: 80,
-  rows: [
-    { ref: 'B1', status: 'unmatched_b', amountA: null, amountB: 20, amountDiff: null },
-    { ref: 'B2', status: 'mismatched', amountA: 100, amountB: 40, amountDiff: 60 },
-    { ref: 'B3', status: 'mismatched', amountA: 100, amountB: 80, amountDiff: 20 },
-  ],
+  rowStats: { largestBreak: new Prisma.Decimal(60), unmatchedACount: 0, unmatchedBCount: 1, duplicateRowCount: 0 },
 };
 
 function readWorkbook(buffer) {
@@ -98,13 +92,13 @@ describe('buildComparisonXlsxReport', () => {
     expect(csv).toContain('Break Value Trend'); // chartsAndGraphs still on — distinct section, distinct label
   });
 
-  it('computes per-run break stats (avg/largest) from that run\'s own rows only, without listing individual rows', async () => {
+  it('computes per-run break stats (avg/largest) from that run\'s row stats, without listing individual rows', async () => {
     const buffer = await buildComparisonXlsxReport([reportA, reportB], { ...NO_SECTIONS, breakAnalysis: true });
     const csv = overviewCsv(buffer);
 
     // reportB: exceptions = mismatchedCount(2) + unmatchedCount(1) = 3, totalBreakValue 80 -> avg 26.67
     expect(csv).toContain('$26.67');
-    // reportB's largest single break among its rows is 60
+    // reportB's largest single break, from its row stats, is 60
     expect(csv).toContain('$60.00');
     // No raw transaction references anywhere in the sheet
     expect(csv).not.toContain('A1');
@@ -117,6 +111,18 @@ describe('buildComparisonXlsxReport', () => {
 
     expect(csv).toContain('Missing in Counterparty');
     expect(csv).toContain('Missing Internally');
+  });
+
+  it('sums the total break value as decimals, not floats', async () => {
+    const buffer = await buildComparisonXlsxReport(
+      [
+        { ...reportA, totalBreakValue: new Prisma.Decimal('0.1') },
+        { ...reportB, totalBreakValue: new Prisma.Decimal('0.2') },
+      ],
+      NO_SECTIONS,
+    );
+    // Totals arrive as Prisma Decimals from the query; this checks they're summed as such, not concatenated or NaN.
+    expect(overviewCsv(buffer)).toContain('$0.30');
   });
 
   it('sorts runs chronologically regardless of input order', async () => {

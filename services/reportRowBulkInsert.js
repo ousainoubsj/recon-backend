@@ -9,6 +9,7 @@ import { from as copyFrom } from 'pg-copy-streams';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import Papa from 'papaparse';
+import { Prisma } from '@prisma/client';
 import { pgPool } from '../config/prisma.config.js';
 
 // Matches ReportRow's DB column names (prisma/schema.prisma's @map/@@map),
@@ -38,15 +39,20 @@ const REPORT_ROW_COPY_COLUMNS = [
 // TEXT-format COPY) for the nullable columns disambiguates the two cases.
 const NULL_MARKER = '\\N';
 
+// toFixed() never switches to exponent notation, which Decimal's toString does for very large or small values.
+function amountForCopy(amount) {
+  return amount == null ? NULL_MARKER : new Prisma.Decimal(amount).toFixed();
+}
+
 export function reportRowToCsvRecord(reportId, r) {
-  const amountDiff = r.amountA != null && r.amountB != null ? r.amountA - r.amountB : null;
+  const amountDiff = r.amountA != null && r.amountB != null ? new Prisma.Decimal(r.amountA).minus(r.amountB) : null;
   return [
     reportId,
     r.ref ?? '',
     r.status,
-    r.amountA ?? NULL_MARKER,
-    r.amountB ?? NULL_MARKER,
-    amountDiff ?? NULL_MARKER,
+    amountForCopy(r.amountA),
+    amountForCopy(r.amountB),
+    amountForCopy(amountDiff),
     r.dateA ? new Date(r.dateA).toISOString() : NULL_MARKER,
     r.dateB ? new Date(r.dateB).toISOString() : NULL_MARKER,
     r.rawA != null ? JSON.stringify(r.rawA) : NULL_MARKER,

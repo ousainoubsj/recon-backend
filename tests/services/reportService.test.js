@@ -1,13 +1,16 @@
 import { jest } from '@jest/globals';
+import { Prisma } from '@prisma/client';
 
 const mockTx = {
   report: { create: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
   reportRow: { createMany: jest.fn() },
   reportSequence: { upsert: jest.fn() },
+  $queryRaw: jest.fn(),
 };
 
 const mockPrisma = {
   $transaction: jest.fn(async (fn) => fn(mockTx)),
+  $queryRaw: jest.fn(),
   report: {
     create: jest.fn(),
     findMany: jest.fn(),
@@ -153,6 +156,7 @@ const {
   removeFavorite,
   bulkDeleteReports,
   getReportsByIds,
+  getComparisonReports,
 } = await import('../../services/reportService.js');
 const { NotFoundError, ValidationError, ConflictError } = await import('../../errors.js');
 
@@ -194,6 +198,10 @@ beforeEach(() => {
   // existing literal-match assertions on tx.report.update's payload below
   // don't need to account for sequenceYear/sequenceNumber being added.
   mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
+  // Postgres returns NUMERIC sums as Decimals.
+  mockTx.$queryRaw.mockResolvedValue([
+    { matchedValue: new Prisma.Decimal('100.0000'), unmatchedValue: new Prisma.Decimal('50.0000'), duplicateValue: new Prisma.Decimal(0) },
+  ]);
 });
 
 describe('saveReport', () => {
@@ -242,7 +250,7 @@ describe('saveReport', () => {
         expect.objectContaining({
           reportId: 'report-1',
           ref: 'REF1',
-          amountDiff: 0,
+          amountDiff: new Prisma.Decimal(0),
           dateA: new Date('2026-01-01'),
           dateB: new Date('2026-01-01'),
         }),
@@ -1057,6 +1065,9 @@ describe('completeDraft', () => {
         valueBreakdown: { matchedValue: 100, unmatchedValue: 50, duplicateValue: 0 },
       }),
     });
+    // Summed in SQL over this report's rows, after they're written, not reduced from the DTO in JS.
+    expect(mockTx.$queryRaw.mock.calls[0]).toContain('draft-1');
+    expect(mockCopyReportRowsIn.mock.invocationCallOrder[0]).toBeLessThan(mockTx.$queryRaw.mock.invocationCallOrder[0]);
     expect(mockDeleteReportRows).toHaveBeenCalledWith('draft-1');
     expect(mockCopyReportRowsIn).toHaveBeenCalledWith(
       'draft-1',
@@ -1699,6 +1710,18 @@ describe('markRowReviewed', () => {
 describe('getBreakBreakdown', () => {
   beforeEach(() => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', organizationId: ORG_ID, status: 'completed' });
+  });
+
+  it('adds group sums as decimals, so a reason split across groups comes out exact', async () => {
+    // Two duplicated-partner groups (one per side) both land in one bucket: 0.1 + 0.2 must be 0.3, not 0.30000000000000004.
+    mockPrisma.reportRow.groupBy.mockResolvedValue([
+      { breakReason: 'duplicate', status: 'unmatched_a', _sum: { amountDiff: null, amountA: new Prisma.Decimal('0.1'), amountB: null } },
+      { breakReason: 'duplicate', status: 'unmatched_b', _sum: { amountDiff: null, amountA: null, amountB: new Prisma.Decimal('0.2') } },
+    ]);
+
+    const breakdown = await getBreakBreakdown(USER_ID, 'r1');
+
+    expect(breakdown[0]).toEqual({ category: 'Duplicated in Other File', amount: 0.3, percent: 100 });
   });
 
   it('sums the correct amount column per break reason and sorts descending by amount, zero-filling untriggered categories', async () => {
@@ -2454,5 +2477,38 @@ describe('getReportsByIds', () => {
       where: { id: { in: ['r1'] }, organizationId: ORG_ID, status: 'completed' },
       include: { rows: true },
     });
+  });
+});
+
+describe('getComparisonReports', () => {
+  it('loads the reports without rows and attaches per-run figures from one grouped query', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r1', status: 'completed' },
+      { id: 'r2', status: 'completed' },
+    ]);
+    mockPrisma.$queryRaw.mockResolvedValue([
+      { reportId: 'r1', largestBreak: new Prisma.Decimal('60.25'), unmatchedACount: 2, unmatchedBCount: 1, duplicateRowCount: 3 },
+    ]);
+
+    const result = await getComparisonReports(USER_ID, ['r1', 'r2']);
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ include: { rows: false } }));
+    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.$queryRaw.mock.calls[0]).toContainEqual(['r1', 'r2']);
+    expect(result[0].rowStats).toEqual({
+      largestBreak: new Prisma.Decimal('60.25'),
+      unmatchedACount: 2,
+      unmatchedBCount: 1,
+      duplicateRowCount: 3,
+    });
+    // A run with no rows gets no group from the query, so it reads as zeros.
+    expect(result[1].rowStats).toEqual({ largestBreak: new Prisma.Decimal(0), unmatchedACount: 0, unmatchedBCount: 0, duplicateRowCount: 0 });
+  });
+
+  it('never runs the stats query when any id is not a visible completed report', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([{ id: 'r1', status: 'completed' }]);
+
+    await expect(getComparisonReports(USER_ID, ['r1', 'other-org'])).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
   });
 });

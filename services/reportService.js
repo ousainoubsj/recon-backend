@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { prisma } from '../config/prisma.config.js';
 import { NotFoundError, ValidationError, ConflictError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
@@ -177,18 +178,20 @@ function getAllTimeCompletedReports(organizationId) {
 // amountDiff is computed here rather than via a Postgres GENERATED column —
 // see the note at the top of prisma/schema.prisma. Shared by saveReport and
 // completeDraft since both bulk-insert rows the same way.
-// Per-status dollar sums for Results' stat tiles (Matched/Unmatched/
-// Duplicates each show a count + a value) — computed once here from the
-// match engine's in-memory row output, since summing per-status amounts
-// from persisted rows on every Results page load would mean scanning
-// potentially 100k+ rows each time.
-function computeValueBreakdown(rows) {
-  const sum = (predicate) =>
-    rows.filter(predicate).reduce((total, r) => total + (r.amountA ?? r.amountB ?? 0), 0);
+// Per-status values for Results' stat tiles, summed in SQL once at completion rather than on every page load.
+// Stored as JSON numbers, the shape every existing report already has.
+async function computeValueBreakdown(tx, reportId) {
+  const [sums] = await tx.$queryRaw`
+    SELECT
+      COALESCE(SUM(COALESCE(amount_a, amount_b)) FILTER (WHERE status = 'matched'), 0) AS "matchedValue",
+      COALESCE(SUM(COALESCE(amount_a, amount_b)) FILTER (WHERE status IN ('unmatched_a', 'unmatched_b')), 0) AS "unmatchedValue",
+      COALESCE(SUM(COALESCE(amount_a, amount_b)) FILTER (WHERE status = 'duplicate'), 0) AS "duplicateValue"
+    FROM report_rows
+    WHERE report_id = ${reportId}::uuid`;
   return {
-    matchedValue: sum((r) => r.status === 'matched'),
-    unmatchedValue: sum((r) => r.status === 'unmatched_a' || r.status === 'unmatched_b'),
-    duplicateValue: sum((r) => r.status === 'duplicate'),
+    matchedValue: Number(sums.matchedValue),
+    unmatchedValue: Number(sums.unmatchedValue),
+    duplicateValue: Number(sums.duplicateValue),
   };
 }
 
@@ -215,7 +218,7 @@ function reportRowsForInsert(reportId, rows) {
     status: r.status,
     amountA: r.amountA,
     amountB: r.amountB,
-    amountDiff: r.amountA != null && r.amountB != null ? r.amountA - r.amountB : null,
+    amountDiff: r.amountA != null && r.amountB != null ? new Prisma.Decimal(r.amountA).minus(r.amountB) : null,
     dateA: r.dateA ? new Date(r.dateA) : null,
     dateB: r.dateB ? new Date(r.dateB) : null,
     rawA: r.rawA ?? undefined,
@@ -315,7 +318,7 @@ async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
         // files have been re-parsed for the real result.
         fileASampleRows: null,
         fileBSampleRows: null,
-        valueBreakdown: computeValueBreakdown(dto.rows),
+        valueBreakdown: await computeValueBreakdown(tx, reportId),
         ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
       },
     });
@@ -343,7 +346,7 @@ function aggregatePeriod(reports) {
   const totalRows = reports.reduce((sum, r) => sum + r.totalRows, 0);
   const matchedCount = reports.reduce((sum, r) => sum + r.matchedCount, 0);
   const unmatchedTransactions = reports.reduce((sum, r) => sum + r.unmatchedCount + r.mismatchedCount, 0);
-  const totalBreakValue = reports.reduce((sum, r) => sum + toNum(r.totalBreakValue), 0);
+  const totalBreakValue = reports.reduce((sum, r) => sum.plus(r.totalBreakValue ?? 0), new Prisma.Decimal(0)).toNumber();
   const avgMatchRate = totalRows > 0 ? (matchedCount / totalRows) * 100 : 0;
 
   return { count, totalTransactions: totalRows, avgMatchRate, unmatchedTransactions, totalBreakValue };
@@ -984,29 +987,35 @@ export async function getBreakBreakdown(userId, reportId) {
   // idea as missing_counterparty/missing_internal using amountA/amountB
   // rather than a diff.
   const amountForGroup = (g) => {
-    if (g.breakReason === 'duplicate') return Math.abs(toNum(g.status === 'unmatched_a' ? g._sum.amountA : g._sum.amountB));
-    if (g.breakReason === 'missing_counterparty') return Math.abs(toNum(g._sum.amountA));
-    if (g.breakReason === 'missing_internal') return Math.abs(toNum(g._sum.amountB));
-    if (g.breakReason === 'date_mismatch' || g.breakReason === 'other') return Math.abs(toNum(g._sum.amountA));
-    return Math.abs(toNum(g._sum.amountDiff));
+    if (g.breakReason === 'duplicate') return new Prisma.Decimal((g.status === 'unmatched_a' ? g._sum.amountA : g._sum.amountB) ?? 0).abs();
+    if (g.breakReason === 'missing_counterparty') return new Prisma.Decimal(g._sum.amountA ?? 0).abs();
+    if (g.breakReason === 'missing_internal') return new Prisma.Decimal(g._sum.amountB ?? 0).abs();
+    if (g.breakReason === 'date_mismatch' || g.breakReason === 'other') return new Prisma.Decimal(g._sum.amountA ?? 0).abs();
+    return new Prisma.Decimal(g._sum.amountDiff ?? 0).abs();
   };
 
   // Grouping by status too means one reason can span several groups (a duplicated partner on either side).
   const amountByReason = new Map();
   for (const g of grouped) {
-    amountByReason.set(g.breakReason, (amountByReason.get(g.breakReason) ?? 0) + amountForGroup(g));
+    const runningAmount = amountByReason.get(g.breakReason) ?? new Prisma.Decimal(0);
+    amountByReason.set(g.breakReason, runningAmount.plus(amountForGroup(g)));
   }
   const buckets = Object.entries(BREAK_REASON_CATEGORY_LABELS).map(([reason, category]) => ({
     category,
-    amount: amountByReason.get(reason) ?? 0,
+    amount: amountByReason.get(reason) ?? new Prisma.Decimal(0),
   }));
-  const duplicatedPartnerAmount = amountByReason.get('duplicate') ?? 0;
-  if (duplicatedPartnerAmount > 0) buckets.push({ category: 'Duplicated in Other File', amount: duplicatedPartnerAmount });
-  const total = buckets.reduce((sum, b) => sum + b.amount, 0);
+  const duplicatedPartnerAmount = amountByReason.get('duplicate');
+  if (duplicatedPartnerAmount?.gt(0)) buckets.push({ category: 'Duplicated in Other File', amount: duplicatedPartnerAmount });
+  const total = buckets.reduce((sum, b) => sum.plus(b.amount), new Prisma.Decimal(0));
 
+  // Amounts become numbers only here, for the JSON response.
   return buckets
-    .map((b) => ({ ...b, percent: total > 0 ? Number(((b.amount / total) * 100).toFixed(2)) : 0 }))
-    .sort((a, b) => b.amount - a.amount);
+    .sort((a, b) => b.amount.comparedTo(a.amount))
+    .map((b) => ({
+      category: b.category,
+      amount: b.amount.toNumber(),
+      percent: total.gt(0) ? b.amount.div(total).times(100).toDecimalPlaces(2).toNumber() : 0,
+    }));
 }
 
 // Match-rate + break-value trend, the 7 most recent actual runs vs the 7
@@ -1787,11 +1796,11 @@ export async function bulkDeleteReports(userId, ids, { ip, userAgent } = {}) {
 // (a draft has no rows to export). Throws NotFoundError if any requested id
 // doesn't resolve — all-or-nothing, so a bulk export never silently omits
 // a file the caller asked for.
-export async function getReportsByIds(userId, ids, { requireCompleted = false } = {}) {
+export async function getReportsByIds(userId, ids, { requireCompleted = false, includeRows = true } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const reports = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId, ...(requireCompleted ? { status: 'completed' } : {}) },
-    include: { rows: true },
+    include: { rows: includeRows },
   });
 
   const byId = new Map(reports.map((r) => [r.id, r]));
@@ -1801,4 +1810,24 @@ export async function getReportsByIds(userId, ids, { requireCompleted = false } 
 
   if (visible.length !== ids.length) throw new NotFoundError();
   return visible;
+}
+
+const EMPTY_ROW_STATS = { largestBreak: new Prisma.Decimal(0), unmatchedACount: 0, unmatchedBCount: 0, duplicateRowCount: 0 };
+
+// A Combined Report needs a few figures per run, not its rows: one grouped query instead of loading every row of up to 100 runs.
+export async function getComparisonReports(userId, ids) {
+  // Throws unless every id is a completed report the caller can see, so the stats query below only reads visible reports.
+  const reports = await getReportsByIds(userId, ids, { requireCompleted: true, includeRows: false });
+  const stats = await prisma.$queryRaw`
+    SELECT
+      report_id::text AS "reportId",
+      COALESCE(MAX(ABS(amount_diff)), 0) AS "largestBreak",
+      COUNT(*) FILTER (WHERE status = 'unmatched_a')::int AS "unmatchedACount",
+      COUNT(*) FILTER (WHERE status = 'unmatched_b')::int AS "unmatchedBCount",
+      COUNT(*) FILTER (WHERE status = 'duplicate')::int AS "duplicateRowCount"
+    FROM report_rows
+    WHERE report_id = ANY(${ids}::uuid[])
+    GROUP BY report_id`;
+  const statsByReportId = new Map(stats.map(({ reportId, ...rowStats }) => [reportId, rowStats]));
+  return reports.map((report) => ({ ...report, rowStats: statsByReportId.get(report.id) ?? EMPTY_ROW_STATS }));
 }

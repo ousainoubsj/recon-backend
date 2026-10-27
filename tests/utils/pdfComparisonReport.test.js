@@ -1,3 +1,4 @@
+import { Prisma } from '@prisma/client';
 import { buildComparisonPdfReport } from '../../utils/pdfComparisonReport.js';
 
 const ALL_SECTIONS = {
@@ -26,10 +27,7 @@ const reportA = {
   unmatchedCount: 1,
   duplicateCount: 0,
   totalBreakValue: 50,
-  rows: [
-    { ref: 'A1', status: 'unmatched_a', amountA: 50, amountB: null, amountDiff: null },
-    { ref: 'A2', status: 'mismatched', amountA: 100, amountB: 70, amountDiff: 30 },
-  ],
+  rowStats: { largestBreak: new Prisma.Decimal(30), unmatchedACount: 1, unmatchedBCount: 0, duplicateRowCount: 0 },
 };
 
 const reportB = {
@@ -42,11 +40,7 @@ const reportB = {
   unmatchedCount: 1,
   duplicateCount: 0,
   totalBreakValue: 80,
-  rows: [
-    { ref: 'B1', status: 'unmatched_b', amountA: null, amountB: 20, amountDiff: null },
-    { ref: 'B2', status: 'mismatched', amountA: 100, amountB: 40, amountDiff: 60 },
-    { ref: 'B3', status: 'mismatched', amountA: 100, amountB: 80, amountDiff: 20 },
-  ],
+  rowStats: { largestBreak: new Prisma.Decimal(60), unmatchedACount: 0, unmatchedBCount: 1, duplicateRowCount: 0 },
 };
 
 describe('buildComparisonPdfReport', () => {

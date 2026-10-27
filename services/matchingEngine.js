@@ -2,8 +2,11 @@
 // purpose — everything here is unit-testable in isolation; callers (routes/
 // reportService) are responsible for parsing files into {headers, rows} and
 // persisting the rows this module produces.
+// Prisma.Decimal is only the decimal.js class: importing it opens no db connection.
+import { Prisma } from '@prisma/client';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const AMOUNT_SCALE = 4;
 
 const BREAK_REASON_TYPE_LABELS = {
   amount_mismatch: 'Amount Mismatch',
@@ -85,11 +88,13 @@ export function parseAmount(value) {
 
   let cleaned = str.replace(/[^0-9.\-]/g, '');
   if (forceNegative) cleaned = cleaned.replace(/-/g, '');
-  if (cleaned === '' || cleaned === '-' || cleaned === '.') return null;
+  // Whatever Number() used to reject ("1.2.3", "5-3") stays unparseable rather than reaching Decimal, which throws.
+  if (!/^-?(\d+\.?\d*|\.\d+)$/.test(cleaned)) return null;
 
-  const num = Number(cleaned);
-  if (Number.isNaN(num)) return null;
-  return forceNegative ? -Math.abs(num) : num;
+  // Rounded to the amount columns' scale (Decimal(18, 4)), half away from zero like Postgres, so matching
+  // compares the values that get stored rather than ones Postgres would round on insert.
+  const amount = new Prisma.Decimal(cleaned).toDecimalPlaces(AMOUNT_SCALE, Prisma.Decimal.ROUND_HALF_UP);
+  return forceNegative ? amount.abs().negated() : amount;
 }
 
 // ISO first; else DD/MM/YYYY vs MM/DD/YYYY disambiguated by whichever
@@ -234,7 +239,7 @@ function makeUnmatchedRow(entry, side, partnerDuplicated = false) {
 // reports 'amount_mismatch' (matches the plan's documented priority).
 function evaluateMatch(aEntry, bEntry, config) {
   const amountDiff =
-    aEntry.amount != null && bEntry.amount != null ? aEntry.amount - bEntry.amount : null;
+    aEntry.amount != null && bEntry.amount != null ? aEntry.amount.minus(bEntry.amount) : null;
 
   // A blank mapped currency cell comes through as '' (not null), so a raw
   // != null check doesn't treat it as absent. Normalizing first means blank
@@ -250,7 +255,7 @@ function evaluateMatch(aEntry, bEntry, config) {
     }
   }
 
-  const amountOk = amountDiff != null && Math.abs(amountDiff) <= config.amountTolerance;
+  const amountOk = amountDiff != null && amountDiff.abs().lte(config.amountTolerance);
 
   let dateOk = true;
   if (config.dateToleranceDays != null) {
@@ -291,7 +296,11 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   const rows = [];
   let matched = 0;
   let mismatched = 0;
-  let totalBreakValue = 0;
+  let totalBreakValue = new Prisma.Decimal(0);
+  // A break with no parseable amount still counts as a break, it just adds nothing to the value.
+  const addBreak = (amount) => {
+    if (amount != null) totalBreakValue = totalBreakValue.plus(amount.abs());
+  };
 
   for (const entry of sideA.duplicateEntries) rows.push(makeDuplicateRow(entry, 'A'));
   for (const entry of sideB.duplicateEntries) rows.push(makeDuplicateRow(entry, 'B'));
@@ -305,12 +314,12 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   for (const entry of sideA.incompleteEntries) {
     rows.push(makeUnmatchedRow(entry, 'A'));
     unmatchedA += 1;
-    totalBreakValue += Math.abs(entry.amount ?? 0);
+    addBreak(entry.amount);
   }
   for (const entry of sideB.incompleteEntries) {
     rows.push(makeUnmatchedRow(entry, 'B'));
     unmatchedB += 1;
-    totalBreakValue += Math.abs(entry.amount ?? 0);
+    addBreak(entry.amount);
   }
 
   const consumedB = new Set();
@@ -319,7 +328,7 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
     if (!bEntry) {
       rows.push(makeUnmatchedRow(aEntry, 'A', sideB.flaggedKeys.has(ref)));
       unmatchedA += 1;
-      totalBreakValue += Math.abs(aEntry.amount ?? 0);
+      addBreak(aEntry.amount);
       continue;
     }
     consumedB.add(ref);
@@ -340,7 +349,7 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
       matched += 1;
     } else {
       mismatched += 1;
-      totalBreakValue += Math.abs(result.amountDiff ?? 0);
+      addBreak(result.amountDiff);
     }
   }
 
@@ -348,7 +357,7 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
     if (consumedB.has(ref)) continue;
     rows.push(makeUnmatchedRow(bEntry, 'B', sideA.flaggedKeys.has(ref)));
     unmatchedB += 1;
-    totalBreakValue += Math.abs(bEntry.amount ?? 0);
+    addBreak(bEntry.amount);
   }
 
   const total = rows.length;
@@ -391,7 +400,7 @@ export function buildMatchAnalysis(row, rawConfig = {}) {
   analysis.push({ text: 'Reference matched exactly', passed: true });
 
   if (row.amountDiff != null) {
-    const passed = Math.abs(Number(row.amountDiff)) <= config.amountTolerance;
+    const passed = new Prisma.Decimal(row.amountDiff).abs().lte(config.amountTolerance);
     analysis.push({
       text: passed
         ? `Amount matches within tolerance (±${config.amountTolerance})`
@@ -428,7 +437,7 @@ export function buildRecommendedAction(row) {
   switch (row.breakReason) {
     case 'amount_mismatch':
       return `Review amount in counterparty file. Possible missing fee/charge of ${
-        row.amountDiff != null ? Math.abs(Number(row.amountDiff)).toFixed(2) : '0.00'
+        row.amountDiff != null ? new Prisma.Decimal(row.amountDiff).abs().toFixed(2) : '0.00'
       }.`;
     case 'missing_counterparty':
       return 'Confirm whether this transaction was recorded in the counterparty file under a different reference.';
@@ -458,7 +467,7 @@ export function buildShortReason(row) {
       break;
     case 'amount_mismatch':
       reason = `Amount differs by ${
-        row.amountDiff != null ? Math.abs(Number(row.amountDiff)).toFixed(2) : '0.00'
+        row.amountDiff != null ? new Prisma.Decimal(row.amountDiff).abs().toFixed(2) : '0.00'
       }`;
       break;
     case 'date_mismatch':

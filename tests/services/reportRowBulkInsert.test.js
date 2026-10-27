@@ -1,5 +1,6 @@
 import { jest } from '@jest/globals';
 import Papa from 'papaparse';
+import { Prisma } from '@prisma/client';
 import { PassThrough } from 'node:stream';
 
 const mockConnect = jest.fn();
@@ -42,9 +43,9 @@ describe('reportRowToCsvRecord', () => {
     expect(record[0]).toBe(REPORT_ID);
     expect(record[1]).toBe('REF1');
     expect(record[2]).toBe('matched');
-    expect(record[3]).toBe(100);
-    expect(record[4]).toBe(100);
-    expect(record[5]).toBe(0); // amountDiff
+    expect(record[3]).toBe('100');
+    expect(record[4]).toBe('100');
+    expect(record[5]).toBe('0'); // amountDiff
     expect(record[6]).toBe('2026-06-30T00:00:00.000Z');
     expect(record[9]).toBe('{"Ref":"REF1"}');
     expect(record[10]).toBe('\\N'); // breakReason null
@@ -197,5 +198,18 @@ describe('deleteReportRows', () => {
   it('deletes all rows for the given reportId', async () => {
     await deleteReportRows(REPORT_ID);
     expect(mockPoolQuery).toHaveBeenCalledWith('DELETE FROM report_rows WHERE report_id = $1', [REPORT_ID]);
+  });
+});
+
+describe('reportRowToCsvRecord — Decimal amounts', () => {
+  it('writes plain digits, never the exponent form Decimal.toString uses for tiny values', () => {
+    const record = reportRowToCsvRecord(REPORT_ID, {
+      ref: 'REF1',
+      status: 'mismatched',
+      amountA: new Prisma.Decimal('0.00000001'),
+      amountB: new Prisma.Decimal(0),
+    });
+    expect(record[3]).toBe('0.00000001');
+    expect(record[5]).toBe('0.00000001');
   });
 });
