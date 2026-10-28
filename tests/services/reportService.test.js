@@ -124,6 +124,12 @@ jest.unstable_mockModule('../../services/reportRowBulkInsert.js', () => ({
 }));
 
 const mockEnqueueReconciliationJob = jest.fn().mockResolvedValue(undefined);
+const mockEnqueueFilePreview = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../queues/filePreviewQueue.js', () => ({
+  enqueueFilePreview: mockEnqueueFilePreview,
+  FILE_PREVIEW_QUEUE_NAME: 'file-previews',
+}));
+
 jest.unstable_mockModule('../../queues/reconciliationQueue.js', () => ({
   enqueueReconciliationJob: mockEnqueueReconciliationJob,
   RECONCILIATION_QUEUE_NAME: 'reconciliation-runs',
@@ -155,6 +161,7 @@ const {
   enqueueReconciliationRun,
   executeReconciliationRun,
   getMappingPreview,
+  buildMappingPreview,
   getRulePreview,
   getTransactions,
   getTransaction,
@@ -414,6 +421,7 @@ describe('getReport', () => {
     });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
+      omit: { mappingPreview: true },
       include: { supersededBy: { select: { id: true, sequenceYear: true, sequenceNumber: true } } },
     });
     expect(mockPrisma.auditLog.findMany).not.toHaveBeenCalled();
@@ -435,6 +443,7 @@ describe('getReport', () => {
 
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
+      omit: { mappingPreview: true },
       include: {
         rows: { include: { resolution: { select: { kind: true, note: true } } } },
         corrections: expect.objectContaining({ where: { applied: true } }),
@@ -793,6 +802,7 @@ describe('rerunReport', () => {
         config: source.rulesConfig,
         sourceReportId: 'source-1',
         corrections: { create: [] },
+        previewStatus: 'pending',
       },
       select: { id: true },
     });
@@ -1053,7 +1063,7 @@ describe('listDrafts', () => {
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { userId: USER_ID, organizationId: ORG_ID, status: 'draft' },
       orderBy: { updatedAt: 'desc' },
-      omit: { fileASampleRows: true, fileBSampleRows: true },
+      omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
     });
   });
 
@@ -1062,13 +1072,13 @@ describe('listDrafts', () => {
   // column, several MB for a wide file) even though nothing in the response
   // ever reads it — making the drafts list take up to a minute for a user
   // with a few large-file-pair drafts.
-  it('omits the cached sample-row blobs, which the draft list never reads', async () => {
+  it('omits the cached sample-row blobs and the stored mapping preview, which the draft list never reads', async () => {
     mockPrisma.report.findMany.mockResolvedValue([]);
 
     await listDrafts(USER_ID);
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ omit: { fileASampleRows: true, fileBSampleRows: true } }),
+      expect.objectContaining({ omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true } }),
     );
   });
 });
@@ -1525,85 +1535,41 @@ describe('executeReconciliationRun', () => {
 });
 
 describe('getMappingPreview', () => {
-  const draft = {
-    id: 'draft-1',
-    userId: USER_ID,
-    fileAName: 'a.csv',
-    fileBName: 'b.csv',
-    fileAKey: 'uploads/u1/a.csv',
-    fileBKey: 'uploads/u1/b.csv',
-    columnMapping: null,
-    status: 'draft',
-  };
+  const draft = { fileAKey: 'uploads/u1/a.csv', fileBKey: 'uploads/u1/b.csv', previewStatus: 'ready', mappingPreview: { fileA: {}, fileB: {} }, previewError: null };
 
-  beforeEach(() => {
-    mockPrisma.report.findFirst.mockResolvedValue(draft);
-    mockDownloadFromR2.mockResolvedValue(Buffer.from('xxxx'));
-    mockParseTabularFile
-      .mockReturnValueOnce({ headers: ['Ref'], rows: [{ Ref: 'R1' }] })
-      .mockReturnValueOnce({ headers: ['Ref'], rows: [{ Ref: 'R1' }] });
-    mockSuggestMapping.mockReturnValue([{ field: 'referenceNumber', label: 'Reference Number', value: 'Ref', confidence: 90 }]);
-    mockMappingFromSuggestions.mockReturnValue({ referenceNumber: 'Ref' });
-    mockComputeValidationSummary.mockReturnValue({
-      missingValues: { count: 0, percent: 0 },
-      duplicateReferences: { count: 0, percent: 0 },
-    });
-  });
+  it("404s on another user's draft or a completed report, scoped by owner and status", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
 
-  it('returns per-file preview data and caches a sample + suggested mapping on the draft', async () => {
-    const preview = await getMappingPreview(USER_ID, 'draft-1');
-
-    expect(preview.fileA.filename).toBe('a.csv');
-    expect(preview.fileA.rows).toBe(1);
-    expect(preview.fileA.mappings).toEqual([
-      { field: 'referenceNumber', label: 'Reference Number', value: 'Ref', confidence: 90 },
-    ]);
-    // Postgres only gets a small marker (row data lives in Redis — see
-    // mappingSampleCache.js) recording that a sample exists and its total
-    // row count, for extrapolatePreview's scale factor.
-    expect(mockPrisma.report.update).toHaveBeenCalledWith({
-      where: { id: 'draft-1' },
-      data: expect.objectContaining({
-        fileASampleRows: { totalRows: 1 },
-        fileBSampleRows: { totalRows: 1 },
-        columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Ref' } },
-      }),
-    });
-    expect(mockSetSampleRows).toHaveBeenCalledWith('draft-1', 'A', [{ Ref: 'R1' }]);
-    expect(mockSetSampleRows).toHaveBeenCalledWith('draft-1', 'B', [{ Ref: 'R1' }]);
-  });
-
-  it('persists per-file summaries (rows/columns/fileSizeBytes) that survive completion, unlike the sample-rows cache', async () => {
-    const preview = await getMappingPreview(USER_ID, 'draft-1');
-
-    expect(preview.fileA).toEqual(
-      expect.objectContaining({ rows: 1, columns: 1, fileSizeBytes: 4 }),
+    await expect(getMappingPreview(USER_ID, 'draft-1')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
     );
-    expect(mockPrisma.report.update).toHaveBeenCalledWith({
-      where: { id: 'draft-1' },
-      data: expect.objectContaining({
-        fileASummary: { rows: 1, columns: 1, fileSizeBytes: 4 },
-        fileBSummary: { rows: 1, columns: 1, fileSizeBytes: 4 },
-      }),
+  });
+
+  it('returns the stored preview without downloading or parsing anything', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(draft);
+
+    await expect(getMappingPreview(USER_ID, 'draft-1')).resolves.toEqual({ status: 'ready', preview: draft.mappingPreview, error: null });
+    expect(mockDownloadFromR2).not.toHaveBeenCalled();
+    expect(mockParseTabularFile).not.toHaveBeenCalled();
+  });
+
+  it('returns the reason, and no preview, for a failed parse', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, previewStatus: 'failed', previewError: "b.csv couldn't be read." });
+
+    await expect(getMappingPreview(USER_ID, 'draft-1')).resolves.toEqual({ status: 'failed', preview: null, error: "b.csv couldn't be read." });
+  });
+
+  it('queues a draft from before background parsing and reports it pending', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, previewStatus: null, mappingPreview: null });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(getMappingPreview(USER_ID, 'draft-1')).resolves.toEqual({ status: 'pending', preview: null, error: null });
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: { id: 'draft-1', fileAKey: draft.fileAKey, fileBKey: draft.fileBKey },
+      data: { previewStatus: 'pending', mappingPreview: Prisma.DbNull, previewError: null },
     });
-  });
-
-  it('does not overwrite an already-saved column mapping', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, columnMapping: { fileA: {}, fileB: {} } });
-
-    await getMappingPreview(USER_ID, 'draft-1');
-
-    const call = mockPrisma.report.update.mock.calls[0][0];
-    expect(call.data.columnMapping).toBeUndefined();
-  });
-
-  it('re-suggests only the side whose file was replaced, keeping the other saved side', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, columnMapping: { fileA: { referenceNumber: 'Saved' } } });
-
-    await getMappingPreview(USER_ID, 'draft-1');
-
-    const call = mockPrisma.report.update.mock.calls[0][0];
-    expect(call.data.columnMapping).toEqual({ fileA: { referenceNumber: 'Saved' }, fileB: { referenceNumber: 'Ref' } });
+    expect(mockEnqueueFilePreview).toHaveBeenCalledWith({ reportId: 'draft-1', fileAKey: draft.fileAKey, fileBKey: draft.fileBKey });
   });
 
   it('throws ValidationError when either file has not been uploaded yet', async () => {
@@ -1611,21 +1577,142 @@ describe('getMappingPreview', () => {
 
     await expect(getMappingPreview(USER_ID, 'draft-1')).rejects.toBeInstanceOf(ValidationError);
   });
+});
 
-  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
-    mockPrisma.report.findFirst.mockResolvedValue(null);
+describe('buildMappingPreview', () => {
+  const job = { reportId: 'draft-1', fileAKey: 'uploads/u1/a.csv', fileBKey: 'uploads/u1/b.csv' };
+  const stillCurrent = { id: 'draft-1', fileAKey: job.fileAKey, fileBKey: job.fileBKey, status: { in: ['draft', 'failed'] } };
 
-    await expect(getMappingPreview(USER_ID, 'missing')).rejects.toBeInstanceOf(NotFoundError);
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ fileAName: 'a.csv', fileBName: 'b.csv', columnMapping: null });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockDownloadFromR2.mockResolvedValue(Buffer.from('xxxx'));
+    mockParseTabularFile.mockReturnValue({ headers: ['Ref'], rows: [{ Ref: 'R1' }] });
+    mockSuggestMapping.mockReturnValue([{ field: 'referenceNumber', label: 'Reference Number', value: 'Ref', confidence: 90 }]);
+    mockMappingFromSuggestions.mockReturnValue({ referenceNumber: 'Ref' });
+    mockComputeValidationSummary.mockReturnValue({ missingValues: { count: 0, percent: 0 }, duplicateReferences: { count: 0, percent: 0 } });
   });
 
-  it('accepts a previously failed run for retry (status draft-or-failed)', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, status: 'failed' });
+  it('stores the preview, summaries, sample marker and a suggested mapping for the files it parsed, then the sample', async () => {
+    await buildMappingPreview(job);
 
-    await getMappingPreview(USER_ID, 'draft-1');
-
-    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
+    expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: stillCurrent }));
+    const { where, data } = mockPrisma.report.updateMany.mock.calls[0][0];
+    expect(where).toEqual(stillCurrent);
+    expect(data).toEqual(
+      expect.objectContaining({
+        previewStatus: 'ready',
+        previewError: null,
+        fileASampleRows: { totalRows: 1 },
+        fileASummary: { rows: 1, columns: 1, fileSizeBytes: 4 },
+        columnMapping: { fileA: { referenceNumber: 'Ref' }, fileB: { referenceNumber: 'Ref' } },
+      }),
     );
+    expect(data.mappingPreview.fileA).toEqual(expect.objectContaining({ filename: 'a.csv', rows: 1, previewRows: [{ Ref: 'R1' }] }));
+    expect(mockSetSampleRows).toHaveBeenCalledWith('draft-1', 'A', [{ Ref: 'R1' }]);
+    expect(mockSetSampleRows).toHaveBeenCalledWith('draft-1', 'B', [{ Ref: 'R1' }]);
+  });
+
+  it('keeps a saved side of the mapping and re-suggests only the missing one', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ fileAName: 'a.csv', fileBName: 'b.csv', columnMapping: { fileA: { referenceNumber: 'Saved' } } });
+
+    await buildMappingPreview(job);
+
+    expect(mockPrisma.report.updateMany.mock.calls[0][0].data.columnMapping).toEqual({
+      fileA: { referenceNumber: 'Saved' },
+      fileB: { referenceNumber: 'Ref' },
+    });
+  });
+
+  it('does nothing when a file was replaced (or the draft ran) before the job started', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue(null);
+
+    await buildMappingPreview(job);
+
+    expect(mockDownloadFromR2).not.toHaveBeenCalled();
+    expect(mockPrisma.report.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("leaves the newer file's sample alone when a file was replaced while it parsed", async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 0 });
+
+    await buildMappingPreview(job);
+
+    expect(mockSetSampleRows).not.toHaveBeenCalled();
+  });
+
+  it("records an unreadable file's name as the reason at once, under the same guard", async () => {
+    mockParseTabularFile.mockImplementationOnce(() => {
+      throw new Error('Unsupported file extension: .numbers');
+    });
+
+    // Recorded even before the last attempt: retrying can't make the file readable.
+    await expect(buildMappingPreview(job, { isFinalAttempt: false })).rejects.toThrow('a.csv');
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: stillCurrent,
+      data: { previewStatus: 'failed', previewError: "a.csv couldn't be read. Check it's a CSV or Excel file with a header row." },
+    });
+  });
+
+  it('shows a generic reason for a download failure, and records nothing before the last attempt', async () => {
+    mockDownloadFromR2.mockRejectedValue(new Error('R2 timeout'));
+
+    await expect(buildMappingPreview(job, { isFinalAttempt: false })).rejects.toThrow('R2 timeout');
+    expect(mockPrisma.report.updateMany).not.toHaveBeenCalled();
+
+    await expect(buildMappingPreview(job)).rejects.toThrow('R2 timeout');
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: stillCurrent,
+      data: { previewStatus: 'failed', previewError: "Your files couldn't be loaded. Try again in a moment." },
+    });
+  });
+});
+
+describe('queuing a mapping preview', () => {
+  it('queues one parse when a draft first gets both files', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ columnMapping: null, config: null, name: null, fileAKey: null, fileBKey: null });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    const fileAKey = `uploads/${USER_ID}/a.csv`;
+    const fileBKey = `uploads/${USER_ID}/b.csv`;
+
+    await updateDraft(USER_ID, 'draft-1', { fileAKey, fileBKey, fileAName: 'a.csv', fileBName: 'b.csv' });
+
+    expect(mockEnqueueFilePreview).toHaveBeenCalledTimes(1);
+    expect(mockEnqueueFilePreview).toHaveBeenCalledWith({ reportId: 'draft-1', fileAKey, fileBKey });
+  });
+
+  it('queues a parse of the new pair when one file is replaced', async () => {
+    const fileAKey = `uploads/${USER_ID}/a.csv`;
+    mockPrisma.report.findFirst.mockResolvedValue({ columnMapping: null, config: null, name: null, fileAKey, fileBKey: `uploads/${USER_ID}/old-b.csv` });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.member.findMany.mockResolvedValue([{ userId: USER_ID }]);
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: `uploads/${USER_ID}/new-b.csv` });
+
+    expect(mockEnqueueFilePreview).toHaveBeenCalledWith({ reportId: 'draft-1', fileAKey, fileBKey: `uploads/${USER_ID}/new-b.csv` });
+  });
+
+  it('queues nothing for one file alone, an unchanged key, or a patch without keys', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ columnMapping: null, config: null, name: null, fileAKey: null, fileBKey: null });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    await updateDraft(USER_ID, 'draft-1', { fileAKey: `uploads/${USER_ID}/a.csv` });
+
+    mockPrisma.report.findFirst.mockResolvedValue({ columnMapping: null, config: null, name: null, fileAKey: `uploads/${USER_ID}/a.csv`, fileBKey: `uploads/${USER_ID}/b.csv` });
+    await updateDraft(USER_ID, 'draft-1', { fileAKey: `uploads/${USER_ID}/a.csv` });
+    await updateDraft(USER_ID, 'draft-1', { name: 'June' });
+
+    expect(mockEnqueueFilePreview).not.toHaveBeenCalled();
+  });
+
+  it("queues a rerun's inherited files as soon as the draft exists", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'source-1', fileAKey: 'uploads/u/a.csv', fileBKey: 'uploads/u/b.csv', supersededBy: null });
+    mockPrisma.report.create.mockResolvedValue({ id: 'draft-9' });
+
+    await rerunReport(USER_ID, 'source-1');
+
+    expect(mockPrisma.report.create.mock.calls[0][0].data.previewStatus).toBe('pending');
+    expect(mockEnqueueFilePreview).toHaveBeenCalledWith({ reportId: 'draft-9', fileAKey: 'uploads/u/a.csv', fileBKey: 'uploads/u/b.csv' });
   });
 });
 
@@ -1695,10 +1782,14 @@ describe('getRulePreview', () => {
   // The Postgres marker only gets cleared on run completion, not on Redis
   // TTL expiry — so a marker-present-but-cache-gone state is a real,
   // separate case, not just defensive padding.
-  it('throws ConflictError when the marker exists but the Redis cache has expired', async () => {
+  it('queues a fresh parse and 409s when the marker exists but the Redis sample has expired', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...draft, fileAKey: 'uploads/u1/a.csv', fileBKey: 'uploads/u1/b.csv' });
     mockGetSampleRows.mockResolvedValueOnce(null);
 
     await expect(getRulePreview(USER_ID, 'draft-1', { config: runDto.config })).rejects.toBeInstanceOf(ConflictError);
+    expect(mockEnqueueFilePreview).toHaveBeenCalledWith({ reportId: 'draft-1', fileAKey: 'uploads/u1/a.csv', fileBKey: 'uploads/u1/b.csv' });
+    // The stored preview stays readable meanwhile: the status isn't reset.
+    expect(mockPrisma.report.updateMany).not.toHaveBeenCalled();
   });
 
   it('throws ConflictError when no column mapping is available anywhere', async () => {
@@ -2734,10 +2825,7 @@ describe('getReportsByIds', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { id: { in: ['r1'] }, organizationId: ORG_ID, status: 'completed' },
-      include: {
-        rows: { include: { resolution: { select: { kind: true, note: true } } } },
-        corrections: expect.objectContaining({ where: { applied: true } }),
-      },
+      omit: { mappingPreview: true },
     });
   });
 });
@@ -2754,7 +2842,7 @@ describe('getComparisonReports', () => {
 
     const result = await getComparisonReports(USER_ID, ['r1', 'r2']);
 
-    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ include: undefined }));
+    expect(mockPrisma.report.findMany.mock.calls[0][0]).not.toHaveProperty('include');
     expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(mockPrisma.$queryRaw.mock.calls[0]).toContainEqual(['r1', 'r2']);
     expect(result[0].rowStats).toEqual({

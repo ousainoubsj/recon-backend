@@ -21,6 +21,7 @@ import {
 import { suggestMapping, mappingFromSuggestions, computeValidationSummary } from './columnMappingService.js';
 import { copyReportRowsIn, deleteReportRows } from './reportRowBulkInsert.js';
 import { enqueueReconciliationJob } from '../queues/reconciliationQueue.js';
+import { enqueueFilePreview } from '../queues/filePreviewQueue.js';
 import { setSampleRows, getSampleRows, clearSampleRows } from './mappingSampleCache.js';
 
 // Cap on how many rows of each file get cached on the draft at
@@ -714,6 +715,8 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
   const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
+    // Polled every second during a run; the stored mapping preview is served by its own endpoint.
+    omit: { mappingPreview: true },
     include: includeRows
       ? { rows: ROWS_WITH_RESOLUTION, corrections: APPLIED_CORRECTIONS, supersededBy: { select: SUPERSEDED_BY_SELECT } }
       : { supersededBy: { select: SUPERSEDED_BY_SELECT } },
@@ -1476,6 +1479,14 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
   });
   if (count === 0) throw new NotFoundError();
 
+  // A first upload or a replaced file needs a fresh preview, once both files are present.
+  if (setsFileKey) {
+    const fileAKey = dto.fileAKey ?? before?.fileAKey;
+    const fileBKey = dto.fileBKey ?? before?.fileBKey;
+    const changed = (dto.fileAKey !== undefined && dto.fileAKey !== before?.fileAKey) || (dto.fileBKey !== undefined && dto.fileBKey !== before?.fileBKey);
+    if (fileAKey && fileBKey && changed) await queueMappingPreview(reportId, fileAKey, fileBKey);
+  }
+
   if (replacedKeyA || replacedKeyB) {
     // Corrections point at row positions in the old file, which the new one doesn't share.
     const replacedSides = [replacedKeyA ? 'A' : null, replacedKeyB ? 'B' : null].filter(Boolean);
@@ -1527,7 +1538,7 @@ export async function listDrafts(userId) {
     // never reads these fields — but without the omit, every draft in the
     // list pays that multi-MB cost, which is what made this endpoint take
     // up to a minute for a user with several large-file-pair drafts.
-    omit: { fileASampleRows: true, fileBSampleRows: true },
+    omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
   });
   return drafts.map(withDraftProgress);
 }
@@ -1624,9 +1635,12 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
       config: rerunConfig ?? undefined,
       sourceReportId: source.id,
       corrections: { create: [...effectiveCorrections.values()].map((correction) => ({ ...correction, applied: false })) },
+      previewStatus: 'pending',
     },
     select: { id: true },
   });
+  // The rerun inherits its source's files, so their preview is built now, before the user reaches the mapping step.
+  await enqueueFilePreview({ reportId: draft.id, fileAKey: source.fileAKey, fileBKey: source.fileBKey });
 
   await logAuditSafely(userId, {
     action: 'report.rerun',
@@ -1651,7 +1665,7 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
 function findDraftOrFailedRun(userId, reportId) {
   return prisma.report.findFirst({
     where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
-    omit: { fileASampleRows: true, fileBSampleRows: true },
+    omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
   });
 }
 
@@ -1762,7 +1776,7 @@ function correctionMaps(corrections) {
 export async function executeReconciliationRun({ reportId, userId, ip, userAgent, dto, config, organizationId }) {
   const draft = await prisma.report.findFirst({
     where: { id: reportId },
-    omit: { fileASampleRows: true, fileBSampleRows: true },
+    omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
   });
   if (!draft) throw new NotFoundError();
 
@@ -1873,74 +1887,125 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
   }
 }
 
-// Downloads+parses the draft's full uploaded files, returns per-file
-// preview/validation/mapping-suggestion data for the column-mapping step,
-// and caches a bounded row sample on the draft (plus a suggested mapping,
-// only if one isn't already saved) for the rule-preview endpoint to reuse.
+// The mapping step's preview. The files are parsed by the file-previews worker (buildMappingPreview, below), so
+// this only reads what it stored. A draft from before that existed has no status yet and is queued here.
 export async function getMappingPreview(userId, reportId) {
-  const draft = await findDraftOrFailedRun(userId, reportId);
+  const draft = await prisma.report.findFirst({
+    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    select: { fileAKey: true, fileBKey: true, previewStatus: true, mappingPreview: true, previewError: true },
+  });
   if (!draft) throw new NotFoundError();
   if (!draft.fileAKey || !draft.fileBKey) {
     throw new ValidationError('Both files must be uploaded before requesting a mapping preview');
   }
 
-  const [fileABuffer, fileBBuffer] = await Promise.all([
-    downloadFromR2(draft.fileAKey),
-    downloadFromR2(draft.fileBKey),
-  ]);
-  const fileA = parseTabularFile(fileABuffer, draft.fileAName);
-  const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
-
-  const suggestedA = suggestMapping(fileA.headers);
-  const suggestedB = suggestMapping(fileB.headers);
-  const mappingA = mappingFromSuggestions(suggestedA);
-  const mappingB = mappingFromSuggestions(suggestedB);
-
-  const validationA = computeValidationSummary(fileA.rows, mappingA);
-  const validationB = computeValidationSummary(fileB.rows, mappingB);
-
-  const fileASummary = { rows: fileA.rows.length, columns: fileA.headers.length, fileSizeBytes: fileABuffer.length };
-  const fileBSummary = { rows: fileB.rows.length, columns: fileB.headers.length, fileSizeBytes: fileBBuffer.length };
-
-  const data = {
-    // The actual row data lives in Redis (mappingSampleCache.js) — this is
-    // just a small marker recording that a sample exists and how many total
-    // rows the source file has (extrapolatePreview's scale factor needs
-    // that), without dragging the full sample through Postgres.
-    fileASampleRows: { totalRows: fileA.rows.length },
-    fileBSampleRows: { totalRows: fileB.rows.length },
-    // Unlike the sample-rows marker above, these are NOT cleared at
-    // completion — Results' File Summary cards read them long after.
-    fileASummary,
-    fileBSummary,
-  };
-  // Per side: a replaced file clears only its own side (updateDraft), and the other side's saved mapping stays.
-  const savedMapping = draft.columnMapping ?? {};
-  if (!savedMapping.fileA || !savedMapping.fileB) {
-    data.columnMapping = { fileA: savedMapping.fileA ?? mappingA, fileB: savedMapping.fileB ?? mappingB };
+  if (draft.previewStatus == null) {
+    await queueMappingPreview(reportId, draft.fileAKey, draft.fileBKey);
+    return { status: 'pending', preview: null, error: null };
   }
-  await Promise.all([
-    prisma.report.update({ where: { id: reportId }, data }),
-    setSampleRows(reportId, 'A', fileA.rows.slice(0, SAMPLE_ROW_CAP)),
-    setSampleRows(reportId, 'B', fileB.rows.slice(0, SAMPLE_ROW_CAP)),
-  ]);
-
   return {
-    fileA: {
-      filename: draft.fileAName,
-      previewRows: fileA.rows.slice(0, 7),
-      mappings: suggestedA,
-      ...validationA,
-      ...fileASummary,
-    },
-    fileB: {
-      filename: draft.fileBName,
-      previewRows: fileB.rows.slice(0, 7),
-      mappings: suggestedB,
-      ...validationB,
-      ...fileBSummary,
-    },
+    status: draft.previewStatus,
+    preview: draft.previewStatus === 'ready' ? draft.mappingPreview : null,
+    error: draft.previewStatus === 'failed' ? draft.previewError : null,
   };
+}
+
+// Marks the draft's preview pending for these files and queues the parse. Called whenever a draft gets new files.
+async function queueMappingPreview(reportId, fileAKey, fileBKey) {
+  await prisma.report.updateMany({
+    where: { id: reportId, fileAKey, fileBKey },
+    data: { previewStatus: 'pending', mappingPreview: Prisma.DbNull, previewError: null },
+  });
+  await enqueueFilePreview({ reportId, fileAKey, fileBKey });
+}
+
+// A file the parser couldn't read: shown to the user as-is, since replacing the file fixes it, and never retried.
+export class FilePreviewError extends Error {}
+
+function parseForPreview(buffer, filename) {
+  try {
+    return parseTabularFile(buffer, filename);
+  } catch {
+    throw new FilePreviewError(`${filename ?? 'One of the files'} couldn't be read. Check it's a CSV or Excel file with a header row.`);
+  }
+}
+
+/**
+ * The file-previews job: downloads and parses both files, then stores the mapping step's preview, the file
+ * summaries, the rule preview's sample and a suggested mapping. Every write requires the report to still have
+ * the files this job parsed, so a file replaced mid-parse keeps the newer job's result.
+ * A transient failure is recorded only on the last attempt, so a retry that succeeds never flashes an error;
+ * an unreadable file is recorded at once, since retrying can't fix it.
+ */
+export async function buildMappingPreview({ reportId, fileAKey, fileBKey }, { isFinalAttempt = true } = {}) {
+  const stillCurrent = { id: reportId, fileAKey, fileBKey, status: { in: ['draft', 'failed'] } };
+  const draft = await prisma.report.findFirst({
+    where: stillCurrent,
+    select: { fileAName: true, fileBName: true, columnMapping: true },
+  });
+  // Replaced, run or deleted since this was queued: a newer job (or nothing) owns the preview now.
+  if (!draft) return;
+
+  try {
+    const [fileABuffer, fileBBuffer] = await Promise.all([downloadFromR2(fileAKey), downloadFromR2(fileBKey)]);
+    const fileA = parseForPreview(fileABuffer, draft.fileAName);
+    const fileB = parseForPreview(fileBBuffer, draft.fileBName);
+
+    const suggestedA = suggestMapping(fileA.headers);
+    const suggestedB = suggestMapping(fileB.headers);
+    const mappingA = mappingFromSuggestions(suggestedA);
+    const mappingB = mappingFromSuggestions(suggestedB);
+    const fileASummary = { rows: fileA.rows.length, columns: fileA.headers.length, fileSizeBytes: fileABuffer.length };
+    const fileBSummary = { rows: fileB.rows.length, columns: fileB.headers.length, fileSizeBytes: fileBBuffer.length };
+
+    const data = {
+      previewStatus: 'ready',
+      previewError: null,
+      mappingPreview: {
+        fileA: {
+          filename: draft.fileAName,
+          previewRows: fileA.rows.slice(0, 7),
+          mappings: suggestedA,
+          ...computeValidationSummary(fileA.rows, mappingA),
+          ...fileASummary,
+        },
+        fileB: {
+          filename: draft.fileBName,
+          previewRows: fileB.rows.slice(0, 7),
+          mappings: suggestedB,
+          ...computeValidationSummary(fileB.rows, mappingB),
+          ...fileBSummary,
+        },
+      },
+      // The sample itself lives in Redis (mappingSampleCache.js); this marker records that it exists and the
+      // file's total rows, which extrapolatePreview scales by.
+      fileASampleRows: { totalRows: fileA.rows.length },
+      fileBSampleRows: { totalRows: fileB.rows.length },
+      // Unlike the sample marker, kept after completion: Results' File Summary cards read them.
+      fileASummary,
+      fileBSummary,
+    };
+    // Per side: a replaced file clears only its own side (updateDraft), and the other side's saved mapping stays.
+    const savedMapping = draft.columnMapping ?? {};
+    if (!savedMapping.fileA || !savedMapping.fileB) {
+      data.columnMapping = { fileA: savedMapping.fileA ?? mappingA, fileB: savedMapping.fileB ?? mappingB };
+    }
+
+    const { count } = await prisma.report.updateMany({ where: stillCurrent, data });
+    // Written only for the current files, so a stale job can't replace the sample with the old file's rows.
+    if (count > 0) {
+      await Promise.all([
+        setSampleRows(reportId, 'A', fileA.rows.slice(0, SAMPLE_ROW_CAP)),
+        setSampleRows(reportId, 'B', fileB.rows.slice(0, SAMPLE_ROW_CAP)),
+      ]);
+    }
+  } catch (err) {
+    if (isFinalAttempt || err instanceof FilePreviewError) {
+      const previewError = err instanceof FilePreviewError ? err.message : "Your files couldn't be loaded. Try again in a moment.";
+      await prisma.report.updateMany({ where: stillCurrent, data: { previewStatus: 'failed', previewError } });
+    }
+    throw err;
+  }
 }
 
 // Cheap, sample-based estimate for the "Match Preview (Estimated)" panel —
@@ -1952,10 +2017,11 @@ export async function getRulePreview(userId, reportId, dto) {
   // helper omits (see its comment).
   const draft = await prisma.report.findFirst({
     where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    omit: { mappingPreview: true },
   });
   if (!draft) throw new NotFoundError();
   if (!draft.fileASampleRows || !draft.fileBSampleRows) {
-    throw new ConflictError('Call the mapping-preview endpoint before requesting a rule preview');
+    throw new ConflictError('Your files are still being read. The estimate will appear when they are ready.');
   }
   const mapping = dto.columnMapping ?? draft.columnMapping;
   if (!mapping) throw new ConflictError('No column mapping available — call the mapping-preview endpoint first');
@@ -1975,8 +2041,10 @@ export async function getRulePreview(userId, reportId, dto) {
   // The Postgres marker (checked above) can outlive the Redis cache — it's
   // not cleared on TTL expiry, only on run completion — so this is a
   // separate, real "the cache is gone" case, not just defensive padding.
+  // The stored preview stays as it is; only the sample is rebuilt, by the same job.
   if (!sampleARows || !sampleBRows) {
-    throw new ConflictError('Call the mapping-preview endpoint before requesting a rule preview');
+    await enqueueFilePreview({ reportId, fileAKey: draft.fileAKey, fileBKey: draft.fileBKey });
+    throw new ConflictError('Preparing a fresh sample of your files. The estimate will appear in a few seconds.');
   }
 
   const { summary } = runMatch(
@@ -2234,16 +2302,13 @@ export async function bulkDeleteReports(userId, ids, { ip, userAgent } = {}) {
   return { deletedCount: count };
 }
 
-// Bulk-fetch helper for bulk-export: same org-scoping + draft-privacy rule
-// as getReport, applied per row, plus an optional completed-only filter
-// (a draft has no rows to export). Throws NotFoundError if any requested id
-// doesn't resolve — all-or-nothing, so a bulk export never silently omits
-// a file the caller asked for.
-export async function getReportsByIds(userId, ids, { requireCompleted = false, includeRows = true } = {}) {
+// Fetches several reports with getReport's org-scoping and draft-privacy rule, without rows. Throws
+// NotFoundError if any id doesn't resolve: all-or-nothing, so a combined report never silently drops a run.
+export async function getReportsByIds(userId, ids, { requireCompleted = false } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const reports = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId, ...(requireCompleted ? { status: 'completed' } : {}) },
-    include: includeRows ? { rows: ROWS_WITH_RESOLUTION, corrections: APPLIED_CORRECTIONS } : undefined,
+    omit: { mappingPreview: true },
   });
 
   const byId = new Map(reports.map((r) => [r.id, r]));
@@ -2260,7 +2325,7 @@ const EMPTY_ROW_STATS = { largestBreak: new Prisma.Decimal(0), unmatchedACount: 
 // A Combined Report needs a few figures per run, not its rows: one grouped query instead of loading every row of up to 100 runs.
 export async function getComparisonReports(userId, ids) {
   // Throws unless every id is a completed report the caller can see, so the stats query below only reads visible reports.
-  const reports = await getReportsByIds(userId, ids, { requireCompleted: true, includeRows: false });
+  const reports = await getReportsByIds(userId, ids, { requireCompleted: true });
   const stats = await prisma.$queryRaw`
     SELECT
       report_id::text AS "reportId",

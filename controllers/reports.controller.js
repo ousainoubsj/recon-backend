@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto';
-import { ZipArchive } from 'archiver';
 import * as reportService from '../services/reportService.js';
 import { sendReportEmail, sendComparisonReportEmail } from '../services/emailService.js';
 import { filterEmailNotificationOptedIn } from '../services/settingsService.js';
@@ -244,77 +243,6 @@ export const bulkDeleteReports = async (req, res) => {
 // bytes are sent, so a single failed report aborts the whole request with a
 // normal RFC 7807 error (same shape as the single-report export failure)
 // instead of streaming a silently-incomplete zip.
-export const bulkExportReports = async (req, res) => {
-  const { ids, format = 'xlsx', templateId, sections: overrideSections } = req.body;
-  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
-
-  const sections = await resolveSections({
-    organizationId: reports[0].organizationId,
-    templateId,
-    overrideSections,
-  });
-  const reportMeta = await buildReportMeta({
-    organizationId: reports[0].organizationId,
-    templateId,
-    generatedByName: req.session.user.name,
-  });
-
-  const built = [];
-  for (const report of reports) {
-    try {
-      const buffer = format === 'pdf' ? await buildPdfReport(report, sections, reportMeta) : await buildXlsxReport(report, sections, reportMeta);
-      built.push({ report, buffer });
-    } catch (err) {
-      await recordExport({
-        reportId: report.id,
-        userId: req.session.user.id,
-        organizationId: report.organizationId,
-        templateId,
-        format,
-        source: 'manual',
-        status: 'failed',
-        errorMessage: err.message,
-      });
-      throw err;
-    }
-  }
-
-  res.setHeader('Content-Type', 'application/zip');
-  res.setHeader('Content-Disposition', `attachment; filename="reports_export_${Date.now()}.zip"`);
-
-  const archive = new ZipArchive();
-  archive.pipe(res);
-  for (const { report, buffer } of built) {
-    archive.append(buffer, { name: `${report.name || 'report'}-${report.id}.${format}` });
-  }
-  await archive.finalize();
-
-  await logAuditSafely(req.session.user.id, {
-    action: 'report.bulk_export',
-    entityType: 'report',
-    status: 'info',
-    ...auditContext(req),
-    metadata: {
-      references: reports.map((r) => reportService.formatReportReference(r.sequenceYear, r.sequenceNumber) ?? r.id),
-      format,
-      template: reportMeta.templateName,
-    },
-  });
-
-  for (const { report, buffer } of built) {
-    await recordExport({
-      reportId: report.id,
-      userId: req.session.user.id,
-      organizationId: report.organizationId,
-      templateId,
-      format,
-      source: 'manual',
-      status: 'success',
-      fileSizeBytes: buffer.length,
-    });
-  }
-};
-
 const CONTENT_TYPE_BY_FORMAT = {
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   pdf: 'application/pdf',
@@ -522,7 +450,7 @@ export const emailReport = async (req, res) => {
 // and sending the comparison template instead of the single-report one.
 export const comparisonEmailReport = async (req, res) => {
   const { ids, to } = req.body;
-  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true, includeRows: false });
+  const reports = await reportService.getReportsByIds(req.session.user.id, ids, { requireCompleted: true });
   const recipients = await filterEmailNotificationOptedIn(to);
   if (recipients.length === 0) {
     res.status(202).json({ sent: false, reason: 'All recipients have opted out of email notifications' });

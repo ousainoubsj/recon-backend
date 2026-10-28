@@ -80,15 +80,15 @@ model User {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
-  reports            Report[]
-  auditLogs          AuditLog[]
-  notifications      Notification[]
-  reportExports      ReportExport[]
-  favorites          ReportFavorite[]
-  reviewedReportRows ReportRow[]         @relation("ReportRowReviewedBy")
+  reports             Report[]
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  reportExports       ReportExport[]
+  favorites           ReportFavorite[]
+  reviewedReportRows  ReportRow[]           @relation("ReportRowReviewedBy")
   resolvedResolutions ReportRowResolution[] @relation("ReportRowResolvedBy")
-  reportCorrections ReportCorrection[] @relation("ReportCorrectionCreatedBy")
-  matchRuleTemplates MatchRuleTemplate[]
+  reportCorrections   ReportCorrection[]    @relation("ReportCorrectionCreatedBy")
+  matchRuleTemplates  MatchRuleTemplate[]
 
   name          String
   emailVerified Boolean      @default(false)
@@ -143,43 +143,49 @@ model Report {
   // from fileAName/fileBName, which are just display names. Set once the
   // frontend has uploaded to R2 (see routes/files.js's presign endpoint),
   // read by the matching engine at mapping-preview/run time to fetch bytes.
-  fileAKey        String?  @map("file_a_key")
-  fileBKey        String?  @map("file_b_key")
+  fileAKey        String?            @map("file_a_key")
+  fileBKey        String?            @map("file_b_key")
   // {fileA:{referenceNumber,amount,transactionDate,currency?}, fileB:{...}}
-  columnMapping   Json?    @map("column_mapping")
+  columnMapping   Json?              @map("column_mapping")
   // Full MatchRuleConfig (superset of amountTolerance/dateToleranceDays
   // above, which stay as their own columns for the existing aggregators to
   // keep reading directly) — sameCurrencyOnly/ignoreCase/ignoreSpaces/
   // trimLeadingZeros/duplicateHandling live here only.
-  rulesConfig     Json?    @map("rules_config")
+  rulesConfig     Json?              @map("rules_config")
   // Bounded (<=2000 rows/file) preview-time cache so the rule-preview
   // endpoint can re-run cheaply as sliders move, without re-parsing the
   // full file each time. Cleared once /run completes.
-  fileASampleRows Json?    @map("file_a_sample_rows")
-  fileBSampleRows Json?    @map("file_b_sample_rows")
+  fileASampleRows Json?              @map("file_a_sample_rows")
+  fileBSampleRows Json?              @map("file_b_sample_rows")
+  // Mapping-step preview, built by the file-previews worker. null status: no files attached yet, or a draft
+  // from before this shipped (queued on first open).
+  previewStatus   FilePreviewStatus? @map("preview_status")
+  // What the mapping step shows for both files: 7 rows each, the suggested mapping, the validation summary.
+  mappingPreview  Json?              @map("mapping_preview")
+  previewError    String?            @map("preview_error")
   // {rows, columns, fileSizeBytes} — also computed at mapping-preview time,
   // but unlike fileASampleRows/fileBSampleRows above, deliberately NOT
   // cleared at completion: Results' File Summary cards need this data on an
   // already-completed report, long after mapping-preview last ran.
-  fileASummary    Json?    @map("file_a_summary")
-  fileBSummary    Json?    @map("file_b_summary")
+  fileASummary    Json?              @map("file_a_summary")
+  fileBSummary    Json?              @map("file_b_summary")
   // {matchedValue, unmatchedValue, duplicateValue} — per-status dollar sums
   // Results' stat tiles need alongside their counts; computed once from the
   // match engine's row output at completion time (rows themselves are
   // paginated/queried per-status, not cheaply summable per stat tile).
-  valueBreakdown  Json?    @map("value_breakdown")
+  valueBreakdown  Json?              @map("value_breakdown")
   // The completed report this one was rerun from (POST /reports/:id/rerun). Null for a first run.
   // Results' "vs last run" compares against it. Before 2026-10-27 it was auto-set from matching
   // file names and never read; that data was cleared and the auto-detection removed.
-  sourceReportId  String?  @map("source_report_id") @db.Uuid
-  sourceReport    Report?  @relation("ReportRerun", fields: [sourceReportId], references: [id], onDelete: SetNull)
-  rerunsOf        Report[] @relation("ReportRerun")
+  sourceReportId  String?            @map("source_report_id") @db.Uuid
+  sourceReport    Report?            @relation("ReportRerun", fields: [sourceReportId], references: [id], onDelete: SetNull)
+  rerunsOf        Report[]           @relation("ReportRerun")
   // The rerun that replaced this report, set when that rerun completes. Dashboards and digests skip
   // superseded reports so a reconciliation counts once. Deleting the rerun clears this (SetNull), so
   // the original counts again. @unique: at most one successor per report, keeping chains linear.
-  supersededById  String?  @unique @map("superseded_by_id") @db.Uuid
-  supersededBy    Report?  @relation("ReportSupersede", fields: [supersededById], references: [id], onDelete: SetNull)
-  supersedes      Report?  @relation("ReportSupersede")
+  supersededById  String?            @unique @map("superseded_by_id") @db.Uuid
+  supersededBy    Report?            @relation("ReportSupersede", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes      Report?            @relation("ReportSupersede")
 
   // Human-facing formatted ID (REC-YYYY-NNNNNN), assigned once — the first
   // time a report reaches 'completed' status — via ReportSequence's atomic
@@ -189,9 +195,9 @@ model Report {
   sequenceYear   Int? @map("sequence_year")
   sequenceNumber Int? @map("sequence_number")
 
-  rows      ReportRow[]
-  exports   ReportExport[]
-  favorites ReportFavorite[]
+  rows        ReportRow[]
+  exports     ReportExport[]
+  favorites   ReportFavorite[]
   resolutions ReportRowResolution[]
   corrections ReportCorrection[]
 
@@ -231,26 +237,26 @@ model ReportSequence {
 }
 
 model ReportRow {
-  id             String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  reportId       String            @map("report_id") @db.Uuid
-  report         Report            @relation(fields: [reportId], references: [id], onDelete: Cascade)
-  ref            String            @db.VarChar(500)
+  id             String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId       String               @map("report_id") @db.Uuid
+  report         Report               @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  ref            String               @db.VarChar(500)
   status         ReconRowStatus
-  amountA        Decimal?          @map("amount_a") @db.Decimal(18, 4)
-  amountB        Decimal?          @map("amount_b") @db.Decimal(18, 4)
-  amountDiff     Decimal?          @map("amount_diff") @db.Decimal(18, 4)
-  dateA          DateTime?         @map("date_a") @db.Date
-  dateB          DateTime?         @map("date_b") @db.Date
-  rawA           Json?             @map("raw_a")
-  rawB           Json?             @map("raw_b")
+  amountA        Decimal?             @map("amount_a") @db.Decimal(18, 4)
+  amountB        Decimal?             @map("amount_b") @db.Decimal(18, 4)
+  amountDiff     Decimal?             @map("amount_diff") @db.Decimal(18, 4)
+  dateA          DateTime?            @map("date_a") @db.Date
+  dateB          DateTime?            @map("date_b") @db.Date
+  rawA           Json?                @map("raw_a")
+  rawB           Json?                @map("raw_b")
   // Only set for mismatched/unmatched_a/unmatched_b/duplicate rows.
-  breakReason    ReconBreakReason? @map("break_reason")
+  breakReason    ReconBreakReason?    @map("break_reason")
   // "Mark as Reviewed" workflow — reviewedBy is nullable+SetNull so a row's
   // review history survives the reviewing user later being removed.
-  reviewed       Boolean           @default(false)
-  reviewedBy     String?           @map("reviewed_by")
-  reviewedByUser User?             @relation("ReportRowReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
-  reviewedAt     DateTime?         @map("reviewed_at")
+  reviewed       Boolean              @default(false)
+  reviewedBy     String?              @map("reviewed_by")
+  reviewedByUser User?                @relation("ReportRowReviewedBy", fields: [reviewedBy], references: [id], onDelete: SetNull)
+  reviewedAt     DateTime?            @map("reviewed_at")
   // Set when a user matches or explains this row by hand; the engine's status above never changes.
   resolutionId   String?              @map("resolution_id") @db.Uuid
   resolution     ReportRowResolution? @relation(fields: [resolutionId], references: [id], onDelete: SetNull)
@@ -492,49 +498,49 @@ model Verification {
 }
 
 model Organization {
-  id                       String              @id
-  name                     String
-  slug                     String
-  logo                     String?
-  createdAt                DateTime
-  metadata                 String?
+  id                          String              @id
+  name                        String
+  slug                        String
+  logo                        String?
+  createdAt                   DateTime
+  metadata                    String?
   // Not part of Better Auth's own org-plugin schema — set/read only by our
   // own settings endpoints, same reasoning as Member.department/status in
   // §6 (no schema.organization.additionalFields config needed). No option
   // list is enforced: the frontend mock has no canonical list for any of
   // these, so inventing one here would be presumptuous.
-  orgType                  String?             @map("org_type") @db.VarChar(100)
-  country                  String?             @db.VarChar(100)
-  timezone                 String?             @db.VarChar(100)
-  dateFormat               String?             @map("date_format") @db.VarChar(50)
-  currency                 String?             @db.VarChar(10)
-  defaultAmountTolerance   Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
-  defaultDateToleranceDays Int?                @map("default_date_tolerance_days")
+  orgType                     String?             @map("org_type") @db.VarChar(100)
+  country                     String?             @db.VarChar(100)
+  timezone                    String?             @db.VarChar(100)
+  dateFormat                  String?             @map("date_format") @db.VarChar(50)
+  currency                    String?             @db.VarChar(10)
+  defaultAmountTolerance      Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
+  defaultDateToleranceDays    Int?                @map("default_date_tolerance_days")
   // Admin-designated MatchRuleTemplate that non-admin members are locked to
   // (matchRuleTemplateService.js enforces this at both the template-listing
   // and the actual run/complete-draft steps) — null means no enforcement,
   // members use the org's plain tolerance defaults above and can edit freely.
   // SetNull so deleting the enforced template un-enforces cleanly rather
   // than leaving a dangling reference.
-  enforcedMatchRuleTemplateId String?          @map("enforced_match_rule_template_id") @db.Uuid
-  enforcedMatchRuleTemplate   MatchRuleTemplate? @relation("EnforcedMatchRuleTemplate", fields: [enforcedMatchRuleTemplateId], references: [id], onDelete: SetNull)
+  enforcedMatchRuleTemplateId String?             @map("enforced_match_rule_template_id") @db.Uuid
+  enforcedMatchRuleTemplate   MatchRuleTemplate?  @relation("EnforcedMatchRuleTemplate", fields: [enforcedMatchRuleTemplateId], references: [id], onDelete: SetNull)
   // Org-wide, admin-only (not a per-user preference) — when on, every active
   // admin member gets a weekly email + in-app notification summarizing the
   // org's reconciliation activity. See services/weeklyDigestService.js.
-  weeklyDigestEnabled      Boolean             @default(false) @map("weekly_digest_enabled")
+  weeklyDigestEnabled         Boolean             @default(false) @map("weekly_digest_enabled")
   // Canonical list of department names admins can assign to members via
   // Member.department (still a plain freeform string, not a FK — this list
   // is a soft steer for the UI, not an enforced constraint on that column).
-  departments              String[]            @default([])
-  members                  Member[]
-  invitations              Invitation[]
-  reports                  Report[]
-  auditLogs                AuditLog[]
-  notifications            Notification[]
-  reportTemplates          ReportTemplate[]
-  reportExports            ReportExport[]
-  matchRuleTemplates       MatchRuleTemplate[]
-  reportSequences          ReportSequence[]
+  departments                 String[]            @default([])
+  members                     Member[]
+  invitations                 Invitation[]
+  reports                     Report[]
+  auditLogs                   AuditLog[]
+  notifications               Notification[]
+  reportTemplates             ReportTemplate[]
+  reportExports               ReportExport[]
+  matchRuleTemplates          MatchRuleTemplate[]
+  reportSequences             ReportSequence[]
 
   @@unique([slug])
   @@map("organization")
@@ -574,6 +580,12 @@ model Invitation {
   @@index([organizationId])
   @@index([email])
   @@map("invitation")
+}
+
+enum FilePreviewStatus {
+  pending
+  ready
+  failed
 }
 
 enum CorrectionField {

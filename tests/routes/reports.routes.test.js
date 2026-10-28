@@ -84,24 +84,6 @@ app.use(express.json());
 app.use('/api/reports', reportsRouter);
 app.use(errorHandler);
 
-const validDto = {
-  fileAName: 'a.csv',
-  fileBName: 'b.csv',
-  summary: {
-    total: 1,
-    matched: 1,
-    mismatched: 0,
-    unmatchedA: 0,
-    unmatchedB: 0,
-    duplicates: 0,
-    matchRate: 1,
-    totalBreakValue: 0,
-    durationMs: 10,
-  },
-  rows: [{ ref: 'REF1', status: 'matched', amountA: 100, amountB: 100, amountDiff: 0 }],
-  config: { amountTolerance: 0.01 },
-};
-
 beforeEach(() => {
   jest.clearAllMocks();
   mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });

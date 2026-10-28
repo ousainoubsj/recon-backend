@@ -332,70 +332,17 @@ const REPORT_ID_1 = '123e4567-e89b-12d3-a456-426614174000';
 const REPORT_ID_2 = '223e4567-e89b-12d3-a456-426614174001';
 
 describe('POST /api/reports/bulk-export', () => {
-  it('zips multiple reports into one archive and records an export per report', async () => {
-    mockReportService.getReportsByIds.mockResolvedValue([
-      { ...sampleReport, id: REPORT_ID_1 },
-      { ...sampleReport, id: REPORT_ID_2, name: 'May Bank Reconciliation' },
-    ]);
+  // Removed: no UI called it, and it built up to 100 full reports inside one request.
+  it('no longer exists', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
 
-    const res = await request(app)
-      .post('/api/reports/bulk-export')
-      .send({ ids: [REPORT_ID_1, REPORT_ID_2] });
-
-    expect(res.status).toBe(200);
-    expect(res.headers['content-type']).toBe('application/zip');
-    expect(res.headers['content-disposition']).toContain('attachment; filename="reports_export_');
-    expect(res.text.slice(0, 2)).toBe('PK'); // zip local file header signature
-    expect(mockReportService.getReportsByIds).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2], {
-      requireCompleted: true,
-    });
-    expect(mockRecordExport).toHaveBeenCalledTimes(2);
-    expect(mockRecordExport).toHaveBeenCalledWith(
-      expect.objectContaining({ reportId: REPORT_ID_1, source: 'manual', status: 'success', format: 'xlsx' }),
-    );
-    expect(mockRecordExport).toHaveBeenCalledWith(
-      expect.objectContaining({ reportId: REPORT_ID_2, source: 'manual', status: 'success', format: 'xlsx' }),
-    );
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(
-      USER_ID,
-      expect.objectContaining({ action: 'report.bulk_export' }),
-    );
-  });
-
-  it('returns a 404 RFC 7807 error when any id is missing or inaccessible', async () => {
-    mockReportService.getReportsByIds.mockRejectedValue(new NotFoundError());
-
-    const res = await request(app)
-      .post('/api/reports/bulk-export')
-      .send({ ids: [REPORT_ID_1] });
+    const res = await request(app).post('/api/reports/bulk-export').send({ ids: ['11111111-1111-4111-8111-111111111111'] });
 
     expect(res.status).toBe(404);
-    expect(mockRecordExport).not.toHaveBeenCalled();
-  });
-
-  it('records a failed export and aborts with a 500 before sending any response when one report fails to build', async () => {
-    mockReportService.getReportsByIds.mockResolvedValue([{ ...sampleReport, id: REPORT_ID_1, rows: undefined }]);
-
-    const res = await request(app)
-      .post('/api/reports/bulk-export')
-      .send({ ids: [REPORT_ID_1] });
-
-    expect(res.status).toBe(500);
-    expect(res.body.type).toBe('https://recon.app/errors/internal-error');
-    expect(mockRecordExport).toHaveBeenCalledWith(
-      expect.objectContaining({ reportId: REPORT_ID_1, status: 'failed', errorMessage: expect.any(String) }),
-    );
-  });
-
-  it('rejects an empty ids array with a 422', async () => {
-    const res = await request(app).post('/api/reports/bulk-export').send({ ids: [] });
-
-    expect(res.status).toBe(422);
-    expect(mockReportService.getReportsByIds).not.toHaveBeenCalled();
   });
 });
 
-// What getComparisonReports attaches in place of rows.
+// getComparisonReports' per-run figures, computed in SQL; the combined report never loads rows.
 const COMPARISON_ROW_STATS = { largestBreak: 25, unmatchedACount: 1, unmatchedBCount: 0, duplicateRowCount: 0 };
 
 describe('POST /api/reports/comparison-export', () => {
@@ -572,7 +519,6 @@ describe('POST /api/reports/comparison-email', () => {
     // The email shows per-run totals only, so it never loads rows.
     expect(mockReportService.getReportsByIds).toHaveBeenCalledWith(USER_ID, [REPORT_ID_1, REPORT_ID_2], {
       requireCompleted: true,
-      includeRows: false,
     });
     expect(mockSend).toHaveBeenCalledWith(
       expect.objectContaining({ to: ['analyst@example.com'], from: process.env.EMAIL_FROM }),

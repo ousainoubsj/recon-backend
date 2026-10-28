@@ -157,20 +157,6 @@ reportsRouter.post(
   catchAsync(reportsController.bulkDeleteReports),
 );
 
-const bulkExportSchema = bulkIdsSchema.extend({
-  format: z.enum(['xlsx', 'pdf']).default('xlsx'),
-  templateId: z.string().uuid().optional(),
-  sections: sectionsSchema.optional(),
-});
-
-reportsRouter.post(
-  '/bulk-export',
-  authenticate,
-  catchAsync(requirePermission('report', 'export')),
-  validate(bulkExportSchema),
-  catchAsync(reportsController.bulkExportReports),
-);
-
 // Min 2 — comparing a single report against itself isn't a comparison; no
 // templateId (the "Combined Report" template is a client-only pseudo-card,
 // never a real ReportTemplate row, same as "Custom Report").

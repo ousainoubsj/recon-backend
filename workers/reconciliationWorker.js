@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -8,6 +9,7 @@ const { Worker } = await import('bullmq');
 const { redis } = await import('../config/redis.config.js');
 const { prisma } = await import('../config/prisma.config.js');
 const { RECONCILIATION_QUEUE_NAME } = await import('../queues/reconciliationQueue.js');
+const { FILE_PREVIEW_QUEUE_NAME } = await import('../queues/filePreviewQueue.js');
 const { executeReconciliationRun } = await import('../services/reportService.js');
 
 try {
@@ -45,7 +47,20 @@ worker.on('failed', (job, err) => {
   console.error(`Reconciliation run failed for report ${job?.data?.reportId} (job ${job?.id}):`, err.message);
 });
 
-console.log('Reconciliation worker started, waiting for jobs...');
+// Parsing a large upload is CPU-bound, so file previews run in worker threads: a parse never blocks the
+// reconciliation runs on this thread. The processor file loads its own Prisma and Redis clients.
+const filePreviewWorker = new Worker(
+  FILE_PREVIEW_QUEUE_NAME,
+  fileURLToPath(new URL('./filePreviewProcessor.js', import.meta.url)),
+  { connection: redis, useWorkerThreads: true, concurrency: 2 },
+);
+
+filePreviewWorker.on('failed', (job, err) => {
+  // buildMappingPreview records the user-facing reason on the Report row; this is operational visibility.
+  console.error(`File preview failed for report ${job?.data?.reportId} (job ${job?.id}):`, err.message);
+});
+
+console.log('Reconciliation and file-preview workers started, waiting for jobs...');
 
 // Nothing else in this app has graceful-shutdown handling (confirmed —
 // app.js/server.js have none either), but it matters more here: killing the
@@ -56,7 +71,7 @@ console.log('Reconciliation worker started, waiting for jobs...');
 // another worker automatically.
 async function shutdown(signal) {
   console.log(`${signal} received, closing worker...`);
-  await worker.close();
+  await Promise.all([worker.close(), filePreviewWorker.close()]);
   process.exit(0);
 }
 process.on('SIGTERM', () => shutdown('SIGTERM'));
