@@ -2,9 +2,18 @@ import { jest } from '@jest/globals';
 
 const mockPrisma = {
   member: { findFirst: jest.fn(), updateMany: jest.fn() },
+  user: { findUnique: jest.fn() },
 };
 
 jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockPrisma }));
+
+const mockCreatePersonalOrganization = jest.fn();
+jest.unstable_mockModule('../../services/signupHookService.js', () => ({
+  createPersonalOrganizationIfUninvited: mockCreatePersonalOrganization,
+}));
+
+const mockCreateOrganization = jest.fn();
+jest.unstable_mockModule('../../auth.js', () => ({ auth: { api: { createOrganization: mockCreateOrganization } } }));
 
 const { getUserMembership, touchLastActive } = await import('../../services/organizationService.js');
 const { NotFoundError } = await import('../../errors.js');
@@ -24,10 +33,43 @@ describe('getUserMembership', () => {
     });
   });
 
-  it('throws NotFoundError when the user has no organization membership', async () => {
+  it('creates the missing personal org and returns its membership', async () => {
+    const membership = { organizationId: 'org-new', role: 'admin', status: 'active' };
+    mockPrisma.member.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(membership);
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'a@example.com' });
+
+    await expect(getUserMembership('user-1')).resolves.toEqual(membership);
+    expect(mockCreatePersonalOrganization).toHaveBeenCalledWith(
+      { id: 'user-1', email: 'a@example.com' },
+      expect.objectContaining({ createOrganization: mockCreateOrganization }),
+    );
+  });
+
+  it('throws NotFoundError when a usable invitation means no org is created', async () => {
     mockPrisma.member.findFirst.mockResolvedValue(null);
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'a@example.com' });
 
     await expect(getUserMembership('user-1')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it('returns the membership a concurrent request created when its own creation fails', async () => {
+    const membership = { organizationId: 'org-new', role: 'admin', status: 'active' };
+    mockPrisma.member.findFirst.mockResolvedValueOnce(null).mockResolvedValueOnce(membership);
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'user-1', email: 'a@example.com' });
+    mockCreatePersonalOrganization.mockRejectedValueOnce(new Error('Organization already exists'));
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(getUserMembership('user-1')).resolves.toEqual(membership);
+
+    consoleError.mockRestore();
+  });
+
+  it('throws NotFoundError for an unknown user without trying to create an org', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue(null);
+    mockPrisma.user.findUnique.mockResolvedValue(null);
+
+    await expect(getUserMembership('user-1')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockCreatePersonalOrganization).not.toHaveBeenCalled();
   });
 });
 

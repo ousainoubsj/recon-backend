@@ -5,7 +5,7 @@ import { organization, emailOTP } from 'better-auth/plugins';
 import { createAccessControl } from 'better-auth/plugins/access';
 import { prisma } from './config/prisma.config.js';
 import { ROLE_PERMISSIONS } from './services/permissions.js';
-import { handleUserCreated, hasOrganization, usableInvitationEmail } from './services/signupHookService.js';
+import { handleUserCreated, releaseEmptyPersonalOrganization, usableInvitationEmail } from './services/signupHookService.js';
 import { repairActiveOrganization } from './services/sessionHookService.js';
 import { auditOrgAction } from './services/orgAuditHookService.js';
 import { logAuditSafely } from './services/auditLogService.js';
@@ -134,9 +134,9 @@ export const auth = betterAuth({
       sendInvitationEmail: sendOrgInvitationEmail,
       organizationHooks: {
         // organizationLimit only limits creating orgs; without this an existing user could join a second
-        // one, and getUserMembership would then pick either org at random.
-        beforeAcceptInvitation: async ({ user }) => {
-          if (await hasOrganization(user.id, { prisma })) {
+        // one, and getUserMembership would then pick either org at random. An empty auto-created org is given up.
+        beforeAcceptInvitation: async ({ user, invitation }) => {
+          if (!(await releaseEmptyPersonalOrganization(user, invitation, { prisma }))) {
             throw new APIError('FORBIDDEN', {
               message: 'This account already belongs to an organization. Ask the admin to invite a different email address.',
             });

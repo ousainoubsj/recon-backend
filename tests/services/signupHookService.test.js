@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { handleUserCreated, hasOrganization, usableInvitationEmail } from '../../services/signupHookService.js';
+import { handleUserCreated, releaseEmptyPersonalOrganization, usableInvitationEmail } from '../../services/signupHookService.js';
 
 const user = { id: 'user-1', email: 'new@example.com' };
 
@@ -68,14 +68,70 @@ describe('usableInvitationEmail', () => {
   });
 });
 
-describe('hasOrganization', () => {
-  it.each([
-    [0, false],
-    [1, true],
-  ])('with %i memberships returns %s', async (count, expected) => {
-    const prisma = { member: { count: jest.fn().mockResolvedValue(count) } };
+describe('releaseEmptyPersonalOrganization', () => {
+  const joiner = { id: 'user-1' };
+  const invitation = { organizationId: 'org-joining' };
+  const personalOrg = { id: 'org-personal', name: "a@example.com's organization", slug: 'org-user-1' };
 
-    await expect(hasOrganization('user-1', { prisma })).resolves.toBe(expected);
-    expect(prisma.member.count).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
+  function makePrisma({ memberships = [], deleted = 1 } = {}) {
+    return {
+      member: { findMany: jest.fn().mockResolvedValue(memberships) },
+      organization: { deleteMany: jest.fn().mockResolvedValue({ count: deleted }) },
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+  }
+
+  it('lets a user with no org join without deleting anything', async () => {
+    const prisma = makePrisma();
+
+    await expect(releaseEmptyPersonalOrganization(joiner, invitation, { prisma })).resolves.toBe(true);
+    expect(prisma.organization.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('deletes an empty personal org only under the emptiness conditions, and audits it against the joined org', async () => {
+    const prisma = makePrisma({ memberships: [{ organization: personalOrg }] });
+
+    await expect(releaseEmptyPersonalOrganization(joiner, invitation, { prisma })).resolves.toBe(true);
+    expect(prisma.organization.deleteMany).toHaveBeenCalledWith({
+      where: {
+        id: 'org-personal',
+        members: { every: { userId: 'user-1' } },
+        reports: { none: {} },
+        reportTemplates: { none: {} },
+        matchRuleTemplates: { none: {} },
+        reportExports: { none: {} },
+        invitations: { none: { status: 'pending' } },
+      },
+    });
+    expect(prisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        userId: 'user-1',
+        organizationId: 'org-joining',
+        action: 'organization.personal.replace',
+        entityId: 'org-personal',
+        metadata: { replacedOrganizationName: personalOrg.name },
+      }),
+    });
+  });
+
+  it('refuses when the personal org holds anything (the guarded delete matches nothing)', async () => {
+    const prisma = makePrisma({ memberships: [{ organization: personalOrg }], deleted: 0 });
+
+    await expect(releaseEmptyPersonalOrganization(joiner, invitation, { prisma })).resolves.toBe(false);
+    expect(prisma.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses for an org that is not their auto-created one, without deleting', async () => {
+    const prisma = makePrisma({ memberships: [{ organization: { ...personalOrg, slug: 'acme' } }] });
+
+    await expect(releaseEmptyPersonalOrganization(joiner, invitation, { prisma })).resolves.toBe(false);
+    expect(prisma.organization.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('refuses for a user already in more than one org', async () => {
+    const prisma = makePrisma({ memberships: [{ organization: personalOrg }, { organization: { id: 'o2', slug: 'x' } }] });
+
+    await expect(releaseEmptyPersonalOrganization(joiner, invitation, { prisma })).resolves.toBe(false);
+    expect(prisma.organization.deleteMany).not.toHaveBeenCalled();
   });
 });

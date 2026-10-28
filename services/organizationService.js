@@ -1,18 +1,39 @@
 import { prisma } from '../config/prisma.config.js';
 import { NotFoundError } from '../errors.js';
+import { createPersonalOrganizationIfUninvited } from './signupHookService.js';
 
 /**
+ * A user with no org gets their own here, unless a usable invitation is waiting for them. That covers signing
+ * up for an invitation that later expired or was cancelled, and a failed signup-time creation.
  * @param {string} userId
  * @returns {Promise<{organizationId: string, role: string, status: 'active'|'inactive'}>}
- * @throws {NotFoundError} if the user has no organization membership
+ * @throws {NotFoundError} if the user has no organization membership and none could be created
  */
 export async function getUserMembership(userId) {
-  const member = await prisma.member.findFirst({
-    where: { userId },
-    select: { organizationId: true, role: true, status: true },
-  });
-  if (!member) throw new NotFoundError('User does not belong to an organization');
-  return member;
+  const findMembership = () =>
+    prisma.member.findFirst({
+      where: { userId },
+      select: { organizationId: true, role: true, status: true },
+    });
+
+  const member = await findMembership();
+  if (member) return member;
+
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+  if (!user) throw new NotFoundError('User does not belong to an organization');
+
+  // Imported here: auth.js imports services that import this module.
+  const { auth } = await import('../auth.js');
+  try {
+    await createPersonalOrganizationIfUninvited(user, { prisma, createOrganization: auth.api.createOrganization });
+  } catch (err) {
+    // Also fails when a concurrent request created it first (the slug is unique per user); the re-read covers that.
+    console.error('Failed to create a missing organization', userId, err);
+  }
+
+  const created = await findMembership();
+  if (!created) throw new NotFoundError('User does not belong to an organization');
+  return created;
 }
 
 // Org-scoped, not user-scoped (no getUserMembership call) — needed by
