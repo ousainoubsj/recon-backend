@@ -53,14 +53,14 @@ describe('buildXlsxReport', () => {
   it('always includes a Report Overview sheet and the raw Matched sheet, even with every section off', async () => {
     const buffer = await buildXlsxReport(report, NO_SECTIONS);
 
-    expect(readWorkbook(buffer).SheetNames).toEqual(['Report Overview', 'Matched']);
+    expect(readWorkbook(buffer).SheetNames).toEqual(['Report Overview', 'Matched', 'Corrections']);
   });
 
   it('adds the raw per-status sheets and every section to the Overview sheet when unmatchedDetails/sections are on', async () => {
     const buffer = await buildXlsxReport(report, ALL_SECTIONS);
     const names = readWorkbook(buffer).SheetNames;
 
-    expect(names).toEqual(['Report Overview', 'Matched', 'Mismatched', 'Unmatched (A)', 'Unmatched (B)', 'Duplicates']);
+    expect(names).toEqual(['Report Overview', 'Matched', 'Mismatched', 'Unmatched (A)', 'Unmatched (B)', 'Duplicates', 'Corrections']);
 
     const csv = overviewCsv(buffer);
     expect(csv).toContain('Executive Summary');
@@ -76,7 +76,7 @@ describe('buildXlsxReport', () => {
   it('omits the per-status raw sheets when unmatchedDetails is off', async () => {
     const buffer = await buildXlsxReport(report, { ...ALL_SECTIONS, unmatchedDetails: false });
 
-    expect(readWorkbook(buffer).SheetNames).toEqual(['Report Overview', 'Matched']);
+    expect(readWorkbook(buffer).SheetNames).toEqual(['Report Overview', 'Matched', 'Corrections']);
   });
 
   it('omits a section from the Overview sheet when its toggle is off', async () => {
@@ -115,7 +115,7 @@ describe('buildXlsxReport', () => {
     const wb = readWorkbook(buffer);
     const csv = XLSX.utils.sheet_to_csv(wb.Sheets['Matched']);
 
-    expect(csv.split('\n')[0]).toBe('Reference,Status,Date A,Date B,Amount A,Amount B,Amount Diff,Break Reason,Reviewed');
+    expect(csv.split('\n')[0]).toBe('Reference,Status,Date A,Date B,Amount A,Amount B,Amount Diff,Break Reason,Reviewed,Corrected');
     expect(csv).toContain('REF1,Matched');
   });
 
@@ -150,5 +150,33 @@ describe('buildXlsxReport', () => {
       expect(ref3[header.indexOf('Resolution')]).toBe('Explained');
       expect(ref3[header.indexOf('Resolution Note')]).toBe('Timing difference, clears next statement');
     });
+  });
+
+  it('lists every applied correction on the Corrections sheet and flags corrected rows on the status sheets', async () => {
+    const corrected = {
+      ...report,
+      rows: report.rows.map((r, i) => ({ ...r, rowIndexA: i, rowIndexB: null })),
+      corrections: [
+        {
+          side: 'A',
+          rowIndex: 1,
+          rowReference: 'REF2',
+          field: 'amount',
+          originalValue: '100',
+          correctedValue: '90',
+          reason: 'Ledger keyed twice',
+          createdAt: new Date('2026-10-28T10:00:00Z'),
+          createdByUser: { name: 'Ada' },
+        },
+      ],
+    };
+    const wb = readWorkbook(await buildXlsxReport(corrected, ALL_SECTIONS, {}));
+
+    const correctionsCsv = XLSX.utils.sheet_to_csv(wb.Sheets['Corrections']);
+    expect(correctionsCsv.split('\n')[0]).toBe('File,Row Reference,Field,Original,Corrected,Reason,Corrected By,Corrected At');
+    expect(correctionsCsv).toContain('Internal ledger,REF2,Amount,100,90,Ledger keyed twice,Ada');
+    expect(XLSX.utils.sheet_to_csv(wb.Sheets['Mismatched'])).toMatch(/REF2,.*,Yes(,|$)/m);
+    expect(XLSX.utils.sheet_to_csv(wb.Sheets['Matched'])).toMatch(/REF1,.*,No$/m);
+    expect(XLSX.utils.sheet_to_csv(wb.Sheets['Report Overview'])).toContain('Rows corrected: 1');
   });
 });

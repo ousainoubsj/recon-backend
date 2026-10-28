@@ -28,6 +28,8 @@ const REPORT_ROW_COPY_COLUMNS = [
   'raw_a',
   'raw_b',
   'break_reason',
+  'row_index_a',
+  'row_index_b',
 ];
 
 // CSV format's default NULL representation is an unquoted empty field --
@@ -58,6 +60,8 @@ export function reportRowToCsvRecord(reportId, r) {
     r.rawA != null ? JSON.stringify(r.rawA) : NULL_MARKER,
     r.rawB != null ? JSON.stringify(r.rawB) : NULL_MARKER,
     r.breakReason ?? NULL_MARKER,
+    r.rowIndexA ?? NULL_MARKER,
+    r.rowIndexB ?? NULL_MARKER,
   ];
 }
 

@@ -1,4 +1,4 @@
-import { BREAK_REASON_LABELS, exceptionReason, resolvedSummaryLine } from '../../utils/reportSections.js';
+import { BREAK_REASON_LABELS, correctedRowChecker, correctedSummaryLine, exceptionReason, resolvedSummaryLine } from '../../utils/reportSections.js';
 
 describe('exceptionReason', () => {
   it('separates an unmatched row with a duplicated partner from duplicate rows themselves', () => {
@@ -21,5 +21,28 @@ describe('resolvedSummaryLine', () => {
 
   it('uses the singular for a single exception', () => {
     expect(resolvedSummaryLine([{}])).toBe('Resolved manually: 0 of 1 exception');
+  });
+});
+
+describe('correctedRowChecker / correctedSummaryLine', () => {
+  const report = {
+    corrections: [{ side: 'B', rowIndex: 7 }, { side: 'B', rowIndex: 7 }, { side: 'A', rowIndex: 2 }],
+    rows: [
+      { rowIndexA: 0, rowIndexB: 7 },
+      { rowIndexA: 2, rowIndexB: null },
+      // A matched index on the wrong side is a different source row.
+      { rowIndexA: 7, rowIndexB: 2 },
+      { rowIndexA: null, rowIndexB: null },
+    ],
+  };
+
+  it('counts each corrected row once, matching positions per side', () => {
+    const isCorrected = correctedRowChecker(report);
+    expect(report.rows.map(isCorrected)).toEqual([true, true, false, false]);
+    expect(correctedSummaryLine(report)).toBe('Rows corrected: 2');
+  });
+
+  it('reads "Rows corrected: 0" for a report with no corrections', () => {
+    expect(correctedSummaryLine({ rows: report.rows })).toBe('Rows corrected: 0');
   });
 });

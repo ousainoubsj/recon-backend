@@ -6,6 +6,7 @@ const mockTx = {
   reportRow: { createMany: jest.fn(), updateMany: jest.fn() },
   reportSequence: { upsert: jest.fn() },
   reportRowResolution: { create: jest.fn(), findUnique: jest.fn() },
+  reportCorrection: { updateMany: jest.fn() },
   $queryRaw: jest.fn(),
 };
 
@@ -37,6 +38,12 @@ const mockPrisma = {
   },
   reportRowResolution: {
     findFirst: jest.fn(),
+    deleteMany: jest.fn(),
+  },
+  reportCorrection: {
+    findMany: jest.fn(),
+    findFirst: jest.fn(),
+    upsert: jest.fn(),
     deleteMany: jest.fn(),
   },
   member: {
@@ -89,6 +96,9 @@ jest.unstable_mockModule('../../services/matchingEngine.js', () => ({
   buildRecommendedAction: mockBuildRecommendedAction,
   buildShortReason: mockBuildShortReason,
   deriveDescription: mockDeriveDescription,
+  // Stand-ins with the real parsers' accept/reject behaviour; matchingEngine.test.js covers the parsers themselves.
+  parseAmount: (value) => (/^-?\d+(\.\d+)?$/.test(String(value).replace(/,/g, '')) ? Number(String(value).replace(/,/g, '')) : null),
+  parseDate: (value) => (Number.isNaN(new Date(value).getTime()) ? null : new Date(value)),
 }));
 
 const mockSuggestMapping = jest.fn();
@@ -153,6 +163,9 @@ const {
   markRowReviewed,
   resolveRows,
   unresolve,
+  createCorrection,
+  listCorrections,
+  deleteCorrection,
   getBreakBreakdown,
   getFilePairTrend,
   getHistoryStats,
@@ -208,7 +221,11 @@ beforeEach(() => {
   // don't need to account for sequenceYear/sequenceNumber being added.
   mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
   // getReport's resolution summary; tests that need other raw-query results override it.
-  mockPrisma.$queryRaw.mockResolvedValue([{ resolvedCount: 0, unresolvedExceptionCount: 0 }]);
+  // getReport's two summaries share $queryRaw; answer each by the table it reads.
+  mockPrisma.$queryRaw.mockImplementation(async (strings) =>
+    strings.join('').includes('report_corrections') ? [{ pending: 0, applied: 0 }] : [{ resolvedCount: 0, unresolvedExceptionCount: 0 }],
+  );
+  mockPrisma.reportCorrection.findMany.mockResolvedValue([]);
   // Postgres returns NUMERIC sums as Decimals.
   mockTx.$queryRaw.mockResolvedValue([
     { matchedValue: new Prisma.Decimal('100.0000'), unmatchedValue: new Prisma.Decimal('50.0000'), duplicateValue: new Prisma.Decimal(0) },
@@ -488,6 +505,7 @@ describe('getReport', () => {
       priorRun: null,
       runDurationMs: null,
       resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
+      correctionSummary: { pending: 0, applied: 0 },
       rerunOf: null,
       supersededBy: null,
     });
@@ -516,6 +534,7 @@ describe('getReport', () => {
       where: { id: 'r1', organizationId: ORG_ID },
       include: {
         rows: { include: { resolution: { select: { kind: true, note: true } } } },
+        corrections: expect.objectContaining({ where: { applied: true } }),
         supersededBy: { select: { id: true, sequenceYear: true, sequenceNumber: true } },
       },
     });
@@ -600,11 +619,12 @@ describe('getReport', () => {
       priorRun: null,
       runDurationMs: null,
       resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
+      correctionSummary: { pending: 0, applied: 0 },
       rerunOf: null,
       supersededBy: null,
     });
-    // A draft can't carry resolutions, so the summary query is skipped (getReport is polled while runs process).
-    expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
+    // A draft can't carry resolutions, so only the correction summary is queried: a rerun draft lists its corrections.
+    expect(mockPrisma.$queryRaw).toHaveBeenCalledTimes(1);
     expect(mockPrisma.report.findFirst).toHaveBeenCalledTimes(1);
   });
 
@@ -1013,6 +1033,7 @@ describe('rerunReport', () => {
         // The full rules the source actually ran with, not its older tolerance-only config.
         config: source.rulesConfig,
         sourceReportId: 'source-1',
+        corrections: { create: [] },
       },
       select: { id: true },
     });
@@ -1021,6 +1042,42 @@ describe('rerunReport', () => {
       USER_ID,
       expect.objectContaining({ action: 'report.rerun', entityId: 'draft-9', metadata: expect.objectContaining({ sourceReportId: 'source-1' }) }),
     );
+  });
+});
+
+describe('rerunReport — corrections', () => {
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'source-1',
+      fileAKey: 'uploads/u/a.csv',
+      fileBKey: 'uploads/u/b.csv',
+      fileAName: 'a.csv',
+      fileBName: 'b.csv',
+      supersededBy: null,
+    });
+    mockPrisma.report.create.mockResolvedValue({ id: 'draft-9' });
+  });
+
+  it("copies the source's effective corrections as pending, a pending one overriding the applied one for the same field", async () => {
+    const shared = { fileKey: 'uploads/u/b.csv', rowReference: 'INV-1', reason: 'r', createdBy: USER_ID, createdAt: new Date('2026-10-01') };
+    // Ordered pending-first by the query, so the first one per row and field is the one that wins.
+    mockPrisma.reportCorrection.findMany.mockResolvedValue([
+      { ...shared, side: 'B', rowIndex: 2, field: 'amount', originalValue: '12', correctedValue: '11' },
+      { ...shared, side: 'B', rowIndex: 2, field: 'amount', originalValue: '12', correctedValue: '10' },
+      { ...shared, side: 'B', rowIndex: 2, field: 'date', originalValue: '2026-02-01', correctedValue: '2026-01-01' },
+    ]);
+
+    await rerunReport(USER_ID, 'source-1');
+
+    expect(mockPrisma.reportCorrection.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: { reportId: 'source-1' },
+      orderBy: { applied: 'asc' },
+    }));
+    const { create } = mockPrisma.report.create.mock.calls[0][0].data.corrections;
+    expect(create).toEqual([
+      { ...shared, side: 'B', rowIndex: 2, field: 'amount', originalValue: '12', correctedValue: '11', applied: false },
+      { ...shared, side: 'B', rowIndex: 2, field: 'date', originalValue: '2026-02-01', correctedValue: '2026-01-01', applied: false },
+    ]);
   });
 });
 
@@ -1055,6 +1112,21 @@ describe('updateDraft — replacing a file', () => {
       fileBSummary: null,
       fileBSampleRows: null,
     });
+  });
+
+  it("deletes only the replaced side's corrections", async () => {
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: NEW_B });
+
+    expect(mockPrisma.reportCorrection.deleteMany).toHaveBeenCalledWith({ where: { reportId: 'draft-1', side: { in: ['B'] } } });
+  });
+
+  it('deletes no corrections on a first upload or an unchanged key', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...before, fileBKey: null });
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: NEW_B });
+    mockPrisma.report.findFirst.mockResolvedValue(before);
+    await updateDraft(USER_ID, 'draft-1', { fileBKey: OLD_B });
+
+    expect(mockPrisma.reportCorrection.deleteMany).not.toHaveBeenCalled();
   });
 
   it('deletes the replaced upload when no other report uses it', async () => {
@@ -1565,6 +1637,7 @@ describe('executeReconciliationRun', () => {
       runDto.columnMapping.fileA,
       runDto.columnMapping.fileB,
       runDto.config,
+      { A: new Map(), B: new Map() },
     );
     expect(mockDeleteReportRows).toHaveBeenCalledWith('draft-1');
     expect(mockCopyReportRowsIn).toHaveBeenCalledWith('draft-1', [], expect.objectContaining({ onProgress: expect.any(Function) }));
@@ -1580,7 +1653,7 @@ describe('executeReconciliationRun', () => {
       entityId: 'draft-1',
       ip: undefined,
       userAgent: undefined,
-      metadata: { matchRate: '50.00%', totalBreakValue: 50, subject: { name: 'Untitled Reconciliation' } },
+      metadata: { matchRate: '50.00%', totalBreakValue: 50, correctionsApplied: 0, subject: { name: 'Untitled Reconciliation' } },
     });
   });
 
@@ -1669,6 +1742,50 @@ describe('executeReconciliationRun', () => {
       where: { id: 'draft-1' },
       data: { status: 'failed', errorMessage: 'COPY failed: connection reset' },
     });
+  });
+
+  it("runs with the corrections for the draft's current files and marks exactly those applied on completion", async () => {
+    mockPrisma.reportCorrection.findMany.mockResolvedValue([
+      { id: 'c1', side: 'A', rowIndex: 3, field: 'reference', correctedValue: 'INV-2231' },
+      { id: 'c2', side: 'B', rowIndex: 3, field: 'amount', correctedValue: '10.00' },
+      { id: 'c3', side: 'B', rowIndex: 3, field: 'date', correctedValue: '2026-01-01' },
+    ]);
+
+    await executeReconciliationRun(jobPayload);
+
+    expect(mockPrisma.reportCorrection.findMany).toHaveBeenCalledWith(expect.objectContaining({
+      where: {
+        reportId: 'draft-1',
+        applied: false,
+        OR: [{ side: 'A', fileKey: draft.fileAKey }, { side: 'B', fileKey: draft.fileBKey }],
+      },
+    }));
+    const corrections = mockRunMatch.mock.calls[0][5];
+    expect(corrections.A).toEqual(new Map([[3, { reference: 'INV-2231' }]]));
+    expect(corrections.B).toEqual(new Map([[3, { amount: '10.00', date: '2026-01-01' }]]));
+    expect(mockTx.reportCorrection.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ['c1', 'c2', 'c3'] }, reportId: 'draft-1' },
+      data: { applied: true },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, expect.objectContaining({
+      action: 'report.run.completed',
+      metadata: expect.objectContaining({ correctionsApplied: 3 }),
+    }));
+  });
+
+  it('leaves corrections pending when the run fails', async () => {
+    mockPrisma.reportCorrection.findMany.mockResolvedValue([{ id: 'c1', side: 'A', rowIndex: 3, field: 'amount', correctedValue: '1' }]);
+    mockCopyReportRowsIn.mockRejectedValueOnce(new Error('COPY failed'));
+    mockPrisma.report.update.mockResolvedValue({ id: 'draft-1', status: 'failed' });
+
+    await expect(executeReconciliationRun(jobPayload)).rejects.toThrow('COPY failed');
+    expect(mockTx.reportCorrection.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('marks nothing applied when the draft has no corrections', async () => {
+    await executeReconciliationRun(jobPayload);
+
+    expect(mockTx.reportCorrection.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -1821,6 +1938,7 @@ describe('getRulePreview', () => {
       runDto.columnMapping.fileA,
       runDto.columnMapping.fileB,
       runDto.config,
+      { A: new Map(), B: new Map() },
     );
     expect(mockExtrapolatePreview).toHaveBeenCalledWith(expect.anything(), 1, 2, 1, 2);
   });
@@ -1830,7 +1948,7 @@ describe('getRulePreview', () => {
 
     await getRulePreview(USER_ID, 'draft-1', { config: runDto.config, columnMapping: override });
 
-    expect(mockRunMatch).toHaveBeenCalledWith(expect.anything(), expect.anything(), override.fileA, override.fileB, runDto.config);
+    expect(mockRunMatch).toHaveBeenCalledWith(expect.anything(), expect.anything(), override.fileA, override.fileB, runDto.config, expect.any(Object));
   });
 
   it('throws ConflictError when no sample has been cached yet (Postgres marker absent)', async () => {
@@ -3051,7 +3169,10 @@ describe('getReportsByIds', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { id: { in: ['r1'] }, organizationId: ORG_ID, status: 'completed' },
-      include: { rows: { include: { resolution: { select: { kind: true, note: true } } } } },
+      include: {
+        rows: { include: { resolution: { select: { kind: true, note: true } } } },
+        corrections: expect.objectContaining({ where: { applied: true } }),
+      },
     });
   });
 });
@@ -3086,5 +3207,222 @@ describe('getComparisonReports', () => {
 
     await expect(getComparisonReports(USER_ID, ['r1', 'other-org'])).rejects.toBeInstanceOf(NotFoundError);
     expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
+  });
+});
+
+describe('corrections', () => {
+  const REPORT = {
+    id: 'r1',
+    organizationId: ORG_ID,
+    userId: USER_ID,
+    status: 'completed',
+    supersededById: null,
+    name: 'June',
+    fileAKey: 'uploads/u/a.csv',
+    fileBKey: 'uploads/u/b.csv',
+    columnMapping: { fileA: { referenceNumber: 'Ref', amount: 'Amt' }, fileB: { referenceNumber: 'Reference', amount: 'Amount' } },
+  };
+  const ROW = { ref: 'INV-22', rawA: { Ref: 'INV-22', Amt: '10' }, rawB: { Reference: 'INV-2231', Amount: '12' }, rowIndexA: 4, rowIndexB: 7 };
+  const STORED = {
+    id: 'c1',
+    side: 'B',
+    rowIndex: 7,
+    rowReference: 'INV-2231',
+    field: 'amount',
+    originalValue: '12',
+    correctedValue: '10.00',
+    reason: 'Bank export added a fee',
+    applied: false,
+    createdAt: new Date('2026-10-28T10:00:00Z'),
+    createdByUser: { id: USER_ID, name: 'Ada' },
+  };
+  const input = { rowId: 'row-1', side: 'B', field: 'amount', correctedValue: '10.00', reason: 'Bank export added a fee' };
+
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue(REPORT);
+    mockPrisma.reportRow.findFirst.mockResolvedValue(ROW);
+    mockPrisma.reportCorrection.upsert.mockResolvedValue(STORED);
+  });
+
+  describe('createCorrection', () => {
+    it("404s on another organization's report without reading a row or writing", async () => {
+      mockPrisma.report.findFirst.mockResolvedValue(null);
+
+      await expect(createCorrection(USER_ID, 'foreign', input)).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'foreign', organizationId: ORG_ID } }));
+      expect(mockPrisma.reportRow.findFirst).not.toHaveBeenCalled();
+      expect(mockPrisma.reportCorrection.upsert).not.toHaveBeenCalled();
+    });
+
+    it('404s on a row from another report', async () => {
+      mockPrisma.reportRow.findFirst.mockResolvedValue(null);
+
+      await expect(createCorrection(USER_ID, 'r1', input)).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockPrisma.reportRow.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'row-1', reportId: 'r1' } }));
+    });
+
+    it('derives the row position, file, reference and original value on the server, replacing any pending correction', async () => {
+      const result = await createCorrection(USER_ID, 'r1', input);
+
+      const values = {
+        fileKey: 'uploads/u/b.csv',
+        rowReference: 'INV-2231',
+        originalValue: '12',
+        correctedValue: '10.00',
+        reason: 'Bank export added a fee',
+        createdBy: USER_ID,
+      };
+      expect(mockPrisma.reportCorrection.upsert).toHaveBeenCalledWith({
+        where: { reportId_side_rowIndex_field_applied: { reportId: 'r1', side: 'B', rowIndex: 7, field: 'amount', applied: false } },
+        create: { reportId: 'r1', side: 'B', rowIndex: 7, field: 'amount', applied: false, ...values },
+        update: { ...values, createdAt: expect.any(Date) },
+        select: expect.any(Object),
+      });
+      expect(result).toEqual(expect.objectContaining({ id: 'c1', rowReference: 'INV-2231', createdBy: { id: USER_ID, name: 'Ada' } }));
+      expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, expect.objectContaining({
+        action: 'report.correction.create',
+        metadata: expect.objectContaining({ field: 'amount', side: 'B', transactionRef: 'INV-2231', originalValue: '12', correctedValue: '10.00' }),
+      }));
+    });
+
+    it.each([
+      ['an amount the engine cannot parse', { field: 'amount', correctedValue: '1.2.3' }],
+      ['a date the engine cannot parse', { field: 'date', correctedValue: 'not a date' }],
+    ])('rejects %s with a ValidationError', async (_label, change) => {
+      await expect(createCorrection(USER_ID, 'r1', { ...input, ...change })).rejects.toBeInstanceOf(ValidationError);
+      expect(mockPrisma.reportCorrection.upsert).not.toHaveBeenCalled();
+    });
+
+    it('rejects a side the row has no data for with a ValidationError', async () => {
+      mockPrisma.reportRow.findFirst.mockResolvedValue({ ...ROW, rawB: null, rowIndexB: null });
+
+      await expect(createCorrection(USER_ID, 'r1', input)).rejects.toBeInstanceOf(ValidationError);
+    });
+
+    it.each([
+      ['a report that is not completed', { report: { status: 'failed' } }],
+      ['a superseded report', { report: { supersededById: 'r2' } }],
+      ['a row from a run before corrections existed', { row: { rowIndexB: null } }],
+    ])('409s on %s', async (_label, { report = {}, row = {} }) => {
+      mockPrisma.report.findFirst.mockResolvedValue({ ...REPORT, ...report });
+      mockPrisma.reportRow.findFirst.mockResolvedValue({ ...ROW, ...row });
+
+      await expect(createCorrection(USER_ID, 'r1', input)).rejects.toBeInstanceOf(ConflictError);
+      expect(mockPrisma.reportCorrection.upsert).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('deleteCorrection', () => {
+    it('404s on a correction that is not on this report', async () => {
+      mockPrisma.reportCorrection.findFirst.mockResolvedValue(null);
+
+      await expect(deleteCorrection(USER_ID, 'r1', 'c-other')).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockPrisma.reportCorrection.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'c-other', reportId: 'r1' } }));
+    });
+
+    it('409s on an applied correction without deleting it', async () => {
+      mockPrisma.reportCorrection.findFirst.mockResolvedValue({ ...STORED, applied: true });
+
+      await expect(deleteCorrection(USER_ID, 'r1', 'c1')).rejects.toBeInstanceOf(ConflictError);
+      expect(mockPrisma.reportCorrection.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('409s while the report is running', async () => {
+      mockPrisma.report.findFirst.mockResolvedValue({ ...REPORT, status: 'processing' });
+
+      await expect(deleteCorrection(USER_ID, 'r1', 'c1')).rejects.toBeInstanceOf(ConflictError);
+    });
+
+    it('deletes only while still pending, and 409s if a run applied it in the meantime', async () => {
+      mockPrisma.reportCorrection.findFirst.mockResolvedValue(STORED);
+      mockPrisma.reportCorrection.deleteMany.mockResolvedValue({ count: 0 });
+
+      await expect(deleteCorrection(USER_ID, 'r1', 'c1')).rejects.toBeInstanceOf(ConflictError);
+      expect(mockPrisma.reportCorrection.deleteMany).toHaveBeenCalledWith({ where: { id: 'c1', reportId: 'r1', applied: false } });
+    });
+
+    it('audits the removal', async () => {
+      mockPrisma.reportCorrection.findFirst.mockResolvedValue(STORED);
+      mockPrisma.reportCorrection.deleteMany.mockResolvedValue({ count: 1 });
+
+      await deleteCorrection(USER_ID, 'r1', 'c1');
+
+      expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, expect.objectContaining({
+        action: 'report.correction.delete',
+        metadata: expect.objectContaining({ correctionId: 'c1', transactionRef: 'INV-2231' }),
+      }));
+    });
+  });
+
+  describe('listCorrections', () => {
+    it("404s on another organization's report", async () => {
+      mockPrisma.report.findFirst.mockResolvedValue(null);
+
+      await expect(listCorrections(USER_ID, 'foreign')).rejects.toBeInstanceOf(NotFoundError);
+      expect(mockPrisma.reportCorrection.findMany).not.toHaveBeenCalled();
+    });
+
+    it("pages the report's corrections", async () => {
+      mockPrisma.reportCorrection.findMany.mockResolvedValue([STORED]);
+
+      const result = await listCorrections(USER_ID, 'r1', { limit: 20, offset: 40 });
+
+      expect(mockPrisma.reportCorrection.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { reportId: 'r1' }, take: 20, skip: 40 }));
+      expect(result).toHaveLength(1);
+    });
+  });
+
+  describe('read paths', () => {
+    beforeEach(() => {
+      mockBuildShortReason.mockReturnValue({ type: 'Other', reason: '' });
+      mockBuildMatchAnalysis.mockReturnValue([]);
+    });
+
+    it("badges a page of explorer rows from one corrections query over the page's positions", async () => {
+      mockPrisma.reportRow.findMany.mockResolvedValue([
+        { id: 'row-1', ref: 'INV-22', status: 'mismatched', rowIndexA: 4, rowIndexB: 7 },
+        { id: 'row-2', ref: 'INV-30', status: 'unmatched_a', rowIndexA: 5, rowIndexB: null },
+      ]);
+      mockPrisma.reportRow.count.mockResolvedValue(2);
+      mockPrisma.reportCorrection.findMany.mockResolvedValue([{ side: 'B', rowIndex: 7, field: 'amount', applied: true }]);
+
+      const { rows } = await getTransactions(USER_ID, 'r1');
+
+      expect(mockPrisma.reportCorrection.findMany).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.reportCorrection.findMany).toHaveBeenCalledWith(expect.objectContaining({
+        where: { reportId: 'r1', OR: [{ side: 'A', rowIndex: { in: [4, 5] } }, { side: 'B', rowIndex: { in: [7] } }] },
+      }));
+      expect(rows[0].corrections).toEqual([{ field: 'amount', side: 'B', applied: true }]);
+      expect(rows[1].corrections).toEqual([]);
+    });
+
+    it('skips the corrections query for rows from a run before corrections existed', async () => {
+      mockPrisma.reportRow.findMany.mockResolvedValue([{ id: 'row-1', ref: 'X', status: 'matched', rowIndexA: null, rowIndexB: null }]);
+      mockPrisma.reportRow.count.mockResolvedValue(1);
+
+      const { rows } = await getTransactions(USER_ID, 'r1');
+
+      expect(mockPrisma.reportCorrection.findMany).not.toHaveBeenCalled();
+      expect(rows[0].corrections).toEqual([]);
+    });
+
+    it("returns the row's corrections and only the sides it has data and a position for", async () => {
+      mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', ...ROW, status: 'unmatched_a', rawB: null, rowIndexB: null });
+      mockPrisma.reportCorrection.findMany.mockResolvedValue([{ ...STORED, side: 'A', rowIndex: 4 }]);
+
+      const result = await getTransaction(USER_ID, 'r1', 'row-1');
+
+      expect(result.correctableSides).toEqual(['A']);
+      expect(result.corrections).toEqual([expect.objectContaining({ id: 'c1', side: 'A', createdBy: { id: USER_ID, name: 'Ada' } })]);
+    });
+
+    it('has no correctable sides on a row from a run before corrections existed', async () => {
+      mockPrisma.reportRow.findFirst.mockResolvedValue({ id: 'row-1', ...ROW, status: 'mismatched', rowIndexA: null, rowIndexB: null });
+
+      const result = await getTransaction(USER_ID, 'r1', 'row-1');
+
+      expect(result.correctableSides).toEqual([]);
+      expect(result.corrections).toEqual([]);
+    });
   });
 });

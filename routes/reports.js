@@ -407,6 +407,40 @@ reportsRouter.delete(
   catchAsync(reportsController.unresolve),
 );
 
+// Corrections override a source row's mapped value on the next run; the uploaded file is never changed.
+const createCorrectionSchema = z.object({
+  rowId: z.string().uuid(),
+  side: z.enum(['A', 'B']),
+  field: z.enum(['reference', 'amount', 'date', 'currency']),
+  correctedValue: z.string().trim().min(1).max(500),
+  reason: z.string().trim().min(1).max(1000),
+});
+
+reportsRouter.get(
+  '/:id/corrections',
+  authenticate,
+  catchAsync(requirePermission('report', 'read')),
+  validateParams(z.object({ id: z.string().uuid() })),
+  catchAsync(reportsController.listCorrections),
+);
+
+reportsRouter.post(
+  '/:id/corrections',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validateParams(z.object({ id: z.string().uuid() })),
+  validate(createCorrectionSchema),
+  catchAsync(reportsController.createCorrection),
+);
+
+reportsRouter.delete(
+  '/:id/corrections/:correctionId',
+  authenticate,
+  catchAsync(requirePermission('report', 'create')),
+  validateParams(z.object({ id: z.string().uuid(), correctionId: z.string().uuid() })),
+  catchAsync(reportsController.deleteCorrection),
+);
+
 reportsRouter.get(
   '/:id/break-breakdown',
   authenticate,

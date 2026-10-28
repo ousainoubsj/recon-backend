@@ -87,6 +87,7 @@ model User {
   favorites          ReportFavorite[]
   reviewedReportRows ReportRow[]         @relation("ReportRowReviewedBy")
   resolvedResolutions ReportRowResolution[] @relation("ReportRowResolvedBy")
+  reportCorrections ReportCorrection[] @relation("ReportCorrectionCreatedBy")
   matchRuleTemplates MatchRuleTemplate[]
 
   name          String
@@ -192,6 +193,7 @@ model Report {
   exports   ReportExport[]
   favorites ReportFavorite[]
   resolutions ReportRowResolution[]
+  corrections ReportCorrection[]
 
   // organizationId-scoped, not just (sequenceYear, sequenceNumber) alone —
   // otherwise a second organization's first completion of the year would
@@ -249,6 +251,10 @@ model ReportRow {
   // Set when a user matches or explains this row by hand; the engine's status above never changes.
   resolutionId   String?              @map("resolution_id") @db.Uuid
   resolution     ReportRowResolution? @relation(fields: [resolutionId], references: [id], onDelete: SetNull)
+  // Position of this row's source rows in their parsed files, so a correction can target them. Null on
+  // rows written before corrections existed, and on the side a row has no data for.
+  rowIndexA      Int?                 @map("row_index_a")
+  rowIndexB      Int?                 @map("row_index_b")
 
   @@index([reportId, status], map: "idx_rows_report_status")
   @@index([reportId, ref], map: "idx_rows_ref")
@@ -565,4 +571,42 @@ model Invitation {
   @@index([organizationId])
   @@index([email])
   @@map("invitation")
+}
+
+enum CorrectionField {
+  reference
+  amount
+  date
+  currency
+}
+
+enum CorrectionSide {
+  A
+  B
+}
+
+// A value override for one source row, applied when its report's files are run. The uploaded file is never touched.
+model ReportCorrection {
+  id             String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  reportId       String          @map("report_id") @db.Uuid
+  report         Report          @relation(fields: [reportId], references: [id], onDelete: Cascade)
+  side           CorrectionSide
+  // Position of the row in the parsed file; meaningful only for fileKey, so a replaced file drops that side's corrections.
+  rowIndex       Int             @map("row_index")
+  fileKey        String          @map("file_key")
+  // The row's reference when the correction was made, so lists and exports name the row without re-reading the file.
+  rowReference   String?         @map("row_reference") @db.VarChar(500)
+  field          CorrectionField
+  originalValue  String?         @map("original_value") @db.VarChar(500)
+  correctedValue String          @map("corrected_value") @db.VarChar(500)
+  reason         String          @db.VarChar(1000)
+  // false: pending, applies on the next run. true: this report's run used it; immutable.
+  applied        Boolean         @default(false)
+  createdBy      String?         @map("created_by")
+  createdByUser  User?           @relation("ReportCorrectionCreatedBy", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt      DateTime        @default(now()) @map("created_at") @db.Timestamptz
+
+  // `applied` is part of the key, so a row can hold one applied correction (history) and one pending one (next run).
+  @@unique([reportId, side, rowIndex, field, applied], map: "uq_corrections_report_row_field_state")
+  @@map("report_corrections")
 }

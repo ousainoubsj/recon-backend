@@ -135,15 +135,22 @@ function normalizeCurrency(value) {
 // can ever be grouped or matched. "Unparseable" and "blank" intentionally
 // collapse to the same outcome here (parseAmount/parseDate already return
 // null for both) — that's desired, not an oversight.
-function extractEntries(file, mapping) {
+// `corrections` maps a row's position in the file to the values that replace its mapped cells. The
+// position is taken before blank rows are dropped, so it stays the row's index in file.rows.
+function extractEntries(file, mapping, corrections) {
   return file.rows
-    .map((raw) => ({
-      ref: raw[mapping.referenceNumber],
-      amount: parseAmount(raw[mapping.amount]),
-      date: parseDate(raw[mapping.transactionDate]),
-      currency: mapping.currency ? raw[mapping.currency] : null,
-      raw,
-    }))
+    .map((raw, index) => {
+      const fix = corrections.get(index) ?? {};
+      return {
+        index,
+        ref: fix.reference ?? raw[mapping.referenceNumber],
+        amount: parseAmount(fix.amount ?? raw[mapping.amount]),
+        date: parseDate(fix.date ?? raw[mapping.transactionDate]),
+        // A corrected currency applies even when the side has no currency column mapped.
+        currency: fix.currency ?? (mapping.currency ? raw[mapping.currency] : null),
+        raw,
+      };
+    })
     .filter((e) => !(String(e.ref ?? '').trim() === '' && e.amount === null && e.date === null));
 }
 
@@ -163,8 +170,8 @@ function extractEntries(file, mapping) {
 // because both sides' survivor maps hold the same empty key. Each incomplete
 // entry always resolves to missing_counterparty/missing_internal instead
 // (matching by an empty ref is meaningless).
-function resolveSide(file, mapping, config) {
-  const entries = extractEntries(file, mapping);
+function resolveSide(file, mapping, config, corrections) {
+  const entries = extractEntries(file, mapping, corrections);
   const groups = new Map();
   const incompleteEntries = [];
   for (const entry of entries) {
@@ -215,6 +222,8 @@ function makeDuplicateRow(entry, side) {
     dateB: side === 'B' ? entry.date : null,
     rawA: side === 'A' ? entry.raw : null,
     rawB: side === 'B' ? entry.raw : null,
+    rowIndexA: side === 'A' ? entry.index : null,
+    rowIndexB: side === 'B' ? entry.index : null,
   };
 }
 
@@ -232,6 +241,8 @@ function makeUnmatchedRow(entry, side, partnerDuplicated = false) {
     dateB: side === 'B' ? entry.date : null,
     rawA: side === 'A' ? entry.raw : null,
     rawB: side === 'B' ? entry.raw : null,
+    rowIndexA: side === 'A' ? entry.index : null,
+    rowIndexB: side === 'B' ? entry.index : null,
   };
 }
 
@@ -277,8 +288,9 @@ function evaluateMatch(aEntry, bEntry, config) {
  * @param {{referenceNumber: string, amount: string, transactionDate: string, currency?: string}} mappingA
  * @param {{referenceNumber: string, amount: string, transactionDate: string, currency?: string}} mappingB
  * @param {object} rawConfig MatchRuleConfig (partial — defaults are applied)
+ * @param {{A: Map<number, object>, B: Map<number, object>}} corrections per side, row index → { reference?, amount?, date?, currency? }
  */
-export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
+export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig, corrections = { A: new Map(), B: new Map() }) {
   const config = withDefaults(rawConfig);
   // If either side has no transactionDate mapping, every entry's `date` is
   // always null (extractEntries/parseDate) — evaluateMatch's date check
@@ -290,8 +302,8 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
   if (!mappingA.transactionDate || !mappingB.transactionDate) {
     config.dateToleranceDays = null;
   }
-  const sideA = resolveSide(fileA, mappingA, config);
-  const sideB = resolveSide(fileB, mappingB, config);
+  const sideA = resolveSide(fileA, mappingA, config, corrections.A);
+  const sideB = resolveSide(fileB, mappingB, config, corrections.B);
 
   const rows = [];
   let matched = 0;
@@ -344,6 +356,8 @@ export function runMatch(fileA, fileB, mappingA, mappingB, rawConfig) {
       dateB: bEntry.date,
       rawA: aEntry.raw,
       rawB: bEntry.raw,
+      rowIndexA: aEntry.index,
+      rowIndexB: bEntry.index,
     });
     if (result.status === 'matched') {
       matched += 1;

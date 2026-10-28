@@ -50,6 +50,20 @@ export function resolvedSummaryLine(nonMatchedRows) {
   return `Resolved manually: ${resolved} of ${nonMatchedRows.length} exception${nonMatchedRows.length === 1 ? '' : 's'}`;
 }
 
+export const CORRECTION_SIDE_LABELS = { A: 'Internal ledger', B: 'Counterparty' };
+export const CORRECTION_FIELD_LABELS = { reference: 'Reference', amount: 'Amount', date: 'Date', currency: 'Currency' };
+
+// A row is corrected when the run applied a correction at its position in either file.
+export function correctedRowChecker(report) {
+  const positions = new Set((report.corrections ?? []).map((c) => `${c.side}:${c.rowIndex}`));
+  return (row) => positions.has(`A:${row.rowIndexA}`) || positions.has(`B:${row.rowIndexB}`);
+}
+
+export function correctedSummaryLine(report) {
+  const isCorrected = correctedRowChecker(report);
+  return `Rows corrected: ${report.rows.filter(isCorrected).length}`;
+}
+
 export function getNonMatchedRows(report) {
   return report.rows.filter((r) => r.status !== 'matched');
 }

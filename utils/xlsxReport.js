@@ -9,6 +9,10 @@ import {
   NON_MATCHED_STATUSES,
   RESOLUTION_LABELS,
   resolvedSummaryLine,
+  CORRECTION_FIELD_LABELS,
+  CORRECTION_SIDE_LABELS,
+  correctedRowChecker,
+  correctedSummaryLine,
   computeCategoryStats,
   exceptionReason,
   getBreakRows,
@@ -461,6 +465,7 @@ async function buildOverviewSheet(wb, report, sections, meta) {
       ],
       3,
     );
+    row = writeNote(ws, row, correctedSummaryLine(report));
   }
 
   if (sections.chartsAndGraphs) {
@@ -571,6 +576,7 @@ async function buildOverviewSheet(wb, report, sections, meta) {
 // shading, currency/date formats, frozen header row, autofilter.
 function appendStatusSheet(wb, report, status) {
   const filtered = report.rows.filter((r) => r.status === status);
+  const isCorrected = correctedRowChecker(report);
   const ws = wb.addWorksheet(STATUS_LABELS[status] ?? status, { views: [{ state: 'frozen', ySplit: 1 }] });
 
   const columns = [
@@ -583,6 +589,8 @@ function appendStatusSheet(wb, report, status) {
     { header: 'Amount Diff', key: 'amountDiff', width: 16, numFmt: CURRENCY_FMT },
     { header: 'Break Reason', key: 'breakReasonLabel', width: 22 },
     { header: 'Reviewed', key: 'reviewedLabel', width: 12 },
+    // On every sheet: a corrected reference can be what turned a break into a match.
+    { header: 'Corrected', key: 'correctedLabel', width: 12 },
   ];
   // Matched rows can never be resolved, so only the exception sheets carry these.
   if (status !== 'matched') {
@@ -615,8 +623,51 @@ function appendStatusSheet(wb, report, status) {
       amountDiff: r.amountDiff != null ? Number(r.amountDiff) : null,
       breakReasonLabel: r.breakReason ? (BREAK_REASON_LABELS[exceptionReason(r)] ?? r.breakReason) : '',
       reviewedLabel: r.reviewed ? 'Yes' : 'No',
+      correctedLabel: isCorrected(r) ? 'Yes' : 'No',
       resolutionLabel: r.resolution ? RESOLUTION_LABELS[r.resolution.kind] : '',
       resolutionNote: r.resolution?.note ?? '',
+    });
+    if (i % 2 === 1) excelRow.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TINT_GRAY } }));
+  });
+
+  ws.autoFilter = { from: 'A1', to: `${colLetter(columns.length)}1` };
+  return ws;
+}
+
+// Every value the run used in place of the file's own, so a corrected bank-side figure is never hidden.
+function appendCorrectionsSheet(wb, report) {
+  const ws = wb.addWorksheet('Corrections', { views: [{ state: 'frozen', ySplit: 1 }] });
+  const columns = [
+    { header: 'File', key: 'side', width: 18 },
+    { header: 'Row Reference', key: 'rowReference', width: 30 },
+    { header: 'Field', key: 'field', width: 12 },
+    { header: 'Original', key: 'originalValue', width: 22 },
+    { header: 'Corrected', key: 'correctedValue', width: 22 },
+    { header: 'Reason', key: 'reason', width: 48 },
+    { header: 'Corrected By', key: 'createdBy', width: 22 },
+    { header: 'Corrected At', key: 'createdAt', width: 20 },
+  ];
+  ws.columns = columns;
+  ws.getColumn(columns.length).numFmt = 'yyyy-mm-dd hh:mm';
+
+  const headerRow = ws.getRow(1);
+  headerRow.height = 18;
+  headerRow.eachCell((cell) => {
+    cell.font = { bold: true, size: 10, color: { argb: WHITE } };
+    cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BRAND_INDIGO } };
+    cell.alignment = { vertical: 'middle' };
+  });
+
+  (report.corrections ?? []).forEach((c, i) => {
+    const excelRow = ws.addRow({
+      side: CORRECTION_SIDE_LABELS[c.side],
+      rowReference: c.rowReference ?? `Row ${c.rowIndex + 1}`,
+      field: CORRECTION_FIELD_LABELS[c.field],
+      originalValue: c.originalValue ?? '',
+      correctedValue: c.correctedValue,
+      reason: c.reason,
+      createdBy: c.createdByUser?.name ?? 'A former member',
+      createdAt: c.createdAt,
     });
     if (i % 2 === 1) excelRow.eachCell((cell) => (cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: TINT_GRAY } }));
   });
@@ -645,6 +696,8 @@ export async function buildXlsxReport(report, sections, meta = {}) {
   if (sections.unmatchedDetails) {
     for (const status of NON_MATCHED_STATUSES) appendStatusSheet(wb, report, status);
   }
+
+  appendCorrectionsSheet(wb, report);
 
   return wb.xlsx.writeBuffer();
 }

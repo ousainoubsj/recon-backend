@@ -11,6 +11,7 @@ import {
   getBreakRows,
   getNonMatchedRows,
   resolvedSummaryLine,
+  correctedSummaryLine,
 } from './reportSections.js';
 
 // No JSX transform is configured for this backend (plain Node ESM, no
@@ -483,6 +484,7 @@ function ReportDocument({ report, sections, generatedByName, organizationName, o
           })(),
         ],
       }),
+      h(Text, { key: 'summary-corrected', style: { fontSize: 8.5, color: TEXT_GRAY, marginTop: 4 } }, correctedSummaryLine(report)),
     );
   }
 

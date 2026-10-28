@@ -45,6 +45,9 @@ const mockReportService = {
   resolveRows: jest.fn(),
   rerunReport: jest.fn(),
   unresolve: jest.fn(),
+  listCorrections: jest.fn(),
+  createCorrection: jest.fn(),
+  deleteCorrection: jest.fn(),
   getBreakBreakdown: jest.fn(),
   getFilePairTrend: jest.fn(),
 };
@@ -574,6 +577,80 @@ describe('DELETE /api/reports/:id/resolutions/:resolutionId', () => {
 
     expect(res.status).toBe(404);
     expect(mockReportService.unresolve).not.toHaveBeenCalled();
+  });
+});
+
+describe('corrections routes', () => {
+  const REPORT_ID = '123e4567-e89b-12d3-a456-426614174000';
+  const ROW_ID = '223e4567-e89b-12d3-a456-426614174001';
+  const CORRECTION_ID = '523e4567-e89b-12d3-a456-426614174004';
+  const url = `/api/reports/${REPORT_ID}/corrections`;
+  const body = { rowId: ROW_ID, side: 'B', field: 'amount', correctedValue: ' 1250.00 ', reason: ' Bank export dropped the cents ' };
+
+  it('creates a correction for an analyst and returns 201, with the value and reason trimmed', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
+    mockReportService.createCorrection.mockResolvedValue({ id: CORRECTION_ID });
+
+    const res = await request(app).post(url).send(body);
+
+    expect(res.status).toBe(201);
+    expect(mockReportService.createCorrection).toHaveBeenCalledWith(
+      USER_ID,
+      REPORT_ID,
+      { rowId: ROW_ID, side: 'B', field: 'amount', correctedValue: '1250.00', reason: 'Bank export dropped the cents' },
+      { ip: expect.any(String), userAgent: null },
+    );
+  });
+
+  it('rejects a viewer creating or removing a correction with a 403', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+
+    expect((await request(app).post(url).send(body)).status).toBe(403);
+    expect((await request(app).delete(`${url}/${CORRECTION_ID}`)).status).toBe(403);
+    expect(mockReportService.createCorrection).not.toHaveBeenCalled();
+    expect(mockReportService.deleteCorrection).not.toHaveBeenCalled();
+  });
+
+  it('lets a viewer list corrections', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
+    mockReportService.listCorrections.mockResolvedValue([]);
+
+    const res = await request(app).get(`${url}?limit=500`);
+
+    expect(res.status).toBe(200);
+    expect(mockReportService.listCorrections).toHaveBeenCalledWith(USER_ID, REPORT_ID, { limit: 100, offset: undefined });
+  });
+
+  it.each([
+    ['an unknown field', { ...body, field: 'description' }],
+    ['an unknown side', { ...body, side: 'C' }],
+    ['a blank value', { ...body, correctedValue: '   ' }],
+    ['a blank reason', { ...body, reason: '' }],
+    ['a value over 500 characters', { ...body, correctedValue: 'x'.repeat(501) }],
+    ['a non-uuid row id', { ...body, rowId: 'row-1' }],
+  ])('rejects %s with a 422', async (_label, invalid) => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+
+    const res = await request(app).post(url).send(invalid);
+
+    expect(res.status).toBe(422);
+    expect(mockReportService.createCorrection).not.toHaveBeenCalled();
+  });
+
+  it('404s on a malformed id before reaching the service', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+
+    expect((await request(app).post('/api/reports/not-a-uuid/corrections').send(body)).status).toBe(404);
+    expect((await request(app).delete(`${url}/not-a-uuid`)).status).toBe(404);
+  });
+
+  it('removes a pending correction with a 204, and passes a 409 for an applied one through', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+    mockReportService.deleteCorrection.mockResolvedValueOnce(undefined);
+    mockReportService.deleteCorrection.mockRejectedValueOnce(new ConflictError('An applied correction is part of this run and cannot be removed'));
+
+    expect((await request(app).delete(`${url}/${CORRECTION_ID}`)).status).toBe(204);
+    expect((await request(app).delete(`${url}/${CORRECTION_ID}`)).status).toBe(409);
   });
 });
 

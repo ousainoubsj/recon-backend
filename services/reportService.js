@@ -15,6 +15,8 @@ import {
   buildRecommendedAction,
   buildShortReason,
   deriveDescription,
+  parseAmount,
+  parseDate,
 } from './matchingEngine.js';
 import { suggestMapping, mappingFromSuggestions, computeValidationSummary } from './columnMappingService.js';
 import { copyReportRowsIn, deleteReportRows } from './reportRowBulkInsert.js';
@@ -324,6 +326,11 @@ async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
         ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
       },
     });
+
+    // Marked here, not before the run: a failed run leaves its corrections pending for the retry.
+    if (dto.appliedCorrectionIds?.length) {
+      await tx.reportCorrection.updateMany({ where: { id: { in: dto.appliedCorrectionIds }, reportId }, data: { applied: true } });
+    }
 
     // Same transaction as the completion: a rerun is never complete without having replaced its predecessor.
     if (existing?.sourceReportId) await supersedeNewestInChain(tx, existing.sourceReportId, reportId);
@@ -827,12 +834,30 @@ function mapSupersededBy(supersededBy) {
 
 // Rows as the exports need them: each with the kind and note of its manual resolution, if any.
 const ROWS_WITH_RESOLUTION = { include: { resolution: { select: { kind: true, note: true } } } };
+// The corrections this report's run used, for the exports' Corrections sheet and Corrected column.
+const APPLIED_CORRECTIONS = {
+  where: { applied: true },
+  orderBy: [{ side: 'asc' }, { rowIndex: 'asc' }, { field: 'asc' }],
+  select: {
+    side: true,
+    rowIndex: true,
+    rowReference: true,
+    field: true,
+    originalValue: true,
+    correctedValue: true,
+    reason: true,
+    createdAt: true,
+    createdByUser: { select: { name: true } },
+  },
+};
 
 export async function getReport(userId, reportId, { includeRows = false } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    include: includeRows ? { rows: ROWS_WITH_RESOLUTION, supersededBy: { select: SUPERSEDED_BY_SELECT } } : { supersededBy: { select: SUPERSEDED_BY_SELECT } },
+    include: includeRows
+      ? { rows: ROWS_WITH_RESOLUTION, corrections: APPLIED_CORRECTIONS, supersededBy: { select: SUPERSEDED_BY_SELECT } }
+      : { supersededBy: { select: SUPERSEDED_BY_SELECT } },
   });
   if (!report) throw new NotFoundError();
   // Drafts are private to their creator — org membership alone isn't enough,
@@ -866,6 +891,8 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
     report.status === 'completed' ? await getResolutionSummary(reportId) : { resolvedCount: 0, unresolvedExceptionCount: 0 };
 
   const rerunOf = report.status === 'completed' ? await getRerunOf(report) : null;
+  const correctionSummary =
+    report.status === 'processing' ? { pending: 0, applied: 0 } : await getCorrectionSummary(reportId);
 
   return {
     ...withDraftProgress(report),
@@ -874,7 +901,19 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
     runDurationMs,
     resolutionSummary,
     rerunOf,
+    correctionSummary,
   };
+}
+
+// pending: applied by the next rerun (or, on a draft, by its run). applied: what this report's run used.
+async function getCorrectionSummary(reportId) {
+  const [counts] = await prisma.$queryRaw`
+    SELECT
+      COUNT(*) FILTER (WHERE NOT applied)::int AS "pending",
+      COUNT(*) FILTER (WHERE applied)::int AS "applied"
+    FROM report_corrections
+    WHERE report_id = ${reportId}::uuid`;
+  return counts;
 }
 
 // null for a first run, or once the source is deleted (the FK is ON DELETE SET NULL).
@@ -918,7 +957,7 @@ const EXPLORER_STATUS_LABELS = {
   duplicate: 'Duplicate',
 };
 
-function mapRowForExplorer(row) {
+function mapRowForExplorer(row, corrections = []) {
   const { type, reason } = buildShortReason(row);
   return {
     id: row.id,
@@ -934,7 +973,38 @@ function mapRowForExplorer(row) {
     type,
     reason,
     resolution: row.resolution ? { id: row.resolution.id, kind: row.resolution.kind } : null,
+    corrections,
   };
+}
+
+// The corrections made on these rows, keyed `${side}:${rowIndex}`. One query for a whole page of rows.
+async function correctionsByRowPosition(reportId, rows, select) {
+  const indicesA = rows.map((row) => row.rowIndexA).filter((index) => index != null);
+  const indicesB = rows.map((row) => row.rowIndexB).filter((index) => index != null);
+  const byPosition = new Map();
+  if (indicesA.length === 0 && indicesB.length === 0) return byPosition;
+
+  const corrections = await prisma.reportCorrection.findMany({
+    where: {
+      reportId,
+      OR: [
+        { side: 'A', rowIndex: { in: indicesA } },
+        { side: 'B', rowIndex: { in: indicesB } },
+      ],
+    },
+    orderBy: [{ side: 'asc' }, { field: 'asc' }, { applied: 'desc' }],
+    select: { ...select, side: true, rowIndex: true },
+  });
+  for (const correction of corrections) {
+    const key = `${correction.side}:${correction.rowIndex}`;
+    if (!byPosition.has(key)) byPosition.set(key, []);
+    byPosition.get(key).push(correction);
+  }
+  return byPosition;
+}
+
+function rowCorrections(byPosition, row) {
+  return [...(byPosition.get(`A:${row.rowIndexA}`) ?? []), ...(byPosition.get(`B:${row.rowIndexB}`) ?? [])];
 }
 
 const EXPLORER_SORT_FIELD_MAP = { date: 'dateA', amount: 'amountA', reference: 'ref' };
@@ -995,7 +1065,14 @@ export async function getTransactions(userId, reportId, filters = {}) {
     prisma.reportRow.count({ where }),
   ]);
 
-  return { rows: rows.map(mapRowForExplorer), total };
+  const corrections = await correctionsByRowPosition(reportId, rows, { field: true, applied: true });
+  const rowsWithBadges = rows.map((row) =>
+    mapRowForExplorer(
+      row,
+      rowCorrections(corrections, row).map((c) => ({ field: c.field, side: c.side, applied: c.applied })),
+    ),
+  );
+  return { rows: rowsWithBadges, total };
 }
 
 // Single-transaction drill-down: raw ledger/counterparty fields plus a
@@ -1009,10 +1086,18 @@ export async function getTransaction(userId, reportId, rowId) {
   });
   if (!row) throw new NotFoundError();
 
+  const corrections = rowCorrections(await correctionsByRowPosition(reportId, [row], CORRECTION_SELECT), row);
+  // A side is correctable only where the row has that file's data and the run recorded its position.
+  const correctableSides = [];
+  if (row.rawA != null && row.rowIndexA != null) correctableSides.push('A');
+  if (row.rawB != null && row.rowIndexB != null) correctableSides.push('B');
+
   return {
     ...mapRowForExplorer(row),
     rawA: row.rawA,
     rawB: row.rawB,
+    corrections: corrections.map(mapCorrection),
+    correctableSides,
     matchAnalysis: buildMatchAnalysis(row, report.rulesConfig ?? report.config ?? {}),
     recommendedAction: buildRecommendedAction(row),
     resolution: row.resolution ? mapResolution(row.resolution) : null,
@@ -1114,6 +1199,163 @@ export async function unresolve(userId, reportId, resolutionId, { ip, userAgent 
     userAgent,
     metadata: withSubject(
       { resolutionId, kind: resolution.kind, note: resolution.note, transactionRefs: resolution.rows.map((row) => row.ref) },
+      reportSubject(report),
+    ),
+  });
+}
+
+const CORRECTION_SELECT = {
+  id: true,
+  side: true,
+  rowIndex: true,
+  rowReference: true,
+  field: true,
+  originalValue: true,
+  correctedValue: true,
+  reason: true,
+  applied: true,
+  createdAt: true,
+  createdByUser: { select: { id: true, name: true } },
+};
+
+function mapCorrection(correction) {
+  return {
+    id: correction.id,
+    side: correction.side,
+    rowIndex: correction.rowIndex,
+    rowReference: correction.rowReference,
+    field: correction.field,
+    originalValue: correction.originalValue,
+    correctedValue: correction.correctedValue,
+    reason: correction.reason,
+    applied: correction.applied,
+    createdBy: correction.createdByUser ? { id: correction.createdByUser.id, name: correction.createdByUser.name } : null,
+    createdAt: correction.createdAt,
+  };
+}
+
+// The column mapping key each correctable field is read from.
+const CORRECTION_FIELD_MAPPING_KEY = { reference: 'referenceNumber', amount: 'amount', date: 'transactionDate', currency: 'currency' };
+// Matches the VarChar(500) value columns on report_corrections.
+const CORRECTION_VALUE_MAX_LENGTH = 500;
+
+function mappedCell(raw, sideMapping, field) {
+  const column = sideMapping?.[CORRECTION_FIELD_MAPPING_KEY[field]];
+  const value = column ? raw[column] : null;
+  return value == null || value === '' ? null : String(value).slice(0, CORRECTION_VALUE_MAX_LENGTH);
+}
+
+// A correction made on a completed report stays pending there and is applied by a rerun of it.
+export async function createCorrection(userId, reportId, { rowId, side, field, correctedValue, reason }, { ip, userAgent } = {}) {
+  const report = await assertReportAccess(userId, reportId);
+  if (report.status !== 'completed') throw new ConflictError('Corrections can only be made on a completed reconciliation');
+  if (report.supersededById) throw new ConflictError('A newer run of this reconciliation exists. Make corrections there.');
+
+  const row = await prisma.reportRow.findFirst({
+    where: { id: rowId, reportId },
+    select: { ref: true, rawA: true, rawB: true, rowIndexA: true, rowIndexB: true },
+  });
+  if (!row) throw new NotFoundError();
+  const raw = side === 'A' ? row.rawA : row.rawB;
+  const rowIndex = side === 'A' ? row.rowIndexA : row.rowIndexB;
+  if (raw == null) {
+    throw new ValidationError(`This transaction has no ${side === 'A' ? 'internal ledger' : 'counterparty'} record to correct`);
+  }
+  if (rowIndex == null) throw new ConflictError('This reconciliation ran before corrections existed. Rerun it to make corrections.');
+
+  // The engine's own parsers: a value it can't read is rejected now, not discovered at run time.
+  if (field === 'amount' && parseAmount(correctedValue) == null) throw new ValidationError('Enter an amount such as 1250.00');
+  if (field === 'date' && parseDate(correctedValue) == null) throw new ValidationError('Enter a date such as 2026-10-28');
+
+  const sideMapping = side === 'A' ? report.columnMapping?.fileA : report.columnMapping?.fileB;
+  const values = {
+    fileKey: side === 'A' ? report.fileAKey : report.fileBKey,
+    rowReference: mappedCell(raw, sideMapping, 'reference') ?? (row.ref || null),
+    originalValue: mappedCell(raw, sideMapping, field),
+    correctedValue,
+    reason,
+    createdBy: userId,
+  };
+  // One pending correction per row, side and field: a new one replaces it. Applied ones are never touched.
+  const correction = await prisma.reportCorrection.upsert({
+    where: {
+      reportId_side_rowIndex_field_applied: { reportId, side, rowIndex, field, applied: false },
+    },
+    create: { reportId, side, rowIndex, field, applied: false, ...values },
+    update: { ...values, createdAt: new Date() },
+    select: CORRECTION_SELECT,
+  });
+
+  await logAuditSafely(userId, {
+    action: 'report.correction.create',
+    entityType: 'report',
+    entityId: reportId,
+    status: 'info',
+    ip,
+    userAgent,
+    metadata: withSubject(
+      {
+        correctionId: correction.id,
+        side,
+        field,
+        transactionRef: correction.rowReference,
+        originalValue: correction.originalValue,
+        correctedValue,
+        reason,
+      },
+      reportSubject(report),
+    ),
+  });
+
+  return mapCorrection(correction);
+}
+
+// Bounded by the caller's limit; a draft lists what its run will apply.
+export async function listCorrections(userId, reportId, { limit, offset } = {}) {
+  await assertReportAccess(userId, reportId);
+  const corrections = await prisma.reportCorrection.findMany({
+    where: { reportId },
+    orderBy: [{ side: 'asc' }, { rowIndex: 'asc' }, { field: 'asc' }, { applied: 'desc' }],
+    take: limit ?? 100,
+    skip: offset ?? 0,
+    select: CORRECTION_SELECT,
+  });
+  return corrections.map(mapCorrection);
+}
+
+export async function deleteCorrection(userId, reportId, correctionId, { ip, userAgent } = {}) {
+  const report = await assertReportAccess(userId, reportId);
+  // A running report has already read its corrections; removing one now would leave the record disagreeing with the run.
+  if (report.status === 'processing') throw new ConflictError('This reconciliation is running. Remove corrections once it finishes.');
+  if (report.supersededById) throw new ConflictError('A newer run of this reconciliation exists. Make changes there.');
+
+  const correction = await prisma.reportCorrection.findFirst({
+    where: { id: correctionId, reportId },
+    select: { id: true, side: true, field: true, rowReference: true, originalValue: true, correctedValue: true, applied: true },
+  });
+  if (!correction) throw new NotFoundError();
+  if (correction.applied) throw new ConflictError('An applied correction is part of this run and cannot be removed');
+
+  // applied: false keeps the delete conditional, in case a run marked it applied since the read above.
+  const { count } = await prisma.reportCorrection.deleteMany({ where: { id: correctionId, reportId, applied: false } });
+  if (count === 0) throw new ConflictError('An applied correction is part of this run and cannot be removed');
+
+  await logAuditSafely(userId, {
+    action: 'report.correction.delete',
+    entityType: 'report',
+    entityId: reportId,
+    status: 'warning',
+    ip,
+    userAgent,
+    metadata: withSubject(
+      {
+        correctionId,
+        side: correction.side,
+        field: correction.field,
+        transactionRef: correction.rowReference,
+        originalValue: correction.originalValue,
+        correctedValue: correction.correctedValue,
+      },
       reportSubject(report),
     ),
   });
@@ -1376,6 +1618,9 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
   if (count === 0) throw new NotFoundError();
 
   if (replacedKeyA || replacedKeyB) {
+    // Corrections point at row positions in the old file, which the new one doesn't share.
+    const replacedSides = [replacedKeyA ? 'A' : null, replacedKeyB ? 'B' : null].filter(Boolean);
+    await prisma.reportCorrection.deleteMany({ where: { reportId, side: { in: replacedSides } } });
     // The old upload is deleted only if nothing else points at it: a rerun's inherited file stays with its source.
     const { organizationId } = await getUserMembership(userId);
     await deleteReportFiles(await reportFileKeys([{ id: reportId, fileAKey: replacedKeyA, fileBKey: replacedKeyB }], organizationId));
@@ -1508,6 +1753,30 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
   // Reports saved through the legacy client-computed endpoint never had files in R2.
   if (!source.fileAKey || !source.fileBKey) throw new ValidationError('This reconciliation has no stored files to rerun');
 
+  // The source's effective corrections: a pending one overrides the applied one for the same row and field.
+  const sourceCorrections = await prisma.reportCorrection.findMany({
+    where: { reportId: source.id },
+    orderBy: { applied: 'asc' },
+    select: {
+      side: true,
+      rowIndex: true,
+      fileKey: true,
+      rowReference: true,
+      field: true,
+      originalValue: true,
+      correctedValue: true,
+      reason: true,
+      createdBy: true,
+      createdAt: true,
+    },
+  });
+  const effectiveCorrections = new Map();
+  for (const correction of sourceCorrections) {
+    const key = `${correction.side}:${correction.rowIndex}:${correction.field}`;
+    if (!effectiveCorrections.has(key)) effectiveCorrections.set(key, correction);
+  }
+
+  // A nested create keeps the draft and its corrections in one write.
   const draft = await prisma.report.create({
     data: {
       userId,
@@ -1525,6 +1794,7 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
       columnMapping: source.columnMapping ?? undefined,
       config: source.rulesConfig ?? source.config ?? undefined,
       sourceReportId: source.id,
+      corrections: { create: [...effectiveCorrections.values()].map((correction) => ({ ...correction, applied: false })) },
     },
     select: { id: true },
   });
@@ -1536,7 +1806,14 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
     status: 'info',
     ip,
     userAgent,
-    metadata: withSubject({ sourceReportId: source.id, filePair: `${source.fileAName ?? 'File A'} vs ${source.fileBName ?? 'File B'}` }, reportSubject(source)),
+    metadata: withSubject(
+      {
+        sourceReportId: source.id,
+        filePair: `${source.fileAName ?? 'File A'} vs ${source.fileBName ?? 'File B'}`,
+        correctionsCarried: effectiveCorrections.size,
+      },
+      reportSubject(source),
+    ),
   });
 
   return { id: draft.id };
@@ -1642,6 +1919,17 @@ function createProgressReporter(reportId) {
 // parse, match, or the bulk row write — persists a `status: 'failed'` row
 // with the real error message rather than leaving the report silently stuck
 // in whatever state it was already in.
+// The engine's per-side lookup: file row index → the corrected values for that row's mapped fields.
+function correctionMaps(corrections) {
+  const maps = { A: new Map(), B: new Map() };
+  for (const correction of corrections) {
+    const sideMap = maps[correction.side];
+    if (!sideMap.has(correction.rowIndex)) sideMap.set(correction.rowIndex, {});
+    sideMap.get(correction.rowIndex)[correction.field] = correction.correctedValue;
+  }
+  return maps;
+}
+
 export async function executeReconciliationRun({ reportId, userId, ip, userAgent, dto, config, organizationId }) {
   const draft = await prisma.report.findFirst({
     where: { id: reportId },
@@ -1688,7 +1976,16 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
     const fileB = parseTabularFile(fileBBuffer, draft.fileBName);
     await reportProgress(PROGRESS_PARSED);
 
-    const { summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, config);
+    // Only corrections for the files being run: a replaced file's corrections point at rows it no longer has.
+    const corrections = await prisma.reportCorrection.findMany({
+      where: {
+        reportId,
+        applied: false,
+        OR: [{ side: 'A', fileKey: draft.fileAKey }, { side: 'B', fileKey: draft.fileBKey }],
+      },
+      select: { id: true, side: true, rowIndex: true, field: true, correctedValue: true },
+    });
+    const { summary, rows } = runMatch(fileA, fileB, dto.columnMapping.fileA, dto.columnMapping.fileB, config, correctionMaps(corrections));
     await reportProgress(PROGRESS_MATCHED);
 
     // organizationId comes from the job payload, resolved once in
@@ -1706,6 +2003,7 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
         rows,
         config,
         columnMapping: dto.columnMapping,
+        appliedCorrectionIds: corrections.map((c) => c.id),
       },
       {
         onCopyProgress: (written, total) => {
@@ -1724,6 +2022,7 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
         {
           matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
           totalBreakValue: toNum(report.totalBreakValue),
+          correctionsApplied: corrections.length,
         },
         reportSubject(report),
       ),
@@ -1832,9 +2131,17 @@ export async function getRulePreview(userId, reportId, dto) {
   const mapping = dto.columnMapping ?? draft.columnMapping;
   if (!mapping) throw new ConflictError('No column mapping available — call the mapping-preview endpoint first');
 
-  const [sampleARows, sampleBRows] = await Promise.all([
+  const [sampleARows, sampleBRows, corrections] = await Promise.all([
     getSampleRows(reportId, 'A'),
     getSampleRows(reportId, 'B'),
+    prisma.reportCorrection.findMany({
+      where: {
+        reportId,
+        applied: false,
+        OR: [{ side: 'A', fileKey: draft.fileAKey }, { side: 'B', fileKey: draft.fileBKey }],
+      },
+      select: { side: true, rowIndex: true, field: true, correctedValue: true },
+    }),
   ]);
   // The Postgres marker (checked above) can outlive the Redis cache — it's
   // not cleared on TTL expiry, only on run completion — so this is a
@@ -1849,6 +2156,8 @@ export async function getRulePreview(userId, reportId, dto) {
     mapping.fileA,
     mapping.fileB,
     dto.config,
+    // The sample is the file's first rows, so a correction's row index is its index in the sample too.
+    correctionMaps(corrections),
   );
 
   return extrapolatePreview(
@@ -2105,7 +2414,7 @@ export async function getReportsByIds(userId, ids, { requireCompleted = false, i
   const { organizationId } = await getUserMembership(userId);
   const reports = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId, ...(requireCompleted ? { status: 'completed' } : {}) },
-    include: includeRows ? { rows: ROWS_WITH_RESOLUTION } : undefined,
+    include: includeRows ? { rows: ROWS_WITH_RESOLUTION, corrections: APPLIED_CORRECTIONS } : undefined,
   });
 
   const byId = new Map(reports.map((r) => [r.id, r]));

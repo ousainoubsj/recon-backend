@@ -277,6 +277,65 @@ describe('runMatch — non-transaction rows (blank ref, amount, and date)', () =
   });
 });
 
+describe('runMatch — corrections', () => {
+  const noCorrections = { A: new Map(), B: new Map() };
+
+  it('emits each row its position in the source files, counted before blank rows are dropped', () => {
+    const fileA = { rows: [row('', '', ''), row('R1', '10', '2026-01-01'), row('R2', '5', '2026-01-01')] };
+    const fileB = { rows: [row('R1', '10', '2026-01-01')] };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, {});
+    const matched = rows.find((r) => r.status === 'matched');
+    const unmatched = rows.find((r) => r.status === 'unmatched_a');
+    expect([matched.rowIndexA, matched.rowIndexB]).toEqual([1, 0]);
+    expect([unmatched.rowIndexA, unmatched.rowIndexB]).toEqual([2, null]);
+  });
+
+  it('applies a corrected reference to its own row and side, so the pair now matches', () => {
+    const fileA = { rows: [row('INV-22', '10', '2026-01-01')] };
+    const fileB = { rows: [row('INV-2231', '10', '2026-01-01')] };
+    const corrections = { A: new Map([[0, { reference: 'INV-2231' }]]), B: new Map() };
+    const { rows, summary } = runMatch(fileA, fileB, mapping, mapping, {}, corrections);
+    expect(summary.matched).toBe(1);
+    // raw keeps the file's own value; only the parsed fields carry the correction.
+    expect(rows[0].rawA.ref).toBe('INV-22');
+  });
+
+  it('applies a corrected amount and date through the engine parsers', () => {
+    const fileA = { rows: [row('R1', '10', '2026-01-01')] };
+    const fileB = { rows: [row('R1', '12', '2026-02-01')] };
+    const corrections = { A: new Map(), B: new Map([[0, { amount: '10.00', date: '2026-01-01' }]]) };
+    const { rows } = runMatch(fileA, fileB, mapping, mapping, { dateToleranceDays: 0 }, corrections);
+    expect(rows[0].status).toBe('matched');
+    expect(rows[0].amountB.toString()).toBe('10');
+  });
+
+  it('applies a corrected currency even when the side has no currency column mapped', () => {
+    const { currency: _unmapped, ...mappingWithoutCurrency } = mapping;
+    const fileA = { rows: [row('R1', '10', '2026-01-01', 'USD')] };
+    const fileB = { rows: [row('R1', '10', '2026-01-01')] };
+    const corrections = { A: new Map(), B: new Map([[0, { currency: 'EUR' }]]) };
+    const { rows } = runMatch(fileA, fileB, mapping, mappingWithoutCurrency, {}, corrections);
+    expect(rows[0].status).toBe('mismatched');
+    expect(rows[0].breakReason).toBe('other');
+  });
+
+  it('ignores corrections for other rows and the other side', () => {
+    const fileA = { rows: [row('R1', '10', '2026-01-01'), row('R2', '7', '2026-01-01')] };
+    const fileB = { rows: [row('R1', '10', '2026-01-01')] };
+    const corrections = { A: new Map([[1, { amount: '99' }]]), B: new Map([[5, { amount: '1' }]]) };
+    const corrected = runMatch(fileA, fileB, mapping, mapping, {}, corrections);
+    const plain = runMatch(fileA, fileB, mapping, mapping, {}, noCorrections);
+    expect(corrected.rows.find((r) => r.ref === 'R1')).toEqual(plain.rows.find((r) => r.ref === 'R1'));
+    expect(corrected.rows.find((r) => r.ref === 'R2').amountA.toString()).toBe('99');
+  });
+
+  it('gives identical output with no corrections and with the default argument', () => {
+    const fileA = { rows: [row('R1', '10', '2026-01-01'), row('R2', '7', '2026-01-01')] };
+    const fileB = { rows: [row('R1', '11', '2026-01-01')] };
+    expect(runMatch(fileA, fileB, mapping, mapping, {}, noCorrections)).toEqual(runMatch(fileA, fileB, mapping, mapping, {}));
+  });
+});
+
 describe('runMatch — blank-reference rows', () => {
   it('does not flag two unrelated blank-ref rows in the same file as duplicates of each other', () => {
     const fileA = { rows: [row('', '100', '2026-06-30'), row('', '250', '2026-07-01')] };

@@ -190,6 +190,24 @@ export const unresolve = async (req, res) => {
   res.status(204).end();
 };
 
+export const listCorrections = async (req, res) => {
+  const corrections = await reportService.listCorrections(req.session.user.id, req.params.id, {
+    limit: parsePositiveInt(req.query.limit, 100),
+    offset: parsePositiveInt(req.query.offset),
+  });
+  res.json(corrections);
+};
+
+export const createCorrection = async (req, res) => {
+  const correction = await reportService.createCorrection(req.session.user.id, req.params.id, req.body, auditContext(req));
+  res.status(201).json(correction);
+};
+
+export const deleteCorrection = async (req, res) => {
+  await reportService.deleteCorrection(req.session.user.id, req.params.id, req.params.correctionId, auditContext(req));
+  res.status(204).end();
+};
+
 export const getBreakBreakdown = async (req, res) => {
   const breakdown = await reportService.getBreakBreakdown(req.session.user.id, req.params.id);
   res.json(breakdown);
