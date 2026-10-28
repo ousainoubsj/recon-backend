@@ -17,6 +17,7 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     findFirst: jest.fn(),
+    findUnique: jest.fn(),
     count: jest.fn(),
     deleteMany: jest.fn(),
     updateMany: jest.fn(),
@@ -162,6 +163,7 @@ const {
   executeReconciliationRun,
   getMappingPreview,
   buildMappingPreview,
+  markRunCrashed,
   getRulePreview,
   getTransactions,
   getTransaction,
@@ -3291,3 +3293,35 @@ describe('dashboard aggregates', () => {
   });
 });
 
+describe('markRunCrashed', () => {
+  const crash = { reportId: 'r1', userId: USER_ID, reason: 'Unexpected exit code: 1 signal: null' };
+
+  it("fails a run still marked processing and audits it, keeping the worker's error for operators", async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findUnique.mockResolvedValue({ name: 'June', sequenceYear: 2026, sequenceNumber: 4 });
+
+    await markRunCrashed(crash);
+
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: { id: 'r1', status: 'processing' },
+      data: { status: 'failed', errorMessage: expect.stringContaining('too large to reconcile in one run') },
+    });
+    expect(mockLogAuditSafely).toHaveBeenCalledWith(
+      USER_ID,
+      expect.objectContaining({
+        action: 'report.run.failed',
+        entityId: 'r1',
+        metadata: expect.objectContaining({ workerError: crash.reason }),
+      }),
+    );
+  });
+
+  it('changes and audits nothing for a run that already completed or recorded its own failure', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 0 });
+
+    await markRunCrashed(crash);
+
+    expect(mockPrisma.report.findUnique).not.toHaveBeenCalled();
+    expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+});

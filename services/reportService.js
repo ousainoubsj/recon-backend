@@ -1894,6 +1894,32 @@ export async function executeReconciliationRun({ reportId, userId, ip, userAgent
   }
 }
 
+/**
+ * Records a run whose worker thread died before executeReconciliationRun could record anything itself, most
+ * likely by running out of memory on a large file pair. Called once BullMQ has no attempts left. A run that
+ * failed through its own error handling is already 'failed', so the status guard makes this a no-op for it.
+ */
+export async function markRunCrashed({ reportId, userId, reason }) {
+  const errorMessage = 'The run stopped unexpectedly, most likely because these files are too large to reconcile in one run.';
+  const { count } = await prisma.report.updateMany({
+    where: { id: reportId, status: 'processing' },
+    data: { status: 'failed', errorMessage },
+  });
+  if (count === 0) return;
+
+  const report = await prisma.report.findUnique({
+    where: { id: reportId },
+    select: { name: true, sequenceYear: true, sequenceNumber: true },
+  });
+  await logAuditSafely(userId, {
+    action: 'report.run.failed',
+    entityType: 'report',
+    entityId: reportId,
+    status: 'failed',
+    metadata: withSubject({ reason: errorMessage, workerError: reason }, reportSubject(report ?? {})),
+  });
+}
+
 // The mapping step's preview. The files are parsed by the file-previews worker (buildMappingPreview, below), so
 // this only reads what it stored. A draft from before that existed has no status yet and is queued here.
 export async function getMappingPreview(userId, reportId) {

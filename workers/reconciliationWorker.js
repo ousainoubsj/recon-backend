@@ -1,3 +1,4 @@
+import os from 'node:os';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 dotenv.config();
@@ -10,7 +11,7 @@ const { redis } = await import('../config/redis.config.js');
 const { prisma } = await import('../config/prisma.config.js');
 const { RECONCILIATION_QUEUE_NAME } = await import('../queues/reconciliationQueue.js');
 const { FILE_PREVIEW_QUEUE_NAME } = await import('../queues/filePreviewQueue.js');
-const { executeReconciliationRun } = await import('../services/reportService.js');
+const { markRunCrashed } = await import('../services/reportService.js');
 
 try {
   await prisma.$queryRaw`SELECT 1`;
@@ -20,39 +21,53 @@ try {
   process.exit(1);
 }
 
+// Lowered before any job thread exists, so every thread inherits it: runs and parses use the CPU the API
+// isn't using, and the API stays responsive while two runs fill both cores.
+const WORKER_NICENESS = 10;
+try {
+  os.setPriority(0, WORKER_NICENESS);
+  console.log(`Worker priority lowered to nice ${WORKER_NICENESS}`);
+} catch (err) {
+  console.warn('Could not lower worker priority, continuing at normal priority:', err.message);
+}
+
+// Shared by every job thread. Each thread's heap is capped so two concurrent runs can't take the whole
+// machine, and each opens its own small Postgres pool (see config/prisma.config.js).
+const THREAD_HEAP_SHARE = 0.4;
+const THREAD_PG_POOL_MAX = '3';
+const workerThreadsOptions = {
+  resourceLimits: { maxOldGenerationSizeMb: Math.floor((os.totalmem() * THREAD_HEAP_SHARE) / (1024 * 1024)) },
+  env: { ...process.env, PG_POOL_MAX: THREAD_PG_POOL_MAX },
+};
+
+// Two runs at a time, each in its own thread so they use both CPU cores; run more worker processes (not a
+// higher number here) to scale beyond one machine.
 const worker = new Worker(
   RECONCILIATION_QUEUE_NAME,
-  async (job) => {
-    console.log(`Processing reconciliation run for report ${job.data.reportId} (job ${job.id}, attempt ${job.attemptsMade + 1})`);
-    return executeReconciliationRun(job.data);
-  },
-  {
-    connection: redis,
-    // Two runs at a time on one worker process — tune based on how much CPU
-    // the parse/match step actually needs vs. how many concurrent runs are
-    // realistic; run more worker processes (not a higher number here) to
-    // scale beyond what one process can handle.
-    concurrency: 2,
-  },
+  fileURLToPath(new URL('./reconciliationProcessor.js', import.meta.url)),
+  { connection: redis, useWorkerThreads: true, workerThreadsOptions, concurrency: 2 },
 );
 
 worker.on('completed', (job) => {
   console.log(`Reconciliation run completed for report ${job.data.reportId} (job ${job.id})`);
 });
 
-worker.on('failed', (job, err) => {
-  // executeReconciliationRun already persists status:'failed' + errorMessage
-  // on the Report row itself — this is just operational visibility, not the
-  // user-facing error surface.
+worker.on('failed', async (job, err) => {
   console.error(`Reconciliation run failed for report ${job?.data?.reportId} (job ${job?.id}):`, err.message);
+  // A run that failed through its own error handling has already recorded it; a thread that died (e.g. out of
+  // memory) couldn't, so once no retry is left the report is marked failed here instead of staying processing.
+  if (!job || job.attemptsMade < (job.opts.attempts ?? 1)) return;
+  await markRunCrashed({ reportId: job.data.reportId, userId: job.data.userId, reason: err.message }).catch((markErr) =>
+    console.error(`Could not record the failed run for report ${job.data.reportId}:`, markErr.message),
+  );
 });
 
-// Parsing a large upload is CPU-bound, so file previews run in worker threads: a parse never blocks the
-// reconciliation runs on this thread. The processor file loads its own Prisma and Redis clients.
+// Parsing a large upload is CPU-bound too, so file previews also run in threads. Each processor file loads its
+// own Prisma and Redis clients.
 const filePreviewWorker = new Worker(
   FILE_PREVIEW_QUEUE_NAME,
   fileURLToPath(new URL('./filePreviewProcessor.js', import.meta.url)),
-  { connection: redis, useWorkerThreads: true, concurrency: 2 },
+  { connection: redis, useWorkerThreads: true, workerThreadsOptions, concurrency: 2 },
 );
 
 filePreviewWorker.on('failed', (job, err) => {

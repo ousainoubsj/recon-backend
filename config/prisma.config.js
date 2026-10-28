@@ -21,6 +21,9 @@ export const pgPool = new pg.Pool({
   ssl: {
     rejectUnauthorized: false,
   },
+  // Set only by reconciliationWorker.js for its job threads, each of which opens its own pool. Never put it
+  // in .env: the API reads this file too and would get the same small pool.
+  max: Number(process.env.PG_POOL_MAX) || undefined,
 });
 
 const adapter = new PrismaPg(pgPool);
