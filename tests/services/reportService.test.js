@@ -325,8 +325,19 @@ describe('listReports', () => {
     fileBSummary: true,
     valueBreakdown: true,
     favorites: { where: { userId: USER_ID }, select: { id: true } },
+    supersededBy: { select: { id: true, sequenceYear: true, sequenceNumber: true } },
   };
   const DEFAULT_STATUS = { in: ['completed', 'failed'] };
+
+  it("maps a superseded report's successor to its formatted reference", async () => {
+    mockPrisma.report.findMany.mockResolvedValue([
+      { id: 'r1', favorites: [], supersededBy: { id: 'r2', sequenceYear: 2026, sequenceNumber: 12 } },
+    ]);
+
+    const [row] = await listReports(USER_ID);
+
+    expect(row.supersededBy).toEqual({ id: 'r2', reference: 'REC-2026-000012' });
+  });
 
   it("queries all completed+failed reports in the user's organization, newest first, unbounded by default, mapping isFavorited", async () => {
     mockPrisma.report.findMany.mockResolvedValue([
@@ -337,8 +348,8 @@ describe('listReports', () => {
     const result = await listReports(USER_ID);
 
     expect(result).toEqual([
-      { id: 'r1', isFavorited: false },
-      { id: 'r2', isFavorited: true },
+      { id: 'r1', isFavorited: false, supersededBy: null },
+      { id: 'r2', isFavorited: true, supersededBy: null },
     ]);
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID, status: DEFAULT_STATUS },
@@ -478,10 +489,11 @@ describe('getReport', () => {
       runDurationMs: null,
       resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
       rerunOf: null,
+      supersededBy: null,
     });
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
-      include: undefined,
+      include: { supersededBy: { select: { id: true, sequenceYear: true, sequenceNumber: true } } },
     });
     expect(mockPrisma.auditLog.findMany).not.toHaveBeenCalled();
   });
@@ -502,7 +514,10 @@ describe('getReport', () => {
 
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith({
       where: { id: 'r1', organizationId: ORG_ID },
-      include: { rows: { include: { resolution: { select: { kind: true, note: true } } } } },
+      include: {
+        rows: { include: { resolution: { select: { kind: true, note: true } } } },
+        supersededBy: { select: { id: true, sequenceYear: true, sequenceNumber: true } },
+      },
     });
   });
 
@@ -516,7 +531,7 @@ describe('getReport', () => {
 
     expect(result.priorRun).toEqual({ matchRate: 90, totalBreakValue: 12.5 });
     expect(mockPrisma.report.findFirst).toHaveBeenNthCalledWith(2, {
-      where: { organizationId: ORG_ID, status: 'completed', id: { not: 'r1' }, runDate: { lt: report.runDate } },
+      where: { organizationId: ORG_ID, status: 'completed', supersededById: null, id: { not: 'r1' }, runDate: { lt: report.runDate } },
       orderBy: { runDate: 'desc' },
       select: { matchedCount: true, totalRows: true, totalBreakValue: true },
     });
@@ -586,6 +601,7 @@ describe('getReport', () => {
       runDurationMs: null,
       resolutionSummary: { resolvedCount: 0, unresolvedExceptionCount: 0 },
       rerunOf: null,
+      supersededBy: null,
     });
     // A draft can't carry resolutions, so the summary query is skipped (getReport is polled while runs process).
     expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
@@ -740,7 +756,7 @@ describe('getReportsSummary', () => {
     const summary = await getReportsSummary(USER_ID);
 
     expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(1, {
-      where: { organizationId: ORG_ID, status: 'completed' },
+      where: { organizationId: ORG_ID, status: 'completed', supersededById: null },
       select: {
         runDate: true,
         totalRows: true,
@@ -757,6 +773,7 @@ describe('getReportsSummary', () => {
       where: {
         organizationId: ORG_ID,
         status: 'completed',
+        supersededById: null,
         runDate: { gte: new Date('2026-06-01T00:00:00Z'), lt: new Date('2026-08-01T00:00:00Z') },
       },
       select: {
@@ -811,6 +828,17 @@ describe('getReportsTrend', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('counts only current runs: both its queries skip superseded reports', async () => {
+    mockPrisma.report.findMany.mockResolvedValue([]);
+
+    await getReportsTrend(USER_ID);
+
+    for (const [args] of mockPrisma.report.findMany.mock.calls) {
+      expect(args.where).toEqual(expect.objectContaining({ status: 'completed', supersededById: null }));
+    }
+    expect(mockPrisma.report.findMany).toHaveBeenCalledTimes(2);
   });
 
   it('buckets reports by month and computes an all-time category breakdown', async () => {
@@ -950,6 +978,16 @@ describe('rerunReport', () => {
     mockPrisma.report.findFirst.mockResolvedValue({ ...source, fileAKey: null });
 
     await expect(rerunReport(USER_ID, 'source-1')).rejects.toBeInstanceOf(ValidationError);
+    expect(mockPrisma.report.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to rerun a report a newer run already superseded, naming that run', async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({ ...source, supersededBy: { id: 'rerun-1', sequenceYear: 2026, sequenceNumber: 12 } });
+
+    const error = await rerunReport(USER_ID, 'source-1').catch((e) => e);
+
+    expect(error).toBeInstanceOf(ConflictError);
+    expect(error.message).toContain('REC-2026-000012');
     expect(mockPrisma.report.create).not.toHaveBeenCalled();
   });
 
@@ -1227,6 +1265,66 @@ describe('withDraftProgress (via getReport/listDrafts)', () => {
   });
 });
 
+describe('superseding on completion', () => {
+  beforeEach(() => {
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'June', userId: USER_ID, organizationId: ORG_ID });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1', fileAName: 'a.csv', fileBName: 'b.csv', totalRows: 2, matchedCount: 1 });
+  });
+
+  const supersedeCalls = () => mockTx.report.update.mock.calls.filter(([args]) => 'supersededById' in args.data);
+
+  it('marks the source superseded by the rerun, inside the completion transaction, after locking the source', async () => {
+    mockTx.report.findUnique
+      .mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' })
+      .mockResolvedValueOnce({ supersededById: null });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(supersedeCalls()).toEqual([[{ where: { id: 'source-1' }, data: { supersededById: 'draft-1' } }]]);
+    const lockCall = mockTx.$queryRaw.mock.calls.find(([sql]) => sql.join('').includes('FOR UPDATE'));
+    expect(lockCall).toContain('source-1');
+  });
+
+  it('attaches to the end of the chain when the source was already superseded by an earlier rerun', async () => {
+    mockTx.report.findUnique
+      .mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' })
+      .mockResolvedValueOnce({ supersededById: 'rerun-1' })
+      .mockResolvedValueOnce({ supersededById: null });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    // The source keeps its link to rerun-1; rerun-1 is the one replaced now, so the chain stays linear.
+    expect(supersedeCalls()).toEqual([[{ where: { id: 'rerun-1' }, data: { supersededById: 'draft-1' } }]]);
+  });
+
+  it('changes nothing on a retried completion that already superseded its source', async () => {
+    mockTx.report.findUnique
+      .mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' })
+      .mockResolvedValueOnce({ supersededById: 'draft-1' });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(supersedeCalls()).toEqual([]);
+  });
+
+  it('does nothing for an ordinary run, which has no source', async () => {
+    mockTx.report.findUnique.mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: null });
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(supersedeCalls()).toEqual([]);
+    expect(mockTx.$queryRaw.mock.calls.some(([sql]) => sql.join('').includes('FOR UPDATE'))).toBe(false);
+  });
+
+  it('does nothing when the source was deleted while the rerun ran', async () => {
+    mockTx.report.findUnique.mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' }).mockResolvedValueOnce(null);
+
+    await completeDraft(USER_ID, 'draft-1', dto);
+
+    expect(supersedeCalls()).toEqual([]);
+  });
+});
+
 describe('completeDraft', () => {
   it('promotes a draft to completed, inserts rows, and audit-logs report.create', async () => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
@@ -1298,7 +1396,7 @@ describe('completeDraft', () => {
 
     await completeDraft(USER_ID, 'draft-1', dto);
 
-    expect(mockTx.report.findUnique).toHaveBeenCalledWith({ where: { id: 'draft-1' }, select: { sequenceNumber: true } });
+    expect(mockTx.report.findUnique).toHaveBeenCalledWith({ where: { id: 'draft-1' }, select: { sequenceNumber: true, sourceReportId: true } });
     expect(mockTx.report.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ sequenceYear: CURRENT_YEAR, sequenceNumber: 7 }) }),
     );
@@ -2316,7 +2414,7 @@ describe('getFilePairTrend', () => {
 
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { organizationId: ORG_ID, status: 'completed' },
+        where: { organizationId: ORG_ID, status: 'completed', OR: [{ supersededById: null }, { id: 'r1' }] },
         orderBy: { runDate: 'desc' },
         take: 14,
       }),
@@ -2434,6 +2532,7 @@ describe('getHistoryStats', () => {
       where: {
         organizationId: ORG_ID,
         status: 'completed',
+        supersededById: null,
         runDate: { gte: new Date('2026-05-16T12:00:00.000Z'), lt: new Date('2026-07-15T12:00:00.000Z') },
       },
       select: {
@@ -2477,6 +2576,7 @@ describe('getWeeklyDigestStats', () => {
       where: {
         organizationId: ORG_ID,
         status: 'completed',
+        supersededById: null,
         runDate: { gte: new Date('2026-07-20T08:00:00.000Z'), lt: new Date('2026-08-03T08:00:00.000Z') },
       },
       select: {

@@ -173,6 +173,12 @@ model Report {
   sourceReportId  String?  @map("source_report_id") @db.Uuid
   sourceReport    Report?  @relation("ReportRerun", fields: [sourceReportId], references: [id], onDelete: SetNull)
   rerunsOf        Report[] @relation("ReportRerun")
+  // The rerun that replaced this report, set when that rerun completes. Dashboards and digests skip
+  // superseded reports so a reconciliation counts once. Deleting the rerun clears this (SetNull), so
+  // the original counts again. @unique: at most one successor per report, keeping chains linear.
+  supersededById  String?  @unique @map("superseded_by_id") @db.Uuid
+  supersededBy    Report?  @relation("ReportSupersede", fields: [supersededById], references: [id], onDelete: SetNull)
+  supersedes      Report?  @relation("ReportSupersede")
 
   // Human-facing formatted ID (REC-YYYY-NNNNNN), assigned once — the first
   // time a report reaches 'completed' status — via ReportSequence's atomic

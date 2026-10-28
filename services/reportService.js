@@ -158,9 +158,12 @@ function dayRange(daysAgo, windowDays = 30) {
 
 const VALID_TAGS = ['bank', 'supplier', 'year_end'];
 
+// Every org-wide figure counts a reconciliation once: a report superseded by a completed rerun is left out.
+const CURRENT_COMPLETED = { status: 'completed', supersededById: null };
+
 function getAllTimeCompletedReports(organizationId) {
   return prisma.report.findMany({
-    where: { organizationId, status: 'completed' },
+    where: { organizationId, ...CURRENT_COMPLETED },
     select: {
       runDate: true,
       totalRows: true,
@@ -287,12 +290,12 @@ async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
     // A retry of a previously-failed run reuses this same reportId — only
     // assign a sequence number the first time it actually completes, never
     // reassign one on a later retry.
-    const existing = await tx.report.findUnique({ where: { id: reportId }, select: { sequenceNumber: true } });
+    const existing = await tx.report.findUnique({ where: { id: reportId }, select: { sequenceNumber: true, sourceReportId: true } });
     const needsSequence = existing?.sequenceNumber == null;
     const year = new Date().getUTCFullYear();
     const sequenceNumber = needsSequence ? await nextSequenceNumber(tx, year, dto.organizationId) : undefined;
 
-    return tx.report.update({
+    const completed = await tx.report.update({
       where: { id: reportId },
       data: {
         status: 'completed',
@@ -321,7 +324,36 @@ async function persistCompletedRun(reportId, dto, { onCopyProgress } = {}) {
         ...(needsSequence ? { sequenceYear: year, sequenceNumber } : {}),
       },
     });
+
+    // Same transaction as the completion: a rerun is never complete without having replaced its predecessor.
+    if (existing?.sourceReportId) await supersedeNewestInChain(tx, existing.sourceReportId, reportId);
+    return completed;
   });
+}
+
+// Chains are short (each rerun needs a human); the cap only guards against a cycle in corrupted data.
+const MAX_SUPERSEDE_HOPS = 50;
+
+// A completing rerun replaces the newest run in its source's chain: normally the source itself, or an
+// earlier rerun of the same source that completed first. Locking the source row serialises two reruns of
+// one source finishing together, so neither can claim the same predecessor.
+async function supersedeNewestInChain(tx, sourceReportId, rerunId) {
+  await tx.$queryRaw`SELECT id FROM reports WHERE id = ${sourceReportId}::uuid FOR UPDATE`;
+
+  let newestId = sourceReportId;
+  for (let hop = 0; hop < MAX_SUPERSEDE_HOPS; hop += 1) {
+    const newest = await tx.report.findUnique({ where: { id: newestId }, select: { supersededById: true } });
+    // The source was deleted while this rerun ran: there's nothing left to replace.
+    if (!newest) return;
+    // A retried completion of this same rerun already did the job.
+    if (newest.supersededById === rerunId) return;
+    if (!newest.supersededById) {
+      await tx.report.update({ where: { id: newestId }, data: { supersededById: rerunId } });
+      return;
+    }
+    newestId = newest.supersededById;
+  }
+  throw new Error(`Supersede chain from report ${sourceReportId} exceeds ${MAX_SUPERSEDE_HOPS} runs`);
 }
 
 function aggregatePeriod(reports) {
@@ -471,13 +503,18 @@ export async function listReports(
       fileBSummary: true,
       valueBreakdown: true,
       favorites: { where: { userId }, select: { id: true } },
+      supersededBy: { select: SUPERSEDED_BY_SELECT },
     },
     orderBy: { runDate: 'desc' },
     ...(offset ? { skip: offset } : {}),
     ...(limit ? { take: limit } : {}),
   });
 
-  return reports.map(({ favorites, ...report }) => ({ ...report, isFavorited: favorites.length > 0 }));
+  return reports.map(({ favorites, supersededBy, ...report }) => ({
+    ...report,
+    isFavorited: favorites.length > 0,
+    supersededBy: mapSupersededBy(supersededBy),
+  }));
 }
 
 // All-time totals for the dashboard's headline stat cards (Total
@@ -494,7 +531,7 @@ export async function getReportsSummary(userId) {
   const [allTimeReports, monthReports] = await Promise.all([
     getAllTimeCompletedReports(organizationId),
     prisma.report.findMany({
-      where: { organizationId, status: 'completed', runDate: { gte: previous.start, lt: current.end } },
+      where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: previous.start, lt: current.end } },
       select: {
         runDate: true,
         totalRows: true,
@@ -565,7 +602,7 @@ export async function getReportsTrend(userId, { months = 6 } = {}) {
 
   const [reports, allTimeReports] = await Promise.all([
     prisma.report.findMany({
-      where: { organizationId, status: 'completed', runDate: { gte: start } },
+      where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: start } },
       select: {
         runDate: true,
         totalRows: true,
@@ -620,7 +657,7 @@ export async function getHistoryStats(userId) {
   const last30 = dayRange(0, 30);
   const prior30 = dayRange(30, 30);
   const recentReports = await prisma.report.findMany({
-    where: { organizationId, status: 'completed', runDate: { gte: prior30.start, lt: last30.end } },
+    where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: prior30.start, lt: last30.end } },
     select: {
       runDate: true,
       totalRows: true,
@@ -665,7 +702,7 @@ export async function getWeeklyDigestStats(organizationId) {
   const current = dayRange(0, 7);
   const prior = dayRange(7, 7);
   const reports = await prisma.report.findMany({
-    where: { organizationId, status: 'completed', runDate: { gte: prior.start, lt: current.end } },
+    where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: prior.start, lt: current.end } },
     select: {
       runDate: true,
       totalRows: true,
@@ -782,6 +819,12 @@ async function getRunDurationMs(reportId) {
 // from empty to several MB. Only the export/email code paths actually build
 // row-level content (buildPdfReport/buildXlsxReport/sendReportEmail) and
 // opt in explicitly.
+const SUPERSEDED_BY_SELECT = { id: true, sequenceYear: true, sequenceNumber: true };
+
+function mapSupersededBy(supersededBy) {
+  return supersededBy ? { id: supersededBy.id, reference: formatReportReference(supersededBy.sequenceYear, supersededBy.sequenceNumber) } : null;
+}
+
 // Rows as the exports need them: each with the kind and note of its manual resolution, if any.
 const ROWS_WITH_RESOLUTION = { include: { resolution: { select: { kind: true, note: true } } } };
 
@@ -789,7 +832,7 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
   const { organizationId } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
-    include: includeRows ? { rows: ROWS_WITH_RESOLUTION } : undefined,
+    include: includeRows ? { rows: ROWS_WITH_RESOLUTION, supersededBy: { select: SUPERSEDED_BY_SELECT } } : { supersededBy: { select: SUPERSEDED_BY_SELECT } },
   });
   if (!report) throw new NotFoundError();
   // Drafts are private to their creator — org membership alone isn't enough,
@@ -803,7 +846,7 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
   if (report.status === 'completed') {
     const priorWhere = report.sourceReportId
       ? { id: report.sourceReportId, organizationId, status: 'completed' }
-      : { organizationId, status: 'completed', id: { not: reportId }, runDate: { lt: report.runDate } };
+      : { organizationId, ...CURRENT_COMPLETED, id: { not: reportId }, runDate: { lt: report.runDate } };
     const prior = await prisma.report.findFirst({
       where: priorWhere,
       orderBy: { runDate: 'desc' },
@@ -824,7 +867,14 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
 
   const rerunOf = report.status === 'completed' ? await getRerunOf(report) : null;
 
-  return { ...withDraftProgress(report), priorRun, runDurationMs, resolutionSummary, rerunOf };
+  return {
+    ...withDraftProgress(report),
+    supersededBy: mapSupersededBy(report.supersededBy),
+    priorRun,
+    runDurationMs,
+    resolutionSummary,
+    rerunOf,
+  };
 }
 
 // null for a first run, or once the source is deleted (the FK is ON DELETE SET NULL).
@@ -1185,6 +1235,8 @@ export async function getFilePairTrend(userId, reportId, { scope = 'filePair', l
   const where = {
     organizationId,
     status: 'completed',
+    // Superseded runs drop out of the series, except the one being viewed, which always plots itself.
+    OR: [{ supersededById: null }, { id: reportId }],
     // Anchored to the run being viewed, not "whatever's newest right now" —
     // without this, every report's trend chart showed the same org-wide
     // latest N runs regardless of which report you opened. Bounding by
@@ -1444,9 +1496,15 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
       config: true,
       sequenceYear: true,
       sequenceNumber: true,
+      supersededBy: { select: SUPERSEDED_BY_SELECT },
     },
   });
   if (!source) throw new NotFoundError();
+  // Chains stay linear: changes continue from the newest run, never from one it already replaced.
+  if (source.supersededBy) {
+    const newer = mapSupersededBy(source.supersededBy);
+    throw new ConflictError(`A newer run of this reconciliation exists. Rerun ${newer.reference ?? 'it'} instead.`);
+  }
   // Reports saved through the legacy client-computed endpoint never had files in R2.
   if (!source.fileAKey || !source.fileBKey) throw new ValidationError('This reconciliation has no stored files to rerun');
 
