@@ -1952,6 +1952,18 @@ async function queueMappingPreview(reportId, fileAKey, fileBKey) {
   await enqueueFilePreview({ reportId, fileAKey, fileBKey });
 }
 
+// Records a preview whose worker thread died (e.g. out of memory on a very large file) before buildMappingPreview
+// could. Same guard as the job's own writes: only the files that job parsed, and only while still pending.
+export async function markPreviewCrashed({ reportId, fileAKey, fileBKey }) {
+  await prisma.report.updateMany({
+    where: { id: reportId, fileAKey, fileBKey, previewStatus: 'pending' },
+    data: {
+      previewStatus: 'failed',
+      previewError: 'These files are too large to preview. Try splitting them into smaller exports.',
+    },
+  });
+}
+
 // A file the parser couldn't read: shown to the user as-is, since replacing the file fixes it, and never retried.
 export class FilePreviewError extends Error {}
 

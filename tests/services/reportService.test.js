@@ -164,6 +164,7 @@ const {
   getMappingPreview,
   buildMappingPreview,
   markRunCrashed,
+  markPreviewCrashed,
   getRulePreview,
   getTransactions,
   getTransaction,
@@ -3323,5 +3324,18 @@ describe('markRunCrashed', () => {
 
     expect(mockPrisma.report.findUnique).not.toHaveBeenCalled();
     expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+});
+
+describe('markPreviewCrashed', () => {
+  it('fails only a still-pending preview for the files the crashed job parsed', async () => {
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+
+    await markPreviewCrashed({ reportId: 'r1', fileAKey: 'uploads/u/a.csv', fileBKey: 'uploads/u/b.csv' });
+
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: { id: 'r1', fileAKey: 'uploads/u/a.csv', fileBKey: 'uploads/u/b.csv', previewStatus: 'pending' },
+      data: { previewStatus: 'failed', previewError: expect.stringContaining('too large to preview') },
+    });
   });
 });

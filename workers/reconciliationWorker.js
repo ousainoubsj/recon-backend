@@ -6,12 +6,12 @@ dotenv.config();
 // Same reasoning as app.js: downstream modules read process.env (REDIS_URL,
 // DATABASE_URL, R2_*) at module-evaluation time, so they're loaded
 // dynamically here, after dotenv.config() has already run.
-const { Worker } = await import('bullmq');
+const { Worker, Child } = await import('bullmq');
 const { redis } = await import('../config/redis.config.js');
 const { prisma } = await import('../config/prisma.config.js');
 const { RECONCILIATION_QUEUE_NAME } = await import('../queues/reconciliationQueue.js');
 const { FILE_PREVIEW_QUEUE_NAME } = await import('../queues/filePreviewQueue.js');
-const { markRunCrashed } = await import('../services/reportService.js');
+const { markPreviewCrashed, markRunCrashed } = await import('../services/reportService.js');
 
 try {
   await prisma.$queryRaw`SELECT 1`;
@@ -20,6 +20,19 @@ try {
   console.error('Database connection failed:', err.message);
   process.exit(1);
 }
+
+// BullMQ (through 6.5.1) re-emits a job thread's 'error', such as running out of memory, on its Child wrapper,
+// which has no listener. Node then throws it from inside the thread's teardown: that kills this whole process and
+// also swallows the thread's 'exit' event, which is what BullMQ fails the job on. Adding a listener before each
+// Child starts its thread (an error can come while the thread is still loading) turns the error into a log line,
+// so BullMQ sees the exit and fails only that job.
+const startChild = Child.prototype.init;
+Child.prototype.init = function initWithErrorListener() {
+  if (this.listenerCount('error') === 0) {
+    this.on('error', (err) => console.error('A job thread failed:', err.message));
+  }
+  return startChild.call(this);
+};
 
 // Lowered before any job thread exists, so every thread inherits it: runs and parses use the CPU the API
 // isn't using, and the API stays responsive while two runs fill both cores.
@@ -70,9 +83,14 @@ const filePreviewWorker = new Worker(
   { connection: redis, useWorkerThreads: true, workerThreadsOptions, concurrency: 2 },
 );
 
-filePreviewWorker.on('failed', (job, err) => {
-  // buildMappingPreview records the user-facing reason on the Report row; this is operational visibility.
+filePreviewWorker.on('failed', async (job, err) => {
   console.error(`File preview failed for report ${job?.data?.reportId} (job ${job?.id}):`, err.message);
+  // buildMappingPreview records its own failures; a thread that died couldn't, so once no retry is left the
+  // preview is marked failed here instead of showing "Reading your files" forever. A no-op when already recorded.
+  if (!job || job.attemptsMade < (job.opts.attempts ?? 1)) return;
+  await markPreviewCrashed(job.data).catch((markErr) =>
+    console.error(`Could not record the failed preview for report ${job.data.reportId}:`, markErr.message),
+  );
 });
 
 console.log('Reconciliation and file-preview workers started, waiting for jobs...');
