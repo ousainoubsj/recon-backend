@@ -345,7 +345,8 @@ model Notification {
   type           String       @db.VarChar(100)
   message        String
   entityType     String?      @map("entity_type") @db.VarChar(50)
-  entityId       String?      @map("entity_id") @db.Uuid
+  // Not a uuid: it also holds Better Auth ids (members, invitations, orgs), like AuditLog.entityId.
+  entityId       String?      @map("entity_id") @db.VarChar(64)
   read           Boolean      @default(false)
   createdAt      DateTime     @default(now()) @map("created_at")
 
