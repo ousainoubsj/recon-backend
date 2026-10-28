@@ -4,7 +4,7 @@ const mockPrisma = {
   member: { findMany: jest.fn(), findFirst: jest.fn(), updateMany: jest.fn(), deleteMany: jest.fn(), count: jest.fn() },
   session: { updateMany: jest.fn() },
   $queryRaw: jest.fn().mockResolvedValue([]),
-  invitation: { count: jest.fn() },
+  invitation: { count: jest.fn(), findFirst: jest.fn() },
   organization: { findFirst: jest.fn(), update: jest.fn() },
   auditLog: { count: jest.fn() },
   $transaction: jest.fn((fn) => fn(mockPrisma)),
@@ -29,7 +29,7 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
   getUserMembership: mockMemberFindFirst,
 }));
 
-const { listMembers, getTeamStats, updateMember, updateMemberRole, removeMember, getDepartments, addDepartment } = await import(
+const { listMembers, getTeamStats, updateMember, updateMemberRole, removeMember, getDepartments, addDepartment, getInvitationPreview } = await import(
   '../../services/teamService.js'
 );
 const { NotFoundError, ConflictError } = await import('../../errors.js');
@@ -427,5 +427,37 @@ describe('removeMember', () => {
     await removeMember(USER_ID, 'm3');
 
     expect(mockPrisma.member.deleteMany).toHaveBeenCalled();
+  });
+});
+
+describe('getInvitationPreview', () => {
+  it('looks up only a pending, unexpired invitation and returns the public fields', async () => {
+    const expiresAt = new Date('2026-11-04T00:00:00Z');
+    mockPrisma.invitation.findFirst.mockResolvedValue({
+      email: 'invitee@example.com',
+      role: 'viewer',
+      expiresAt,
+      organization: { name: 'Acme' },
+      user: { name: '', email: 'admin@acme.com' },
+    });
+
+    const preview = await getInvitationPreview('inv-1');
+
+    expect(mockPrisma.invitation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'inv-1', status: 'pending', expiresAt: { gt: expect.any(Date) } } }),
+    );
+    expect(preview).toEqual({
+      email: 'invitee@example.com',
+      role: 'viewer',
+      expiresAt,
+      organizationName: 'Acme',
+      inviterName: 'admin@acme.com',
+    });
+  });
+
+  it('throws NotFoundError when the invitation is unusable', async () => {
+    mockPrisma.invitation.findFirst.mockResolvedValue(null);
+
+    await expect(getInvitationPreview('inv-1')).rejects.toBeInstanceOf(NotFoundError);
   });
 });

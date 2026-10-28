@@ -31,6 +31,7 @@ const mockTeamService = {
   removeMember: jest.fn(),
   getDepartments: jest.fn(),
   addDepartment: jest.fn(),
+  getInvitationPreview: jest.fn(),
 };
 jest.unstable_mockModule('../../services/teamService.js', () => mockTeamService);
 
@@ -281,5 +282,36 @@ describe('DELETE /api/team/members/:id', () => {
 
     expect(res.status).toBe(403);
     expect(mockTeamService.removeMember).not.toHaveBeenCalled();
+  });
+});
+
+describe('GET /api/team/invitations/:id/preview', () => {
+  const INVITATION_ID = 'KO7JrBniBUSRZrPHV71dy7qRWBdK6cS3';
+
+  it('serves the preview without a session or permission check', async () => {
+    const preview = { email: 'invitee@example.com', role: 'analyst', organizationName: 'Acme', inviterName: 'Ada' };
+    mockTeamService.getInvitationPreview.mockResolvedValue(preview);
+
+    const res = await request(app).get(`/api/team/invitations/${INVITATION_ID}/preview`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(preview);
+    expect(mockTeamService.getInvitationPreview).toHaveBeenCalledWith(INVITATION_ID);
+    expect(mockGetUserMembership).not.toHaveBeenCalled();
+  });
+
+  it('404s a malformed id without reaching the service', async () => {
+    const res = await request(app).get('/api/team/invitations/bad%20id!/preview');
+
+    expect(res.status).toBe(404);
+    expect(mockTeamService.getInvitationPreview).not.toHaveBeenCalled();
+  });
+
+  it('404s an unusable invitation', async () => {
+    mockTeamService.getInvitationPreview.mockRejectedValue(new NotFoundError('gone'));
+
+    const res = await request(app).get(`/api/team/invitations/${INVITATION_ID}/preview`);
+
+    expect(res.status).toBe(404);
   });
 });

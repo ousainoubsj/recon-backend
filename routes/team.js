@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/authenticate.js';
 import { requirePermission } from '../middleware/authorize.js';
-import { validate } from '../middleware/validate.js';
+import { validate, validateParams } from '../middleware/validate.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import * as teamController from '../controllers/team.controller.js';
 
@@ -71,4 +71,13 @@ teamRouter.post(
   catchAsync(requirePermission('member', 'update')),
   validate(addDepartmentSchema),
   catchAsync(teamController.addDepartment),
+);
+
+const invitationParamsSchema = z.object({ id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/) });
+
+// No authenticate: the invitee isn't signed in yet. See teamService.getInvitationPreview.
+teamRouter.get(
+  '/invitations/:id/preview',
+  validateParams(invitationParamsSchema),
+  catchAsync(teamController.getInvitationPreview),
 );

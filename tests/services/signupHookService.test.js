@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { handleUserCreated } from '../../services/signupHookService.js';
+import { handleUserCreated, hasOrganization, usableInvitationEmail } from '../../services/signupHookService.js';
 
 const user = { id: 'user-1', email: 'new@example.com' };
 
@@ -18,7 +18,7 @@ describe('handleUserCreated', () => {
     await handleUserCreated(user, deps);
 
     expect(deps.prisma.invitation.findFirst).toHaveBeenCalledWith({
-      where: { email: user.email, status: 'pending' },
+      where: { email: user.email, status: 'pending', expiresAt: { gt: expect.any(Date) } },
     });
     expect(createOrganization).not.toHaveBeenCalled();
   });
@@ -47,5 +47,35 @@ describe('handleUserCreated', () => {
     expect(consoleError).toHaveBeenCalled();
 
     consoleError.mockRestore();
+  });
+});
+
+describe('usableInvitationEmail', () => {
+  it('returns the address of a pending, unexpired invitation', async () => {
+    const prisma = { invitation: { findFirst: jest.fn().mockResolvedValue({ email: 'invitee@example.com' }) } };
+
+    await expect(usableInvitationEmail('inv-1', { prisma })).resolves.toBe('invitee@example.com');
+    expect(prisma.invitation.findFirst).toHaveBeenCalledWith({
+      where: { id: 'inv-1', status: 'pending', expiresAt: { gt: expect.any(Date) } },
+      select: { email: true },
+    });
+  });
+
+  it('returns null when the invitation is unusable', async () => {
+    const prisma = { invitation: { findFirst: jest.fn().mockResolvedValue(null) } };
+
+    await expect(usableInvitationEmail('inv-1', { prisma })).resolves.toBeNull();
+  });
+});
+
+describe('hasOrganization', () => {
+  it.each([
+    [0, false],
+    [1, true],
+  ])('with %i memberships returns %s', async (count, expected) => {
+    const prisma = { member: { count: jest.fn().mockResolvedValue(count) } };
+
+    await expect(hasOrganization('user-1', { prisma })).resolves.toBe(expected);
+    expect(prisma.member.count).toHaveBeenCalledWith({ where: { userId: 'user-1' } });
   });
 });

@@ -255,3 +255,27 @@ export async function addDepartment(userId, name, { ip, userAgent } = {}) {
 
   return departments;
 }
+
+// Public (no session): the accept-invite page shows it before sign-in, to pre-fill the invited address. The
+// id is Better Auth's 32-character random string and only reaches the invitee's inbox, so it is the secret.
+export async function getInvitationPreview(invitationId) {
+  const invitation = await prisma.invitation.findFirst({
+    where: { id: invitationId, status: 'pending', expiresAt: { gt: new Date() } },
+    select: {
+      email: true,
+      role: true,
+      expiresAt: true,
+      organization: { select: { name: true } },
+      user: { select: { name: true, email: true } },
+    },
+  });
+  if (!invitation) throw new NotFoundError('This invitation is invalid, expired, or has already been used');
+
+  return {
+    email: invitation.email,
+    role: invitation.role,
+    expiresAt: invitation.expiresAt,
+    organizationName: invitation.organization.name,
+    inviterName: invitation.user.name || invitation.user.email,
+  };
+}

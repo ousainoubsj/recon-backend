@@ -46,3 +46,8 @@ export const addDepartment = async (req, res) => {
   const departments = await teamService.addDepartment(req.session.user.id, req.body.name, auditContext(req));
   res.status(201).json(departments);
 };
+
+export const getInvitationPreview = async (req, res) => {
+  const preview = await teamService.getInvitationPreview(req.params.id);
+  res.json(preview);
+};
