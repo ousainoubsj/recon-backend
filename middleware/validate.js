@@ -32,3 +32,22 @@ export function validateParams(schema) {
     next();
   };
 }
+
+/**
+ * Query-string counterpart of validate(): a malformed filter or cursor is a 422, like a bad body.
+ * @param {import('zod').ZodSchema} schema
+ */
+export function validateQuery(schema) {
+  return (req, res, next) => {
+    const result = schema.safeParse(req.query);
+    if (!result.success) {
+      const fieldErrors = result.error.issues.map((issue) => ({
+        field: issue.path.join('.'),
+        message: issue.message,
+      }));
+      return next(new ValidationError('Query failed validation', fieldErrors));
+    }
+    req.query = result.data;
+    next();
+  };
+}

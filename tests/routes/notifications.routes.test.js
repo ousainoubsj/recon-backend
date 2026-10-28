@@ -33,13 +33,27 @@ beforeEach(() => jest.clearAllMocks());
 
 describe('GET /api/notifications', () => {
   it("returns the caller's own notifications", async () => {
-    mockNotificationService.listNotifications.mockResolvedValue([{ id: 'n1' }]);
+    const page = { items: [{ id: 'n1' }], total: 1, nextCursor: null, countsByType: {} };
+    mockNotificationService.listNotifications.mockResolvedValue(page);
 
-    const res = await request(app).get('/api/notifications');
+    const res = await request(app).get('/api/notifications?types=report.deleted_by_admin&limit=500');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 'n1' }]);
-    expect(mockNotificationService.listNotifications).toHaveBeenCalledWith(USER_ID);
+    expect(res.body).toEqual(page);
+    // A single type arrives as an array; the limit is capped at 100.
+    expect(mockNotificationService.listNotifications).toHaveBeenCalledWith(USER_ID, {
+      types: ['report.deleted_by_admin'],
+      excludeTypes: undefined,
+      limit: 100,
+      cursor: undefined,
+    });
+  });
+
+  it('rejects a malformed cursor with a 422', async () => {
+    const res = await request(app).get('/api/notifications?cursor=not-a-uuid');
+
+    expect(res.status).toBe(422);
+    expect(mockNotificationService.listNotifications).not.toHaveBeenCalled();
   });
 });
 
@@ -58,10 +72,10 @@ describe('POST /api/notifications/:id/read', () => {
   it('marks a notification read and returns 204', async () => {
     mockNotificationService.markAsRead.mockResolvedValue(undefined);
 
-    const res = await request(app).post('/api/notifications/n1/read');
+    const res = await request(app).post('/api/notifications/99999999-9999-4999-8999-999999999999/read');
 
     expect(res.status).toBe(204);
-    expect(mockNotificationService.markAsRead).toHaveBeenCalledWith(USER_ID, 'n1');
+    expect(mockNotificationService.markAsRead).toHaveBeenCalledWith(USER_ID, '99999999-9999-4999-8999-999999999999');
   });
 
   it('returns an RFC 7807 404 when not found or not owned', async () => {

@@ -350,6 +350,8 @@ model Notification {
   createdAt      DateTime     @default(now()) @map("created_at")
 
   @@index([userId, read, createdAt(sort: Desc)], map: "idx_notifications_user_unread")
+  // The notification list and its "Load more": a user's notifications newest first, read or not.
+  @@index([userId, createdAt(sort: Desc)], map: "idx_notifications_user_created")
   @@map("notifications")
 }
 

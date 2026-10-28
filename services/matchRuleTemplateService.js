@@ -1,5 +1,5 @@
 import { prisma } from '../config/prisma.config.js';
-import { NotFoundError, AuthorisationError } from '../errors.js';
+import { NotFoundError, AuthorisationError, ConflictError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
 import { withSubject } from '../utils/audit.js';
@@ -13,13 +13,21 @@ import { withSubject } from '../utils/audit.js';
 // unassigned templates aren't visible to members before an admin designates
 // one, since that designation is the only thing that makes a template
 // "theirs" to use.
+// 'skip' is no longer offered, and the engine already runs it as flag-all; a template saved with it would
+// otherwise show a blank duplicate-handling choice in the rules sidebar.
+function withCurrentDuplicateHandling(template) {
+  if (template.config?.duplicateHandling !== 'skip') return template;
+  return { ...template, config: { ...template.config, duplicateHandling: 'flag-all' } };
+}
+
 export async function listTemplates(userId) {
   const { organizationId, role } = await getUserMembership(userId);
   if (role === 'admin') {
-    return prisma.matchRuleTemplate.findMany({
+    const templates = await prisma.matchRuleTemplate.findMany({
       where: { organizationId },
       orderBy: { name: 'asc' },
     });
+    return templates.map(withCurrentDuplicateHandling);
   }
   const org = await prisma.organization.findFirst({
     where: { id: organizationId },
@@ -29,11 +37,17 @@ export async function listTemplates(userId) {
   const enforced = await prisma.matchRuleTemplate.findFirst({
     where: { id: org.enforcedMatchRuleTemplateId, organizationId },
   });
-  return enforced ? [enforced] : [];
+  return enforced ? [withCurrentDuplicateHandling(enforced)] : [];
 }
+
+// Templates are shown in pickers rather than paged lists, so the number an org can create is capped instead.
+const MAX_TEMPLATES_PER_ORG = 100;
 
 export async function createTemplate(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  if ((await prisma.matchRuleTemplate.count({ where: { organizationId } })) >= MAX_TEMPLATES_PER_ORG) {
+    throw new ConflictError(`Template limit reached (${MAX_TEMPLATES_PER_ORG}). Delete one before creating another.`);
+  }
   const template = await prisma.matchRuleTemplate.create({
     data: {
       organizationId,

@@ -1526,21 +1526,28 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
   return prisma.report.findFirst({ where: { id: reportId, userId } });
 }
 
-export async function listDrafts(userId) {
+// Abandoned drafts accumulate per user, so the list is paged; `total` feeds the launcher's draft count.
+export async function listDrafts(userId, { limit = 20, offset = 0 } = {}) {
   const { organizationId } = await getUserMembership(userId);
-  const drafts = await prisma.report.findMany({
-    where: { userId, organizationId, status: 'draft' },
-    orderBy: { updatedAt: 'desc' },
-    // Same reasoning as findDraftOrFailedRun above: fileASampleRows/
-    // fileBSampleRows can be several MB of cached JSON per draft (up to
-    // SAMPLE_ROW_CAP rows of every column, from getMappingPreview). This
-    // list is the "resume a draft" picker — the frontend's Report type
-    // never reads these fields — but without the omit, every draft in the
-    // list pays that multi-MB cost, which is what made this endpoint take
-    // up to a minute for a user with several large-file-pair drafts.
-    omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
-  });
-  return drafts.map(withDraftProgress);
+  const where = { userId, organizationId, status: 'draft' };
+  const [drafts, total] = await Promise.all([
+    prisma.report.findMany({
+      where,
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: limit,
+      skip: offset,
+      // Same reasoning as findDraftOrFailedRun above: fileASampleRows/
+      // fileBSampleRows can be several MB of cached JSON per draft (up to
+      // SAMPLE_ROW_CAP rows of every column, from getMappingPreview). This
+      // list is the "resume a draft" picker — the frontend's Report type
+      // never reads these fields — but without the omit, every draft in the
+      // list pays that multi-MB cost, which is what made this endpoint take
+      // up to a minute for a user with several large-file-pair drafts.
+      omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
+    }),
+    prisma.report.count({ where }),
+  ]);
+  return { items: drafts.map(withDraftProgress), total };
 }
 
 // A previously failed run behaves like a draft that can be retried — it

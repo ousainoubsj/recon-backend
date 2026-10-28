@@ -5,6 +5,7 @@ const mockPrisma = {
     create: jest.fn(),
     findMany: jest.fn(),
     count: jest.fn(),
+    groupBy: jest.fn(),
     updateMany: jest.fn(),
   },
   member: { findFirst: jest.fn() },
@@ -60,17 +61,53 @@ describe('createNotification', () => {
 });
 
 describe('listNotifications', () => {
-  it("lists the caller's own notifications, newest first", async () => {
-    const notifications = [{ id: 'n1' }, { id: 'n2' }];
-    mockPrisma.notification.findMany.mockResolvedValue(notifications);
+  beforeEach(() => {
+    mockPrisma.notification.count.mockResolvedValue(3);
+    mockPrisma.notification.groupBy.mockResolvedValue([
+      { type: 'report.deleted_by_admin', _count: { _all: 2 } },
+      { type: 'member.role_changed', _count: { _all: 1 } },
+    ]);
+  });
 
-    const result = await listNotifications(USER_ID);
+  it("returns one page of the caller's own notifications, newest first, with per-type counts", async () => {
+    mockPrisma.notification.findMany.mockResolvedValue([{ id: 'n1' }, { id: 'n2' }]);
 
-    expect(result).toBe(notifications);
+    const result = await listNotifications(USER_ID, { limit: 2 });
+
     expect(mockPrisma.notification.findMany).toHaveBeenCalledWith({
       where: { userId: USER_ID },
-      orderBy: { createdAt: 'desc' },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 3,
     });
+    expect(mockPrisma.notification.groupBy).toHaveBeenCalledWith({ by: ['type'], where: { userId: USER_ID }, _count: { _all: true } });
+    expect(result).toEqual({
+      items: [{ id: 'n1' }, { id: 'n2' }],
+      total: 3,
+      nextCursor: null,
+      countsByType: { 'report.deleted_by_admin': 2, 'member.role_changed': 1 },
+    });
+  });
+
+  it('returns the last row as the next cursor when another page exists, and continues after a cursor', async () => {
+    mockPrisma.notification.findMany.mockResolvedValue([{ id: 'n1' }, { id: 'n2' }, { id: 'n3' }]);
+
+    const first = await listNotifications(USER_ID, { limit: 2 });
+    await listNotifications(USER_ID, { limit: 2, cursor: 'n2' });
+
+    expect(first.items).toEqual([{ id: 'n1' }, { id: 'n2' }]);
+    expect(first.nextCursor).toBe('n2');
+    expect(mockPrisma.notification.findMany).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: { id: 'n2' }, skip: 1 }));
+  });
+
+  it('filters to the given types, or everything but the excluded ones, still scoped to the caller', async () => {
+    mockPrisma.notification.findMany.mockResolvedValue([]);
+
+    await listNotifications(USER_ID, { types: ['report.deleted_by_admin'] });
+    await listNotifications(USER_ID, { excludeTypes: ['report.deleted_by_admin'] });
+
+    const [[included], [excluded]] = mockPrisma.notification.findMany.mock.calls;
+    expect(included.where).toEqual({ userId: USER_ID, type: { in: ['report.deleted_by_admin'] } });
+    expect(excluded.where).toEqual({ userId: USER_ID, type: { notIn: ['report.deleted_by_admin'] } });
   });
 });
 

@@ -1053,18 +1053,25 @@ describe('listDrafts', () => {
       { id: 'draft-2', status: 'draft', fileAKey: 'a', fileBKey: 'b', columnMapping: null, config: null },
     ];
     mockPrisma.report.findMany.mockResolvedValue(drafts);
+    mockPrisma.report.count.mockResolvedValue(7);
 
-    const result = await listDrafts(USER_ID);
+    const result = await listDrafts(USER_ID, { limit: 2, offset: 4 });
 
-    expect(result).toEqual([
-      { ...drafts[0], progress: 0 },
-      { ...drafts[1], progress: 33 },
-    ]);
+    expect(result).toEqual({
+      items: [
+        { ...drafts[0], progress: 0 },
+        { ...drafts[1], progress: 33 },
+      ],
+      total: 7,
+    });
     expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
       where: { userId: USER_ID, organizationId: ORG_ID, status: 'draft' },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+      take: 2,
+      skip: 4,
       omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
     });
+    expect(mockPrisma.report.count).toHaveBeenCalledWith({ where: { userId: USER_ID, organizationId: ORG_ID, status: 'draft' } });
   });
 
   // The bug: without this omit, every draft in the list paid the cost of its

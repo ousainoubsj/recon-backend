@@ -27,11 +27,34 @@ export async function createNotification(userId, entry) {
   }
 }
 
-export async function listNotifications(userId) {
-  return prisma.notification.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-  });
+/**
+ * One page of the user's notifications, newest first. `types` keeps only those types and `excludeTypes` drops
+ * them (the frontend's catch-all tab is "everything not in the other tabs"). Paged by cursor rather than offset,
+ * so a notification arriving between pages doesn't repeat a row. countsByType covers all of the user's
+ * notifications, for the tab badges.
+ */
+export async function listNotifications(userId, { types, excludeTypes, limit = 20, cursor } = {}) {
+  const typeFilter = types?.length ? { type: { in: types } } : excludeTypes?.length ? { type: { notIn: excludeTypes } } : {};
+  const where = { userId, ...typeFilter };
+  const [page, total, byType] = await Promise.all([
+    prisma.notification.findMany({
+      where,
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      // One extra row says whether another page exists without a second count.
+      take: limit + 1,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    }),
+    prisma.notification.count({ where }),
+    prisma.notification.groupBy({ by: ['type'], where: { userId }, _count: { _all: true } }),
+  ]);
+
+  const items = page.slice(0, limit);
+  return {
+    items,
+    total,
+    nextCursor: page.length > limit ? items[items.length - 1].id : null,
+    countsByType: Object.fromEntries(byType.map((group) => [group.type, group._count._all])),
+  };
 }
 
 export async function countUnread(userId) {

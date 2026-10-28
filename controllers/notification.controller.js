@@ -1,8 +1,15 @@
 import * as notificationService from '../services/notificationService.js';
+import { parsePositiveInt } from '../utils/queryParams.js';
 
 export const listNotifications = async (req, res) => {
-  const notifications = await notificationService.listNotifications(req.session.user.id);
-  res.json(notifications);
+  const { types, excludeTypes, limit, cursor } = req.query;
+  const page = await notificationService.listNotifications(req.session.user.id, {
+    types,
+    excludeTypes,
+    limit: parsePositiveInt(limit, 100),
+    cursor,
+  });
+  res.json(page);
 };
 
 export const getUnreadCount = async (req, res) => {

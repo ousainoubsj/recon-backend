@@ -90,7 +90,10 @@ export const updateDraft = async (req, res) => {
 };
 
 export const listDrafts = async (req, res) => {
-  const drafts = await reportService.listDrafts(req.session.user.id);
+  const drafts = await reportService.listDrafts(req.session.user.id, {
+    limit: parsePositiveInt(req.query.limit, 100),
+    offset: parsePositiveInt(req.query.offset),
+  });
   res.json(drafts);
 };
 

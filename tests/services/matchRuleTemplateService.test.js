@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 const mockPrisma = {
   matchRuleTemplate: {
     findMany: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
     findFirst: jest.fn(),
     create: jest.fn(),
     deleteMany: jest.fn(),
@@ -18,7 +19,7 @@ const mockLogAuditSafely = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/auditLogService.js', () => ({ logAuditSafely: mockLogAuditSafely }));
 
 const { listTemplates, createTemplate, deleteTemplate, recordUsage } = await import('../../services/matchRuleTemplateService.js');
-const { NotFoundError, AuthorisationError } = await import('../../errors.js');
+const { ConflictError, NotFoundError, AuthorisationError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
 const ORG_ID = 'org-1';
@@ -36,7 +37,7 @@ describe('listTemplates', () => {
 
     const result = await listTemplates(USER_ID);
 
-    expect(result).toBe(templates);
+    expect(result).toEqual(templates);
     expect(mockPrisma.matchRuleTemplate.findMany).toHaveBeenCalledWith({
       where: { organizationId: ORG_ID },
       orderBy: { name: 'asc' },
@@ -66,7 +67,26 @@ describe('listTemplates', () => {
   });
 });
 
+describe('listTemplates — legacy rules', () => {
+  it("returns a template saved with the retired 'skip' as flag-all", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
+    mockPrisma.matchRuleTemplate.findMany.mockResolvedValue([{ id: 't1', config: { amountTolerance: 1, duplicateHandling: 'skip' } }]);
+
+    const [template] = await listTemplates(USER_ID);
+
+    expect(template.config).toEqual({ amountTolerance: 1, duplicateHandling: 'flag-all' });
+  });
+});
+
 describe('createTemplate', () => {
+  it('refuses a new template once the org has 100, without creating it', async () => {
+    mockPrisma.matchRuleTemplate.count.mockResolvedValueOnce(100);
+
+    await expect(createTemplate(USER_ID, { name: 'One too many', config: {}, sections: {} })).rejects.toBeInstanceOf(ConflictError);
+    expect(mockPrisma.matchRuleTemplate.count).toHaveBeenCalledWith({ where: { organizationId: expect.any(String) } });
+    expect(mockPrisma.matchRuleTemplate.create).not.toHaveBeenCalled();
+  });
+
   it('creates a template scoped to the caller and their org', async () => {
     mockPrisma.matchRuleTemplate.create.mockResolvedValue({ id: 't1', name: 'Bank Recon Rules', description: null });
     const config = { amountTolerance: 0.5, dateToleranceDays: 1 };

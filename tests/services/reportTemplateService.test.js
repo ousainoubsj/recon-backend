@@ -3,6 +3,7 @@ import { jest } from '@jest/globals';
 const mockPrisma = {
   reportTemplate: {
     findMany: jest.fn(),
+    count: jest.fn().mockResolvedValue(0),
     create: jest.fn(),
     deleteMany: jest.fn(),
     findFirst: jest.fn(),
@@ -18,7 +19,7 @@ jest.unstable_mockModule('../../services/auditLogService.js', () => ({ logAuditS
 const { listTemplates, createTemplate, deleteTemplate, resolveSections, SECTION_KEYS } = await import(
   '../../services/reportTemplateService.js'
 );
-const { NotFoundError } = await import('../../errors.js');
+const { ConflictError, NotFoundError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
 const ORG_ID = 'org-1';
@@ -44,6 +45,14 @@ describe('listTemplates', () => {
 });
 
 describe('createTemplate', () => {
+  it('refuses a new template once the org has 100, without creating it', async () => {
+    mockPrisma.reportTemplate.count.mockResolvedValueOnce(100);
+
+    await expect(createTemplate(USER_ID, { name: 'One too many', config: {}, sections: {} })).rejects.toBeInstanceOf(ConflictError);
+    expect(mockPrisma.reportTemplate.count).toHaveBeenCalledWith({ where: { organizationId: expect.any(String) } });
+    expect(mockPrisma.reportTemplate.create).not.toHaveBeenCalled();
+  });
+
   it('creates an org-scoped, non-system template with default-filled sections', async () => {
     mockPrisma.reportTemplate.create.mockResolvedValue({
       id: 't1',

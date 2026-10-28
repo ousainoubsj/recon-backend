@@ -1,5 +1,5 @@
 import { prisma } from '../config/prisma.config.js';
-import { NotFoundError } from '../errors.js';
+import { ConflictError, NotFoundError } from '../errors.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
 import { withSubject } from '../utils/audit.js';
@@ -19,8 +19,14 @@ export async function listTemplates(userId) {
   });
 }
 
+// Templates are shown in pickers rather than paged lists, so the number an org can create is capped instead.
+const MAX_TEMPLATES_PER_ORG = 100;
+
 export async function createTemplate(userId, dto, { ip, userAgent } = {}) {
   const { organizationId } = await getUserMembership(userId);
+  if ((await prisma.reportTemplate.count({ where: { organizationId } })) >= MAX_TEMPLATES_PER_ORG) {
+    throw new ConflictError(`Template limit reached (${MAX_TEMPLATES_PER_ORG}). Delete one before creating another.`);
+  }
   const template = await prisma.reportTemplate.create({
     data: {
       organizationId,

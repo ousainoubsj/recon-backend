@@ -772,13 +772,14 @@ describe('GET /api/reports/exports', () => {
 
 describe('GET /api/reports/drafts', () => {
   it("returns the caller's drafts", async () => {
-    mockReportService.listDrafts.mockResolvedValue([{ id: '22222222-2222-4222-8222-222222222222' }]);
+    const page = { items: [{ id: '22222222-2222-4222-8222-222222222222' }], total: 1 };
+    mockReportService.listDrafts.mockResolvedValue(page);
 
-    const res = await request(app).get('/api/reports/drafts');
+    const res = await request(app).get('/api/reports/drafts?limit=500&offset=20');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: '22222222-2222-4222-8222-222222222222' }]);
-    expect(mockReportService.listDrafts).toHaveBeenCalledWith(USER_ID);
+    expect(res.body).toEqual(page);
+    expect(mockReportService.listDrafts).toHaveBeenCalledWith(USER_ID, { limit: 100, offset: 20 });
   });
 });
 
