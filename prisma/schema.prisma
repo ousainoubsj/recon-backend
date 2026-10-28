@@ -205,6 +205,9 @@ model Report {
   @@index([runDate(sort: Desc)], map: "idx_reports_run_date")
   @@index([userId, status], map: "idx_reports_user_status")
   @@index([organizationId, runDate], map: "idx_reports_org_rundate")
+  // Deleting a report or replacing a draft's file checks whether any other report still uses that upload.
+  @@index([fileAKey], map: "idx_reports_file_a_key")
+  @@index([fileBKey], map: "idx_reports_file_b_key")
   @@map("reports")
 }
 

@@ -2,11 +2,14 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate } from '../middleware/authenticate.js';
 import { requirePermission } from '../middleware/authorize.js';
-import { validate } from '../middleware/validate.js';
+import { validate, validateParams } from '../middleware/validate.js';
 import { catchAsync } from '../utils/catchAsync.js';
 import * as matchRuleTemplateController from '../controllers/matchRuleTemplate.controller.js';
 
 export const matchRuleTemplatesRouter = Router();
+
+// A malformed id is a 404 (validateParams), never a Prisma 500.
+const idParams = z.object({ id: z.string().uuid() });
 
 // Deliberately duplicated from routes/reports.js's matchRuleConfigSchema
 // rather than imported — importing from reports.js would transitively pull
@@ -54,6 +57,7 @@ matchRuleTemplatesRouter.delete(
   '/:id',
   authenticate,
   catchAsync(requirePermission('report', 'delete')),
+  validateParams(idParams),
   catchAsync(matchRuleTemplateController.deleteTemplate),
 );
 
@@ -61,5 +65,6 @@ matchRuleTemplatesRouter.post(
   '/:id/use',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   catchAsync(matchRuleTemplateController.recordUsage),
 );

@@ -80,11 +80,6 @@ export const getReportsTrend = async (req, res) => {
   res.json(trend);
 };
 
-export const saveReport = async (req, res) => {
-  const id = await reportService.saveReport(req.session.user.id, req.body, auditContext(req));
-  res.status(201).json({ id });
-};
-
 export const saveDraft = async (req, res) => {
   const draft = await reportService.saveDraft(req.session.user.id, req.body);
   res.status(201).json(draft);
@@ -98,11 +93,6 @@ export const updateDraft = async (req, res) => {
 export const listDrafts = async (req, res) => {
   const drafts = await reportService.listDrafts(req.session.user.id);
   res.json(drafts);
-};
-
-export const completeDraft = async (req, res) => {
-  const id = await reportService.completeDraft(req.session.user.id, req.params.id, req.body, auditContext(req));
-  res.status(200).json({ id });
 };
 
 export const getMappingPreview = async (req, res) => {

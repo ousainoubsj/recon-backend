@@ -45,12 +45,12 @@ beforeEach(() => {
 
 describe('GET /api/match-rule-templates', () => {
   it("lists the caller's templates", async () => {
-    mockMatchRuleTemplateService.listTemplates.mockResolvedValue([{ id: 't1' }]);
+    mockMatchRuleTemplateService.listTemplates.mockResolvedValue([{ id: '66666666-6666-4666-8666-666666666666' }]);
 
     const res = await request(app).get('/api/match-rule-templates');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 't1' }]);
+    expect(res.body).toEqual([{ id: '66666666-6666-4666-8666-666666666666' }]);
     expect(mockMatchRuleTemplateService.listTemplates).toHaveBeenCalledWith(USER_ID);
   });
 });
@@ -59,12 +59,12 @@ describe('POST /api/match-rule-templates', () => {
   const validBody = { name: 'Bank Recon Rules', config: { amountTolerance: 0.5, dateToleranceDays: 1 } };
 
   it('creates a template and returns 201', async () => {
-    mockMatchRuleTemplateService.createTemplate.mockResolvedValue({ id: 't1', name: 'Bank Recon Rules' });
+    mockMatchRuleTemplateService.createTemplate.mockResolvedValue({ id: '66666666-6666-4666-8666-666666666666', name: 'Bank Recon Rules' });
 
     const res = await request(app).post('/api/match-rule-templates').send(validBody);
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: 't1', name: 'Bank Recon Rules' });
+    expect(res.body).toEqual({ id: '66666666-6666-4666-8666-666666666666', name: 'Bank Recon Rules' });
     expect(mockMatchRuleTemplateService.createTemplate).toHaveBeenCalledWith(
       USER_ID,
       expect.objectContaining({ name: 'Bank Recon Rules', config: expect.objectContaining(validBody.config) }),
@@ -73,7 +73,7 @@ describe('POST /api/match-rule-templates', () => {
   });
 
   it("stores an old client's removed 'skip' policy as flag-all", async () => {
-    mockMatchRuleTemplateService.createTemplate.mockResolvedValue({ id: 't1' });
+    mockMatchRuleTemplateService.createTemplate.mockResolvedValue({ id: '66666666-6666-4666-8666-666666666666' });
 
     await request(app)
       .post('/api/match-rule-templates')
@@ -114,16 +114,16 @@ describe('DELETE /api/match-rule-templates/:id', () => {
   it('deletes the template and returns 204', async () => {
     mockMatchRuleTemplateService.deleteTemplate.mockResolvedValue(undefined);
 
-    const res = await request(app).delete('/api/match-rule-templates/t1');
+    const res = await request(app).delete('/api/match-rule-templates/66666666-6666-4666-8666-666666666666');
 
     expect(res.status).toBe(204);
-    expect(mockMatchRuleTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, 't1', { ip: expect.any(String), userAgent: null });
+    expect(mockMatchRuleTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, '66666666-6666-4666-8666-666666666666', { ip: expect.any(String), userAgent: null });
   });
 
   it("returns a 404 RFC 7807 error for another user's template", async () => {
     mockMatchRuleTemplateService.deleteTemplate.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).delete('/api/match-rule-templates/not-mine');
+    const res = await request(app).delete('/api/match-rule-templates/88888888-8888-4888-8888-888888888888');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
@@ -134,16 +134,16 @@ describe('POST /api/match-rule-templates/:id/use', () => {
   it('records usage and returns 204', async () => {
     mockMatchRuleTemplateService.recordUsage.mockResolvedValue(undefined);
 
-    const res = await request(app).post('/api/match-rule-templates/t1/use');
+    const res = await request(app).post('/api/match-rule-templates/66666666-6666-4666-8666-666666666666/use');
 
     expect(res.status).toBe(204);
-    expect(mockMatchRuleTemplateService.recordUsage).toHaveBeenCalledWith(USER_ID, 't1');
+    expect(mockMatchRuleTemplateService.recordUsage).toHaveBeenCalledWith(USER_ID, '66666666-6666-4666-8666-666666666666');
   });
 
   it("returns a 404 RFC 7807 error for another user's template", async () => {
     mockMatchRuleTemplateService.recordUsage.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).post('/api/match-rule-templates/not-mine/use');
+    const res = await request(app).post('/api/match-rule-templates/88888888-8888-4888-8888-888888888888/use');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');

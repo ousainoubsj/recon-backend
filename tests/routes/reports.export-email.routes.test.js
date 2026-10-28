@@ -85,7 +85,7 @@ const ALL_SECTIONS = {
 };
 
 const sampleReport = {
-  id: 'r1',
+  id: '11111111-1111-4111-8111-111111111111',
   organizationId: 'org-1',
   name: 'June Bank Reconciliation',
   fileAName: 'a.csv',
@@ -113,16 +113,16 @@ describe('POST /api/reports/:id/export', () => {
   it('returns an XLSX workbook by default and records the export', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
-    const res = await request(app).post('/api/reports/r1/export').send({});
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({});
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toContain('spreadsheetml.sheet');
-    expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.xlsx');
+    expect(res.headers['content-disposition']).toContain('reconciliation_report_11111111-1111-4111-8111-111111111111.xlsx');
     expect(Number(res.headers['content-length'])).toBeGreaterThan(0);
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.export',
       entityType: 'report',
-      entityId: 'r1',
+      entityId: '11111111-1111-4111-8111-111111111111',
       status: 'info',
       ip: expect.any(String),
       userAgent: null,
@@ -130,7 +130,7 @@ describe('POST /api/reports/:id/export', () => {
     });
     expect(mockRecordExport).toHaveBeenCalledWith(
       expect.objectContaining({
-        reportId: 'r1',
+        reportId: '11111111-1111-4111-8111-111111111111',
         userId: USER_ID,
         organizationId: 'org-1',
         format: 'xlsx',
@@ -144,11 +144,11 @@ describe('POST /api/reports/:id/export', () => {
   it('returns a real PDF when format is "pdf"', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
-    const res = await request(app).post('/api/reports/r1/export').send({ format: 'pdf' });
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({ format: 'pdf' });
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('application/pdf');
-    expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.pdf');
+    expect(res.headers['content-disposition']).toContain('reconciliation_report_11111111-1111-4111-8111-111111111111.pdf');
     expect(Buffer.from(res.body).subarray(0, 4).toString()).toBe('%PDF');
     expect(mockRecordExport).toHaveBeenCalledWith(
       expect.objectContaining({ format: 'pdf', source: 'manual', status: 'success' }),
@@ -160,13 +160,13 @@ describe('POST /api/reports/:id/export', () => {
     // real TypeError — exercising the actual failure path instead of mocking it.
     mockReportService.getReport.mockResolvedValue({ ...sampleReport, rows: undefined });
 
-    const res = await request(app).post('/api/reports/r1/export').send({});
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({});
 
     expect(res.status).toBe(500);
     expect(res.body.type).toBe('https://recon.app/errors/internal-error');
     expect(mockRecordExport).toHaveBeenCalledWith(
       expect.objectContaining({
-        reportId: 'r1',
+        reportId: '11111111-1111-4111-8111-111111111111',
         userId: USER_ID,
         organizationId: 'org-1',
         format: 'xlsx',
@@ -181,7 +181,7 @@ describe('POST /api/reports/:id/export', () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
     await request(app)
-      .post('/api/reports/r1/export')
+      .post('/api/reports/11111111-1111-4111-8111-111111111111/export')
       .send({ templateId: '123e4567-e89b-12d3-a456-426614174000', sections: { summary: false } });
 
     expect(mockResolveSections).toHaveBeenCalledWith({
@@ -192,7 +192,7 @@ describe('POST /api/reports/:id/export', () => {
   });
 
   it('rejects an invalid format with a 422', async () => {
-    const res = await request(app).post('/api/reports/r1/export').send({ format: 'csv' });
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({ format: 'csv' });
 
     expect(res.status).toBe(422);
     expect(mockReportService.getReport).not.toHaveBeenCalled();
@@ -201,7 +201,7 @@ describe('POST /api/reports/:id/export', () => {
   it('returns the file but skips audit log, R2 upload, and recordExport when preview is true', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
-    const res = await request(app).post('/api/reports/r1/export').send({ format: 'pdf', preview: true });
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({ format: 'pdf', preview: true });
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('application/pdf');
@@ -213,7 +213,7 @@ describe('POST /api/reports/:id/export', () => {
   it('does not record a failed export when preview is true and building the file throws', async () => {
     mockReportService.getReport.mockResolvedValue({ ...sampleReport, rows: undefined });
 
-    const res = await request(app).post('/api/reports/r1/export').send({ preview: true });
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({ preview: true });
 
     expect(res.status).toBe(500);
     expect(mockRecordExport).not.toHaveBeenCalled();
@@ -222,7 +222,7 @@ describe('POST /api/reports/:id/export', () => {
   it('returns a 404 RFC 7807 error when the report is not found', async () => {
     mockReportService.getReport.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).post('/api/reports/missing/export').send({});
+    const res = await request(app).post('/api/reports/33333333-3333-4333-8333-333333333333/export').send({});
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
@@ -233,7 +233,7 @@ describe('POST /api/reports/:id/export', () => {
     mockResolveSections.mockRejectedValue(new NotFoundError());
 
     const res = await request(app)
-      .post('/api/reports/r1/export')
+      .post('/api/reports/11111111-1111-4111-8111-111111111111/export')
       .send({ templateId: '123e4567-e89b-12d3-a456-426614174000' });
 
     expect(res.status).toBe(404);
@@ -242,15 +242,15 @@ describe('POST /api/reports/:id/export', () => {
   it('persists the generated file to R2 and passes the resulting key to recordExport', async () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
-    await request(app).post('/api/reports/r1/export').send({});
+    await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({});
 
     expect(mockUploadExportFile).toHaveBeenCalledWith(
-      expect.stringMatching(/^exports\/org-1\/r1\/.+\.xlsx$/),
+      expect.stringMatching(/^exports\/org-1\/11111111-1111-4111-8111-111111111111\/.+\.xlsx$/),
       expect.any(Buffer),
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
     expect(mockRecordExport).toHaveBeenCalledWith(
-      expect.objectContaining({ fileKey: expect.stringMatching(/^exports\/org-1\/r1\/.+\.xlsx$/) }),
+      expect.objectContaining({ fileKey: expect.stringMatching(/^exports\/org-1\/11111111-1111-4111-8111-111111111111\/.+\.xlsx$/) }),
     );
   });
 
@@ -258,7 +258,7 @@ describe('POST /api/reports/:id/export', () => {
     mockReportService.getReport.mockResolvedValue(sampleReport);
     mockUploadExportFile.mockRejectedValueOnce(new Error('R2 unreachable'));
 
-    const res = await request(app).post('/api/reports/r1/export').send({});
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/export').send({});
 
     expect(res.status).toBe(200);
     expect(mockRecordExport).toHaveBeenCalledWith(expect.objectContaining({ fileKey: null, status: 'success' }));
@@ -268,31 +268,31 @@ describe('POST /api/reports/:id/export', () => {
 describe('GET /api/reports/exports/:exportId/download', () => {
   it('serves the stored file straight from R2 when the export has a fileKey', async () => {
     mockGetExportForDownload.mockResolvedValue({
-      reportId: 'r1',
+      reportId: '11111111-1111-4111-8111-111111111111',
       format: 'xlsx',
       templateId: null,
-      fileKey: 'exports/org-1/r1/abc.xlsx',
+      fileKey: 'exports/org-1/11111111-1111-4111-8111-111111111111/abc.xlsx',
     });
     mockDownloadFromR2.mockResolvedValue(Buffer.from('cached bytes'));
 
-    const res = await request(app).get('/api/reports/exports/exp-1/download');
+    const res = await request(app).get('/api/reports/exports/55555555-5555-4555-8555-555555555555/download');
 
     expect(res.status).toBe(200);
-    expect(mockDownloadFromR2).toHaveBeenCalledWith('exports/org-1/r1/abc.xlsx');
+    expect(mockDownloadFromR2).toHaveBeenCalledWith('exports/org-1/11111111-1111-4111-8111-111111111111/abc.xlsx');
     expect(mockReportService.getReport).not.toHaveBeenCalled();
-    expect(res.headers['content-disposition']).toContain('reconciliation_report_r1.xlsx');
+    expect(res.headers['content-disposition']).toContain('reconciliation_report_11111111-1111-4111-8111-111111111111.xlsx');
   });
 
   it('regenerates without persisting a new row when the export has no fileKey', async () => {
     mockGetExportForDownload.mockResolvedValue({
-      reportId: 'r1',
+      reportId: '11111111-1111-4111-8111-111111111111',
       format: 'pdf',
       templateId: null,
       fileKey: null,
     });
     mockReportService.getReport.mockResolvedValue(sampleReport);
 
-    const res = await request(app).get('/api/reports/exports/exp-1/download');
+    const res = await request(app).get('/api/reports/exports/55555555-5555-4555-8555-555555555555/download');
 
     expect(res.status).toBe(200);
     expect(res.headers['content-type']).toBe('application/pdf');
@@ -303,7 +303,7 @@ describe('GET /api/reports/exports/:exportId/download', () => {
   it('returns a 404 RFC 7807 error when the export does not exist or is not in the org', async () => {
     mockGetExportForDownload.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).get('/api/reports/exports/missing/download');
+    const res = await request(app).get('/api/reports/exports/33333333-3333-4333-8333-333333333333/download');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
@@ -312,16 +312,16 @@ describe('GET /api/reports/exports/:exportId/download', () => {
 
 describe('DELETE /api/reports/exports/:exportId', () => {
   it('deletes the export and returns 204', async () => {
-    const res = await request(app).delete('/api/reports/exports/exp-1');
+    const res = await request(app).delete('/api/reports/exports/55555555-5555-4555-8555-555555555555');
 
     expect(res.status).toBe(204);
-    expect(mockDeleteExport).toHaveBeenCalledWith(USER_ID, 'exp-1', { ip: expect.any(String), userAgent: null });
+    expect(mockDeleteExport).toHaveBeenCalledWith(USER_ID, '55555555-5555-4555-8555-555555555555', { ip: expect.any(String), userAgent: null });
   });
 
   it('returns a 404 RFC 7807 error when the export does not exist or is not in the org', async () => {
     mockDeleteExport.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).delete('/api/reports/exports/missing');
+    const res = await request(app).delete('/api/reports/exports/33333333-3333-4333-8333-333333333333');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
@@ -497,7 +497,7 @@ describe('POST /api/reports/:id/email', () => {
     mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
     const res = await request(app)
-      .post('/api/reports/r1/email')
+      .post('/api/reports/11111111-1111-4111-8111-111111111111/email')
       .send({ to: ['analyst@example.com'] });
 
     expect(res.status).toBe(202);
@@ -508,7 +508,7 @@ describe('POST /api/reports/:id/email', () => {
     expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
       action: 'report.email',
       entityType: 'report',
-      entityId: 'r1',
+      entityId: '11111111-1111-4111-8111-111111111111',
       status: 'info',
       ip: expect.any(String),
       userAgent: null,
@@ -521,7 +521,7 @@ describe('POST /api/reports/:id/email', () => {
     mockSend.mockResolvedValue({ data: { id: 'email-1' }, error: null });
 
     const res = await request(app)
-      .post('/api/reports/r1/email')
+      .post('/api/reports/11111111-1111-4111-8111-111111111111/email')
       .send({ to: ['analyst@example.com', 'manager@example.com'] });
 
     expect(res.status).toBe(202);
@@ -531,14 +531,14 @@ describe('POST /api/reports/:id/email', () => {
   });
 
   it('rejects an invalid recipient address with a 422 and never calls Resend', async () => {
-    const res = await request(app).post('/api/reports/r1/email').send({ to: ['not-an-email'] });
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/email').send({ to: ['not-an-email'] });
 
     expect(res.status).toBe(422);
     expect(mockSend).not.toHaveBeenCalled();
   });
 
   it('rejects an empty recipient list with a 422', async () => {
-    const res = await request(app).post('/api/reports/r1/email').send({ to: [] });
+    const res = await request(app).post('/api/reports/11111111-1111-4111-8111-111111111111/email').send({ to: [] });
 
     expect(res.status).toBe(422);
     expect(mockSend).not.toHaveBeenCalled();
@@ -548,7 +548,7 @@ describe('POST /api/reports/:id/email', () => {
     mockReportService.getReport.mockRejectedValue(new NotFoundError());
 
     const res = await request(app)
-      .post('/api/reports/missing/email')
+      .post('/api/reports/33333333-3333-4333-8333-333333333333/email')
       .send({ to: ['analyst@example.com'] });
 
     expect(res.status).toBe(404);

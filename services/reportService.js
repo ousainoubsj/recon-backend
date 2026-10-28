@@ -74,9 +74,8 @@ async function withOrgToleranceDefaults(organizationId, config) {
 // with a different config must still get the enforced config applied, not
 // whatever they submitted. Admins always pass their own config through
 // untouched (they're the ones who set the policy). Only used at the two
-// points where a reconciliation actually executes (completeDraft,
-// runReconciliation) — saveDraft/saveReport aren't the authoritative "this
-// is what ran" step, so they're left as before.
+// point where a reconciliation actually executes (enqueueReconciliationRun) —
+// saveDraft isn't the authoritative "this is what ran" step, so it's left as before.
 async function resolveRunConfig(organizationId, role, config) {
   if (role !== 'admin') {
     const org = await prisma.organization.findFirst({
@@ -163,26 +162,43 @@ const VALID_TAGS = ['bank', 'supplier', 'year_end'];
 // Every org-wide figure counts a reconciliation once: a report superseded by a completed rerun is left out.
 const CURRENT_COMPLETED = { status: 'completed', supersededById: null };
 
-function getAllTimeCompletedReports(organizationId) {
-  return prisma.report.findMany({
-    where: { organizationId, ...CURRENT_COMPLETED },
-    select: {
-      runDate: true,
-      totalRows: true,
-      matchedCount: true,
-      unmatchedCount: true,
-      mismatchedCount: true,
-      duplicateCount: true,
-      totalBreakValue: true,
-      fileAName: true,
-      fileBName: true,
-    },
-  });
+// The org's current completed runs (superseded runs excluded), for the dashboard aggregates below.
+function currentCompletedWhere(organizationId) {
+  return Prisma.sql`organization_id = ${organizationId} AND status = 'completed' AND superseded_by_id IS NULL`;
 }
 
-// amountDiff is computed here rather than via a Postgres GENERATED column —
-// see the note at the top of prisma/schema.prisma. Shared by saveReport and
-// completeDraft since both bulk-insert rows the same way.
+// Totals per named window, all in one query. A window is a [start, end) runDate range, or null for all time.
+async function aggregateCompletedWindows(organizationId, windows) {
+  const columns = Object.entries(windows).map(([name, range]) => {
+    const filter = range ? Prisma.sql`FILTER (WHERE run_date >= ${range.start} AND run_date < ${range.end})` : Prisma.empty;
+    const as = (field) => Prisma.raw(`"${name}.${field}"`);
+    return Prisma.sql`
+      COUNT(*) ${filter} AS ${as('count')},
+      COALESCE(SUM(total_rows) ${filter}, 0)::bigint AS ${as('totalRows')},
+      COALESCE(SUM(matched_count) ${filter}, 0)::bigint AS ${as('matched')},
+      COALESCE(SUM(unmatched_count + mismatched_count) ${filter}, 0)::bigint AS ${as('unmatchedTransactions')},
+      COALESCE(SUM(total_break_value) ${filter}, 0) AS ${as('totalBreakValue')}`;
+  });
+  const [row] = await prisma.$queryRaw`SELECT ${Prisma.join(columns)} FROM reports WHERE ${currentCompletedWhere(organizationId)}`;
+
+  return Object.fromEntries(
+    Object.keys(windows).map((name) => {
+      const totalRows = Number(row[`${name}.totalRows`]);
+      const matched = Number(row[`${name}.matched`]);
+      return [
+        name,
+        {
+          count: Number(row[`${name}.count`]),
+          totalTransactions: totalRows,
+          avgMatchRate: totalRows > 0 ? (matched / totalRows) * 100 : 0,
+          unmatchedTransactions: Number(row[`${name}.unmatchedTransactions`]),
+          totalBreakValue: new Prisma.Decimal(row[`${name}.totalBreakValue`]).toNumber(),
+        },
+      ];
+    }),
+  );
+}
+
 // Per-status values for Results' stat tiles, summed in SQL once at completion rather than on every page load.
 // Stored as JSON numbers, the shape every existing report already has.
 async function computeValueBreakdown(tx, reportId) {
@@ -216,42 +232,6 @@ function withDraftProgress(report) {
   return { ...report, progress };
 }
 
-function reportRowsForInsert(reportId, rows) {
-  return rows.map((r) => ({
-    reportId,
-    ref: r.ref,
-    status: r.status,
-    amountA: r.amountA,
-    amountB: r.amountB,
-    amountDiff: r.amountA != null && r.amountB != null ? new Prisma.Decimal(r.amountA).minus(r.amountB) : null,
-    dateA: r.dateA ? new Date(r.dateA) : null,
-    dateB: r.dateB ? new Date(r.dateB) : null,
-    rawA: r.rawA ?? undefined,
-    rawB: r.rawB ?? undefined,
-    breakReason: r.breakReason ?? null,
-  }));
-}
-
-// A single createMany becomes a single INSERT with one bound parameter per
-// column per row — Postgres caps a query at 65535 total bound parameters, so
-// a large-enough file pair (e.g. thousands of output rows across a wide
-// source file) can blow past that limit in one shot and throw. Batching
-// keeps every INSERT under the cap; batch size is derived from the actual
-// row shape (not hardcoded) so it self-adjusts if reportRowsForInsert's
-// field count ever changes. Multiple createMany calls inside the same `tx`
-// stay within the caller's transaction, so this is still all-or-nothing.
-const POSTGRES_MAX_QUERY_PARAMS = 65535;
-
-async function insertReportRowsInBatches(tx, reportId, rows) {
-  const records = reportRowsForInsert(reportId, rows);
-  if (records.length === 0) return;
-  const fieldsPerRow = Object.keys(records[0]).length;
-  const batchSize = Math.floor(POSTGRES_MAX_QUERY_PARAMS / fieldsPerRow);
-  for (let i = 0; i < records.length; i += batchSize) {
-    await tx.reportRow.createMany({ data: records.slice(i, i + batchSize) });
-  }
-}
-
 // Atomic per-year counter backing Report.sequenceNumber — the upsert's
 // `update` branch is a single UPDATE statement guarded by the year's row
 // lock, so concurrent completions in the same transaction-per-request model
@@ -265,10 +245,8 @@ async function nextSequenceNumber(tx, year, organizationId) {
   return seq.lastValue;
 }
 
-// Shared by completeDraft (legacy client-computed rows) and
-// executeReconciliationRun (server-computed via the matching engine) — both
-// promote a draft into a completed report the same way, just from different
-// sources of `rows`. `dto.name` must already be resolved by the caller (e.g.
+// Promotes a draft into a completed report with the rows executeReconciliationRun computed.
+// `dto.name` must already be resolved by the caller (e.g.
 // `body.name ?? draft.name`) — this function doesn't know about the draft's
 // prior name.
 //
@@ -363,80 +341,6 @@ async function supersedeNewestInChain(tx, sourceReportId, rerunId) {
   throw new Error(`Supersede chain from report ${sourceReportId} exceeds ${MAX_SUPERSEDE_HOPS} runs`);
 }
 
-function aggregatePeriod(reports) {
-  const count = reports.length;
-  const totalRows = reports.reduce((sum, r) => sum + r.totalRows, 0);
-  const matchedCount = reports.reduce((sum, r) => sum + r.matchedCount, 0);
-  const unmatchedTransactions = reports.reduce((sum, r) => sum + r.unmatchedCount + r.mismatchedCount, 0);
-  const totalBreakValue = reports.reduce((sum, r) => sum.plus(r.totalBreakValue ?? 0), new Prisma.Decimal(0)).toNumber();
-  const avgMatchRate = totalRows > 0 ? (matchedCount / totalRows) * 100 : 0;
-
-  return { count, totalTransactions: totalRows, avgMatchRate, unmatchedTransactions, totalBreakValue };
-}
-
-/**
- * @param {string} userId
- * @param {import('../types/recon.js').SaveReportDto} dto
- * @returns {Promise<string>} the new report's id
- */
-export async function saveReport(userId, dto, { ip, userAgent } = {}) {
-  const { organizationId } = await getUserMembership(userId);
-  const config = await withOrgToleranceDefaults(organizationId, dto.config);
-
-  const report = await prisma.$transaction(async (tx) => {
-    // This path always creates an already-'completed' report (the schema
-    // default), so it always needs a fresh sequence number — unlike
-    // persistCompletedRun, there's no draft/retry history to check first.
-    const year = new Date().getUTCFullYear();
-    const sequenceNumber = await nextSequenceNumber(tx, year, organizationId);
-
-    // 1. Insert summary row
-    const report = await tx.report.create({
-      data: {
-        userId,
-        organizationId,
-        name: dto.name ?? null,
-        fileAName: dto.fileAName,
-        fileBName: dto.fileBName,
-        totalRows: dto.summary.total,
-        matchedCount: dto.summary.matched,
-        unmatchedCount: dto.summary.unmatchedA + dto.summary.unmatchedB,
-        mismatchedCount: dto.summary.mismatched,
-        duplicateCount: dto.summary.duplicates,
-        totalBreakValue: dto.summary.totalBreakValue,
-        amountTolerance: config.amountTolerance,
-        dateToleranceDays: config.dateToleranceDays ?? null,
-        config,
-        sequenceYear: year,
-        sequenceNumber,
-      },
-    });
-
-    // 2. Bulk-insert rows, batched to stay under Postgres's per-query
-    // parameter limit (see insertReportRowsInBatches).
-    await insertReportRowsInBatches(tx, report.id, dto.rows);
-
-    return report;
-  });
-
-  await logAuditSafely(userId, {
-    action: 'report.create',
-    entityType: 'report',
-    entityId: report.id,
-    ip,
-    userAgent,
-    metadata: withSubject(
-      {
-        filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
-        matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
-      },
-      reportSubject(report),
-    ),
-  });
-
-  return report.id;
-}
-
 // History includes both completed and failed runs (a failed run is still a
 // real, persisted attempt worth showing up in the log) — drafts never
 // appear here regardless. `status`, when given, narrows to just that one
@@ -527,35 +431,17 @@ export async function listReports(
 // All-time totals for the dashboard's headline stat cards (Total
 // Reconciliations, Avg Match Rate, Unmatched Transactions, Total Break
 // Value), each paired with a deltaPercent trend still measured current vs
-// previous calendar month — aggregated in JS over Report rows (one per run,
-// so cheap) rather than a SQL-side aggregate, matching this codebase's
-// existing preference for JS-side math (see amountDiff in saveReport above).
+// previous calendar month — every window summed in one SQL query.
 export async function getReportsSummary(userId) {
   const { organizationId } = await getUserMembership(userId);
   const current = monthRange(0);
   const previous = monthRange(1);
 
-  const [allTimeReports, monthReports] = await Promise.all([
-    getAllTimeCompletedReports(organizationId),
-    prisma.report.findMany({
-      where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: previous.start, lt: current.end } },
-      select: {
-        runDate: true,
-        totalRows: true,
-        matchedCount: true,
-        unmatchedCount: true,
-        mismatchedCount: true,
-        totalBreakValue: true,
-      },
-    }),
-  ]);
-
-  const currentMonthReports = monthReports.filter((r) => r.runDate >= current.start);
-  const previousMonthReports = monthReports.filter((r) => r.runDate >= previous.start && r.runDate < previous.end);
-
-  const allTimeStats = aggregatePeriod(allTimeReports);
-  const currentMonthStats = aggregatePeriod(currentMonthReports);
-  const previousMonthStats = aggregatePeriod(previousMonthReports);
+  const {
+    allTime: allTimeStats,
+    currentMonth: currentMonthStats,
+    previousMonth: previousMonthStats,
+  } = await aggregateCompletedWindows(organizationId, { allTime: null, currentMonth: current, previousMonth: previous });
 
   // Before this month's first completed run, currentMonthStats is all
   // zeros, which against any nonzero prior-month baseline would compute as
@@ -599,7 +485,7 @@ export async function getReportsSummary(userId) {
 // reconciliation volume over the selected window, plus an all-time category
 // breakdown (matches ChartsOverview.tsx's "Breakdown by Category (All
 // Time)") that's independent of the months selector. unmatchedCount already
-// merges unmatched_a + unmatched_b at save time (see saveReport above), so
+// merges unmatched_a + unmatched_b at completion (persistCompletedRun), so
 // the category breakdown here is a 4-way split (Matched / Mismatched /
 // Unmatched / Duplicates), not the 5-way split that would need a
 // per-ReportRow query.
@@ -607,46 +493,44 @@ export async function getReportsTrend(userId, { months = 6 } = {}) {
   const { organizationId } = await getUserMembership(userId);
   const { start } = monthRange(months - 1);
 
-  const [reports, allTimeReports] = await Promise.all([
-    prisma.report.findMany({
-      where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: start } },
-      select: {
-        runDate: true,
-        totalRows: true,
-        matchedCount: true,
-        unmatchedCount: true,
-        mismatchedCount: true,
-        duplicateCount: true,
-      },
-    }),
-    getAllTimeCompletedReports(organizationId),
+  // run_date is stored in UTC, so date_trunc's month is the UTC month the buckets below are keyed by.
+  const [monthly, [categories]] = await Promise.all([
+    prisma.$queryRaw`
+      SELECT
+        to_char(date_trunc('month', run_date), 'YYYY-MM') AS month,
+        COUNT(*)::int AS count,
+        COALESCE(SUM(total_rows), 0)::bigint AS "totalRows",
+        COALESCE(SUM(matched_count), 0)::bigint AS matched
+      FROM reports
+      WHERE ${currentCompletedWhere(organizationId)} AND run_date >= ${start}
+      GROUP BY 1`,
+    prisma.$queryRaw`
+      SELECT
+        COALESCE(SUM(matched_count), 0)::bigint AS matched,
+        COALESCE(SUM(mismatched_count), 0)::bigint AS mismatched,
+        COALESCE(SUM(unmatched_count), 0)::bigint AS unmatched,
+        COALESCE(SUM(duplicate_count), 0)::bigint AS duplicates
+      FROM reports
+      WHERE ${currentCompletedWhere(organizationId)}`,
   ]);
-
-  const buckets = new Map();
-  for (let i = months - 1; i >= 0; i--) {
-    const { start: bucketStart } = monthRange(i);
-    const key = `${bucketStart.getUTCFullYear()}-${String(bucketStart.getUTCMonth() + 1).padStart(2, '0')}`;
-    buckets.set(key, []);
-  }
-
-  for (const report of reports) {
-    const key = `${report.runDate.getUTCFullYear()}-${String(report.runDate.getUTCMonth() + 1).padStart(2, '0')}`;
-    buckets.get(key)?.push(report);
-  }
+  const byMonth = new Map(monthly.map((m) => [m.month, m]));
 
   const matchRateSeries = [];
   const volumeSeries = [];
-  for (const [month, monthReports] of buckets) {
-    const stats = aggregatePeriod(monthReports);
-    matchRateSeries.push({ month, value: stats.avgMatchRate });
-    volumeSeries.push({ month, value: stats.count });
+  for (let i = months - 1; i >= 0; i--) {
+    const { start: bucketStart } = monthRange(i);
+    const month = `${bucketStart.getUTCFullYear()}-${String(bucketStart.getUTCMonth() + 1).padStart(2, '0')}`;
+    const stats = byMonth.get(month);
+    const totalRows = Number(stats?.totalRows ?? 0);
+    matchRateSeries.push({ month, value: totalRows > 0 ? (Number(stats.matched) / totalRows) * 100 : 0 });
+    volumeSeries.push({ month, value: stats?.count ?? 0 });
   }
 
   const categoryBreakdown = {
-    matched: allTimeReports.reduce((sum, r) => sum + r.matchedCount, 0),
-    mismatched: allTimeReports.reduce((sum, r) => sum + r.mismatchedCount, 0),
-    unmatched: allTimeReports.reduce((sum, r) => sum + r.unmatchedCount, 0),
-    duplicates: allTimeReports.reduce((sum, r) => sum + r.duplicateCount, 0),
+    matched: Number(categories.matched),
+    mismatched: Number(categories.mismatched),
+    unmatched: Number(categories.unmatched),
+    duplicates: Number(categories.duplicates),
   };
 
   return { matchRateSeries, volumeSeries, categoryBreakdown };
@@ -659,26 +543,11 @@ export async function getReportsTrend(userId, { months = 6 } = {}) {
 export async function getHistoryStats(userId) {
   const { organizationId } = await getUserMembership(userId);
 
-  const allTimeStats = aggregatePeriod(await getAllTimeCompletedReports(organizationId));
-
-  const last30 = dayRange(0, 30);
-  const prior30 = dayRange(30, 30);
-  const recentReports = await prisma.report.findMany({
-    where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: prior30.start, lt: last30.end } },
-    select: {
-      runDate: true,
-      totalRows: true,
-      matchedCount: true,
-      unmatchedCount: true,
-      mismatchedCount: true,
-      totalBreakValue: true,
-    },
-  });
-
-  const currentStats = aggregatePeriod(recentReports.filter((r) => r.runDate >= last30.start));
-  const previousStats = aggregatePeriod(
-    recentReports.filter((r) => r.runDate >= prior30.start && r.runDate < prior30.end),
-  );
+  const {
+    allTime: allTimeStats,
+    current: currentStats,
+    previous: previousStats,
+  } = await aggregateCompletedWindows(organizationId, { allTime: null, current: dayRange(0, 30), previous: dayRange(30, 30) });
 
   return {
     totalReconciliations: {
@@ -701,27 +570,13 @@ export async function getHistoryStats(userId) {
 }
 
 // services/weeklyDigestService.js's per-org content — current-vs-prior 7-day
-// window, same "one query spanning both windows, filter in JS" shape as
-// getHistoryStats above. Takes organizationId directly (not userId +
+// window, summed in one query like getHistoryStats above. Takes organizationId directly (not userId +
 // getUserMembership) since the digest job already has every org's id
 // resolved before calling this — it isn't running inside a user request.
 export async function getWeeklyDigestStats(organizationId) {
   const current = dayRange(0, 7);
   const prior = dayRange(7, 7);
-  const reports = await prisma.report.findMany({
-    where: { organizationId, ...CURRENT_COMPLETED, runDate: { gte: prior.start, lt: current.end } },
-    select: {
-      runDate: true,
-      totalRows: true,
-      matchedCount: true,
-      unmatchedCount: true,
-      mismatchedCount: true,
-      totalBreakValue: true,
-    },
-  });
-
-  const currentStats = aggregatePeriod(reports.filter((r) => r.runDate >= current.start));
-  const priorStats = aggregatePeriod(reports.filter((r) => r.runDate >= prior.start && r.runDate < prior.end));
+  const { current: currentStats, prior: priorStats } = await aggregateCompletedWindows(organizationId, { current, prior });
 
   return { current: currentStats, prior: priorStats, weekStart: current.start, weekEnd: current.end };
 }
@@ -740,17 +595,24 @@ const MATCH_RATE_BUCKETS = [
 
 export async function getMatchRateDistribution(userId) {
   const { organizationId } = await getUserMembership(userId);
-  const reports = await getAllTimeCompletedReports(organizationId);
-  const failedCount = await prisma.report.count({ where: { organizationId, status: 'failed' } });
+  const [[rates], failedCount] = await Promise.all([
+    prisma.$queryRaw`
+      SELECT
+        COUNT(*) FILTER (WHERE rate >= 99)::int AS "b0",
+        COUNT(*) FILTER (WHERE rate >= 95 AND rate < 99)::int AS "b1",
+        COUNT(*) FILTER (WHERE rate >= 90 AND rate < 95)::int AS "b2",
+        COUNT(*) FILTER (WHERE rate < 90)::int AS "b3"
+      FROM (
+        SELECT CASE WHEN total_rows > 0 THEN matched_count * 100.0 / total_rows ELSE 0 END AS rate
+        FROM reports
+        WHERE ${currentCompletedWhere(organizationId)}
+      ) runs`,
+    prisma.report.count({ where: { organizationId, status: 'failed' } }),
+  ]);
+  // Same order as MATCH_RATE_BUCKETS, whose bounds the FILTERs above repeat.
+  const counts = [rates.b0, rates.b1, rates.b2, rates.b3];
 
-  const counts = MATCH_RATE_BUCKETS.map(() => 0);
-  for (const report of reports) {
-    const matchRate = report.totalRows > 0 ? (report.matchedCount / report.totalRows) * 100 : 0;
-    const bucketIndex = MATCH_RATE_BUCKETS.findIndex((b) => matchRate >= b.min && matchRate < b.max);
-    if (bucketIndex >= 0) counts[bucketIndex] += 1;
-  }
-
-  const total = reports.length + failedCount;
+  const total = counts.reduce((sum, n) => sum + n, 0) + failedCount;
   const buckets = MATCH_RATE_BUCKETS.map(({ label }, i) => ({
     label,
     value: counts[i],
@@ -766,30 +628,27 @@ export async function getMatchRateDistribution(userId) {
 
 // HistorySidebar's "Top File Pairs" widget. Grouped case-insensitively so
 // "Report.xlsx" and "report.xlsx" count as the same pair; the label keeps
-// whichever casing was seen first.
+// whichever casing ran first.
 export async function getTopFilePairs(userId, { limit = 4 } = {}) {
   const { organizationId } = await getUserMembership(userId);
-  const reports = await getAllTimeCompletedReports(organizationId);
+  // groupCount and runCount are taken over every group before the LIMIT, so "Other File Pairs" needs no second query.
+  const pairs = await prisma.$queryRaw`
+    SELECT
+      (array_agg(file_a_name ORDER BY run_date))[1] AS "fileA",
+      (array_agg(file_b_name ORDER BY run_date))[1] AS "fileB",
+      COUNT(*)::int AS count,
+      (COUNT(*) OVER ())::int AS "groupCount",
+      (SUM(COUNT(*)) OVER ())::int AS "runCount"
+    FROM reports
+    WHERE ${currentCompletedWhere(organizationId)}
+    GROUP BY lower(COALESCE(file_a_name, '')), lower(COALESCE(file_b_name, ''))
+    ORDER BY count DESC, MIN(run_date)
+    LIMIT ${limit}`;
 
-  const groups = new Map();
-  for (const report of reports) {
-    const fileA = report.fileAName ?? '';
-    const fileB = report.fileBName ?? '';
-    const key = `${fileA.toLowerCase()}|${fileB.toLowerCase()}`;
-    const existing = groups.get(key);
-    if (existing) {
-      existing.count += 1;
-    } else {
-      groups.set(key, { label: `${fileA} vs ${fileB}`, count: 1 });
-    }
-  }
-
-  const sorted = [...groups.values()].sort((a, b) => b.count - a.count);
-  const top = sorted.slice(0, limit);
-  const rest = sorted.slice(limit);
-
-  if (rest.length > 0) {
-    top.push({ label: 'Other File Pairs', count: rest.reduce((sum, g) => sum + g.count, 0) });
+  const top = pairs.map((pair) => ({ label: `${pair.fileA ?? ''} vs ${pair.fileB ?? ''}`, count: pair.count }));
+  if (pairs.length > 0 && pairs[0].groupCount > pairs.length) {
+    const shownRuns = top.reduce((sum, pair) => sum + pair.count, 0);
+    top.push({ label: 'Other File Pairs', count: pairs[0].runCount - shownRuns });
   }
 
   return top;
@@ -1673,42 +1532,6 @@ export async function listDrafts(userId) {
   return drafts.map(withDraftProgress);
 }
 
-// Promotes a draft into a completed report: same shape as a fresh saveReport,
-// applied to the existing draft row instead of a new one.
-export async function completeDraft(userId, reportId, dto, { ip, userAgent } = {}) {
-  const draft = await prisma.report.findFirst({ where: { id: reportId, userId, status: 'draft' } });
-  if (!draft) throw new NotFoundError();
-  const { role } = await getUserMembership(userId);
-  const config = await resolveRunConfig(draft.organizationId, role, dto.config);
-
-  const report = await persistCompletedRun(reportId, {
-    name: dto.name ?? draft.name,
-    fileAName: dto.fileAName,
-    fileBName: dto.fileBName,
-    organizationId: draft.organizationId,
-    summary: dto.summary,
-    rows: dto.rows,
-    config,
-  });
-
-  await logAuditSafely(userId, {
-    action: 'report.create',
-    entityType: 'report',
-    entityId: report.id,
-    ip,
-    userAgent,
-    metadata: withSubject(
-      {
-        filePair: `${report.fileAName ?? 'File A'} vs ${report.fileBName ?? 'File B'}`,
-        matchRate: report.totalRows > 0 ? `${((report.matchedCount / report.totalRows) * 100).toFixed(2)}%` : 'N/A',
-      },
-      reportSubject(report),
-    ),
-  });
-
-  return report.id;
-}
-
 // A previously failed run behaves like a draft that can be retried — it
 // still has fileAKey/fileBKey/columnMapping/sample rows to work with, it
 // just needs another attempt.
@@ -1776,6 +1599,12 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
     if (!effectiveCorrections.has(key)) effectiveCorrections.set(key, correction);
   }
 
+  // 'skip' is no longer offered (the engine already runs it as flag-all); carried into the draft as-is, the
+  // rules sidebar would show a blank duplicate-handling choice.
+  const sourceConfig = source.rulesConfig ?? source.config;
+  const rerunConfig =
+    sourceConfig?.duplicateHandling === 'skip' ? { ...sourceConfig, duplicateHandling: 'flag-all' } : sourceConfig;
+
   // A nested create keeps the draft and its corrections in one write.
   const draft = await prisma.report.create({
     data: {
@@ -1792,7 +1621,7 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
       fileASummary: source.fileASummary ?? undefined,
       fileBSummary: source.fileBSummary ?? undefined,
       columnMapping: source.columnMapping ?? undefined,
-      config: source.rulesConfig ?? source.config ?? undefined,
+      config: rerunConfig ?? undefined,
       sourceReportId: source.id,
       corrections: { create: [...effectiveCorrections.values()].map((correction) => ({ ...correction, applied: false })) },
     },
@@ -1911,8 +1740,8 @@ function createProgressReporter(reportId) {
 
 // The actual matching engine entry point: re-downloads+re-parses the full
 // files fresh from R2 (never reuses the mapping-preview sample — that's only
-// for the cheap rule-preview endpoint), runs the match, and persists exactly
-// like completeDraft does. Called only by the BullMQ worker — never
+// for the cheap rule-preview endpoint), runs the match, and persists it via
+// persistCompletedRun. Called only by the BullMQ worker — never
 // directly by an HTTP handler; enqueueReconciliationRun (above) is the
 // request-facing entry point. Wraps the *entire* pipeline, including
 // persistence, in the try/catch: a failure anywhere in here — download,

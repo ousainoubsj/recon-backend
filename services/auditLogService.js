@@ -73,7 +73,7 @@ export async function listAuditLogs(
 
 const AUDIT_LOG_STATUSES = ['success', 'info', 'warning', 'failed'];
 
-// SQL-side aggregation (groupBy/count), unlike Report's JS-side aggregatePeriod
+// SQL-side aggregation (groupBy/count), like Report's aggregateCompletedWindows
 // — audit logs accumulate at a much higher write rate than reconciliation
 // runs, so pulling every row into JS to count them doesn't scale the same way.
 // Feeds both AuditStats' 4 cards and AuditSidebar's Activity Summary donut —

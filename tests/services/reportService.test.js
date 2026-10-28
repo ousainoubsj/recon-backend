@@ -143,7 +143,6 @@ jest.unstable_mockModule('../../services/mappingSampleCache.js', () => ({
 }));
 
 const {
-  saveReport,
   listReports,
   getReport,
   rerunReport,
@@ -153,7 +152,6 @@ const {
   saveDraft,
   updateDraft,
   listDrafts,
-  completeDraft,
   enqueueReconciliationRun,
   executeReconciliationRun,
   getMappingPreview,
@@ -186,28 +184,6 @@ const USER_ID = 'user-1';
 const OTHER_USER_ID = 'user-2';
 const ORG_ID = 'org-1';
 
-const dto = {
-  name: 'June Bank Reconciliation',
-  fileAName: 'a.csv',
-  fileBName: 'b.csv',
-  summary: {
-    total: 2,
-    matched: 1,
-    mismatched: 0,
-    unmatchedA: 1,
-    unmatchedB: 0,
-    duplicates: 0,
-    matchRate: 0.5,
-    totalBreakValue: 50,
-    durationMs: 12,
-  },
-  rows: [
-    { ref: 'REF1', status: 'matched', amountA: 100, amountB: 100, amountDiff: 0, dateA: '2026-01-01', dateB: '2026-01-01' },
-    { ref: 'REF2', status: 'unmatched_a', amountA: 50, amountB: null, amountDiff: null },
-  ],
-  config: { amountTolerance: 0.01, dateToleranceDays: 1 },
-};
-
 const CURRENT_YEAR = new Date().getUTCFullYear();
 
 beforeEach(() => {
@@ -216,7 +192,7 @@ beforeEach(() => {
   mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'analyst' });
   mockTx.reportSequence.upsert.mockResolvedValue({ year: CURRENT_YEAR, lastValue: 1 });
   // Default: already has a sequence number, so persistCompletedRun's
-  // (completeDraft/runReconciliation) needsSequence check is false and the
+  // (executeReconciliationRun) needsSequence check is false and the
   // existing literal-match assertions on tx.report.update's payload below
   // don't need to account for sequenceYear/sequenceNumber being added.
   mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
@@ -230,79 +206,6 @@ beforeEach(() => {
   mockTx.$queryRaw.mockResolvedValue([
     { matchedValue: new Prisma.Decimal('100.0000'), unmatchedValue: new Prisma.Decimal('50.0000'), duplicateValue: new Prisma.Decimal(0) },
   ]);
-});
-
-describe('saveReport', () => {
-  it('inserts the report summary (including totalBreakValue) then bulk-inserts rows in a single transaction, returning the report id', async () => {
-    mockTx.report.create.mockResolvedValue({
-      id: 'report-1',
-      fileAName: 'a.csv',
-      fileBName: 'b.csv',
-      totalRows: 2,
-      matchedCount: 1,
-    });
-
-    const id = await saveReport(USER_ID, dto);
-
-    expect(id).toBe('report-1');
-    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-
-    expect(mockTx.report.create).toHaveBeenCalledWith({
-      data: {
-        userId: USER_ID,
-        organizationId: ORG_ID,
-        name: 'June Bank Reconciliation',
-        fileAName: 'a.csv',
-        fileBName: 'b.csv',
-        totalRows: 2,
-        matchedCount: 1,
-        unmatchedCount: 1,
-        mismatchedCount: 0,
-        duplicateCount: 0,
-        totalBreakValue: 50,
-        amountTolerance: 0.01,
-        dateToleranceDays: 1,
-        config: dto.config,
-        sequenceYear: CURRENT_YEAR,
-        sequenceNumber: 1,
-      },
-    });
-    expect(mockTx.reportSequence.upsert).toHaveBeenCalledWith({
-      where: { year_organizationId: { year: CURRENT_YEAR, organizationId: ORG_ID } },
-      create: { year: CURRENT_YEAR, organizationId: ORG_ID, lastValue: 1 },
-      update: { lastValue: { increment: 1 } },
-    });
-
-    expect(mockTx.reportRow.createMany).toHaveBeenCalledWith({
-      data: [
-        expect.objectContaining({
-          reportId: 'report-1',
-          ref: 'REF1',
-          amountDiff: new Prisma.Decimal(0),
-          dateA: new Date('2026-01-01'),
-          dateB: new Date('2026-01-01'),
-        }),
-        expect.objectContaining({
-          reportId: 'report-1',
-          ref: 'REF2',
-          amountA: 50,
-          amountB: null,
-          amountDiff: null,
-          dateA: null,
-          dateB: null,
-        }),
-      ],
-    });
-
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
-      action: 'report.create',
-      entityType: 'report',
-      entityId: 'report-1',
-      ip: undefined,
-      userAgent: undefined,
-      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%', subject: { name: 'Untitled Reconciliation' } },
-    });
-  });
 });
 
 describe('listReports', () => {
@@ -751,150 +654,6 @@ describe('deleteReport', () => {
   });
 });
 
-describe('getReportsSummary', () => {
-  beforeEach(() => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('reports all-time totals with a deltaPercent trend from current vs previous calendar month', async () => {
-    // Same 3 reports serve both queries here (getAllTimeCompletedReports has
-    // no runDate filter, so it happens to return everything the month-range
-    // query does too) — `current` totals reflect all 3, while previous/delta
-    // are still derived from just the July-vs-June split.
-    mockPrisma.report.findMany.mockResolvedValue([
-      // This month (July 2026): 2 reports
-      { runDate: new Date('2026-07-01T00:00:00Z'), totalRows: 100, matchedCount: 90, unmatchedCount: 8, mismatchedCount: 2, totalBreakValue: 500 },
-      { runDate: new Date('2026-07-10T00:00:00Z'), totalRows: 100, matchedCount: 100, unmatchedCount: 0, mismatchedCount: 0, totalBreakValue: 0 },
-      // Last month (June 2026): 1 report
-      { runDate: new Date('2026-06-15T00:00:00Z'), totalRows: 100, matchedCount: 50, unmatchedCount: 50, mismatchedCount: 0, totalBreakValue: 1000 },
-    ]);
-
-    const summary = await getReportsSummary(USER_ID);
-
-    expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(1, {
-      where: { organizationId: ORG_ID, status: 'completed', supersededById: null },
-      select: {
-        runDate: true,
-        totalRows: true,
-        matchedCount: true,
-        unmatchedCount: true,
-        mismatchedCount: true,
-        duplicateCount: true,
-        totalBreakValue: true,
-        fileAName: true,
-        fileBName: true,
-      },
-    });
-    expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        organizationId: ORG_ID,
-        status: 'completed',
-        supersededById: null,
-        runDate: { gte: new Date('2026-06-01T00:00:00Z'), lt: new Date('2026-08-01T00:00:00Z') },
-      },
-      select: {
-        runDate: true,
-        totalRows: true,
-        matchedCount: true,
-        unmatchedCount: true,
-        mismatchedCount: true,
-        totalBreakValue: true,
-      },
-    });
-
-    expect(summary.totalReconciliations).toEqual({ current: 3, previous: 1, deltaPercent: 100 });
-    expect(summary.avgMatchRate.current).toBeCloseTo(80); // (90+100+50)/(100+100+100)*100
-    expect(summary.avgMatchRate.previous).toBeCloseTo(50);
-    expect(summary.avgMatchRate.deltaPercent).toBeCloseTo(90); // (95-50)/50*100
-    expect(summary.unmatchedTransactions).toEqual({ current: 60, previous: 50, deltaPercent: -80 });
-    expect(summary.totalBreakValue).toEqual({ current: 1500, previous: 1000, deltaPercent: -50 });
-    expect(summary.totalTransactions).toBe(300);
-  });
-
-  it('returns null deltaPercent when there is no prior-period baseline', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      { runDate: new Date('2026-07-01T00:00:00Z'), totalRows: 10, matchedCount: 10, unmatchedCount: 0, mismatchedCount: 0, totalBreakValue: 0 },
-    ]);
-
-    const summary = await getReportsSummary(USER_ID);
-
-    expect(summary.totalReconciliations).toEqual({ current: 1, previous: 0, deltaPercent: null });
-  });
-
-  it('suppresses deltaPercent when the current month has no completed reports yet, even with a nonzero prior month', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      // Last month (June 2026) only — nothing has run yet this July.
-      { runDate: new Date('2026-06-15T00:00:00Z'), totalRows: 100, matchedCount: 50, unmatchedCount: 50, mismatchedCount: 0, totalBreakValue: 1000 },
-    ]);
-
-    const summary = await getReportsSummary(USER_ID);
-
-    // All-time current totals still reflect June's report, untouched.
-    expect(summary.totalReconciliations).toEqual({ current: 1, previous: 1, deltaPercent: null });
-    expect(summary.avgMatchRate).toEqual({ current: 50, previous: 50, deltaPercent: null });
-    expect(summary.unmatchedTransactions).toEqual({ current: 50, previous: 50, deltaPercent: null });
-    expect(summary.totalBreakValue).toEqual({ current: 1000, previous: 1000, deltaPercent: null });
-  });
-});
-
-describe('getReportsTrend', () => {
-  beforeEach(() => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('counts only current runs: both its queries skip superseded reports', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([]);
-
-    await getReportsTrend(USER_ID);
-
-    for (const [args] of mockPrisma.report.findMany.mock.calls) {
-      expect(args.where).toEqual(expect.objectContaining({ status: 'completed', supersededById: null }));
-    }
-    expect(mockPrisma.report.findMany).toHaveBeenCalledTimes(2);
-  });
-
-  it('buckets reports by month and computes an all-time category breakdown', async () => {
-    // Same rows serve both queries here (getAllTimeCompletedReports has no
-    // runDate filter, so it happens to return everything the month-range
-    // query does too) — categoryBreakdown sums across both months, not just
-    // the most recent bucket.
-    mockPrisma.report.findMany.mockResolvedValue([
-      { runDate: new Date('2026-06-10T00:00:00Z'), totalRows: 100, matchedCount: 80, unmatchedCount: 15, mismatchedCount: 5, duplicateCount: 0 },
-      { runDate: new Date('2026-07-05T00:00:00Z'), totalRows: 50, matchedCount: 40, unmatchedCount: 5, mismatchedCount: 3, duplicateCount: 2 },
-    ]);
-
-    const trend = await getReportsTrend(USER_ID, { months: 2 });
-
-    expect(trend.matchRateSeries).toEqual([
-      { month: '2026-06', value: 80 },
-      { month: '2026-07', value: 80 },
-    ]);
-    expect(trend.volumeSeries).toEqual([
-      { month: '2026-06', value: 1 },
-      { month: '2026-07', value: 1 },
-    ]);
-    expect(trend.categoryBreakdown).toEqual({ matched: 120, mismatched: 8, unmatched: 20, duplicates: 2 });
-  });
-
-  it('defaults to 6 months and includes empty buckets for months with no reports', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([]);
-
-    const trend = await getReportsTrend(USER_ID);
-
-    expect(trend.matchRateSeries).toHaveLength(6);
-    expect(trend.volumeSeries.every((point) => point.value === 0)).toBe(true);
-    expect(trend.categoryBreakdown).toEqual({ matched: 0, mismatched: 0, unmatched: 0, duplicates: 0 });
-  });
-});
-
 describe('saveDraft', () => {
   it('creates a minimal draft row with no rows and no audit log', async () => {
     mockPrisma.report.create.mockResolvedValue({ id: 'draft-1', status: 'draft' });
@@ -1042,6 +801,23 @@ describe('rerunReport', () => {
       USER_ID,
       expect.objectContaining({ action: 'report.rerun', entityId: 'draft-9', metadata: expect.objectContaining({ sourceReportId: 'source-1' }) }),
     );
+  });
+});
+
+describe('rerunReport — legacy rules', () => {
+  it("carries a source's retired 'skip' duplicate handling into the draft as flag-all", async () => {
+    mockPrisma.report.findFirst.mockResolvedValue({
+      id: 'source-1',
+      fileAKey: 'uploads/u/a.csv',
+      fileBKey: 'uploads/u/b.csv',
+      rulesConfig: { amountTolerance: 1, duplicateHandling: 'skip' },
+      supersededBy: null,
+    });
+    mockPrisma.report.create.mockResolvedValue({ id: 'draft-9' });
+
+    await rerunReport(USER_ID, 'source-1');
+
+    expect(mockPrisma.report.create.mock.calls[0][0].data.config).toEqual({ amountTolerance: 1, duplicateHandling: 'flag-all' });
   });
 });
 
@@ -1337,9 +1113,33 @@ describe('withDraftProgress (via getReport/listDrafts)', () => {
   });
 });
 
+// Drives persistCompletedRun through the run pipeline, its only caller.
+function completeRun(organizationId = ORG_ID) {
+  mockPrisma.report.findFirst.mockResolvedValue({
+    id: 'draft-1',
+    name: 'June',
+    userId: USER_ID,
+    organizationId,
+    fileAKey: 'uploads/u1/a.csv',
+    fileBKey: 'uploads/u1/b.csv',
+  });
+  mockDownloadFromR2.mockResolvedValue(Buffer.from('x'));
+  mockParseTabularFile.mockReturnValue({ headers: ['ref'], rows: [] });
+  mockRunMatch.mockReturnValue({
+    summary: { total: 2, matched: 1, mismatched: 1, unmatchedA: 0, unmatchedB: 0, duplicates: 0, totalBreakValue: 0 },
+    rows: [],
+  });
+  return executeReconciliationRun({
+    reportId: 'draft-1',
+    userId: USER_ID,
+    organizationId,
+    dto: { columnMapping: runDto.columnMapping },
+    config: runDto.config,
+  });
+}
+
 describe('superseding on completion', () => {
   beforeEach(() => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'June', userId: USER_ID, organizationId: ORG_ID });
     mockTx.report.update.mockResolvedValue({ id: 'draft-1', fileAName: 'a.csv', fileBName: 'b.csv', totalRows: 2, matchedCount: 1 });
   });
 
@@ -1350,7 +1150,7 @@ describe('superseding on completion', () => {
       .mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' })
       .mockResolvedValueOnce({ supersededById: null });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     expect(supersedeCalls()).toEqual([[{ where: { id: 'source-1' }, data: { supersededById: 'draft-1' } }]]);
     const lockCall = mockTx.$queryRaw.mock.calls.find(([sql]) => sql.join('').includes('FOR UPDATE'));
@@ -1363,7 +1163,7 @@ describe('superseding on completion', () => {
       .mockResolvedValueOnce({ supersededById: 'rerun-1' })
       .mockResolvedValueOnce({ supersededById: null });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     // The source keeps its link to rerun-1; rerun-1 is the one replaced now, so the chain stays linear.
     expect(supersedeCalls()).toEqual([[{ where: { id: 'rerun-1' }, data: { supersededById: 'draft-1' } }]]);
@@ -1374,7 +1174,7 @@ describe('superseding on completion', () => {
       .mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' })
       .mockResolvedValueOnce({ supersededById: 'draft-1' });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     expect(supersedeCalls()).toEqual([]);
   });
@@ -1382,7 +1182,7 @@ describe('superseding on completion', () => {
   it('does nothing for an ordinary run, which has no source', async () => {
     mockTx.report.findUnique.mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: null });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     expect(supersedeCalls()).toEqual([]);
     expect(mockTx.$queryRaw.mock.calls.some(([sql]) => sql.join('').includes('FOR UPDATE'))).toBe(false);
@@ -1391,82 +1191,27 @@ describe('superseding on completion', () => {
   it('does nothing when the source was deleted while the rerun ran', async () => {
     mockTx.report.findUnique.mockResolvedValueOnce({ sequenceNumber: 42, sourceReportId: 'source-1' }).mockResolvedValueOnce(null);
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     expect(supersedeCalls()).toEqual([]);
   });
 });
 
-describe('completeDraft', () => {
-  it('promotes a draft to completed, inserts rows, and audit-logs report.create', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
-    mockTx.report.update.mockResolvedValue({
-      id: 'draft-1',
-      fileAName: 'a.csv',
-      fileBName: 'b.csv',
-      totalRows: 2,
-      matchedCount: 1,
-    });
+const runDto = {
+  columnMapping: {
+    fileA: { referenceNumber: 'Transaction_ID', amount: 'Debit Amount', transactionDate: 'Posting Date' },
+    fileB: { referenceNumber: 'Ref_No', amount: 'Amount', transactionDate: 'Value Date' },
+  },
+  config: { amountTolerance: 0.5, dateToleranceDays: 1 },
+};
 
-    const id = await completeDraft(USER_ID, 'draft-1', dto);
-
-    expect(id).toBe('draft-1');
-    expect(mockTx.report.update).toHaveBeenCalledWith({
-      where: { id: 'draft-1' },
-      data: expect.objectContaining({
-        status: 'completed',
-        progress: 100,
-        name: 'June Bank Reconciliation',
-        fileAName: 'a.csv',
-        fileBName: 'b.csv',
-        totalRows: 2,
-        valueBreakdown: { matchedValue: 100, unmatchedValue: 50, duplicateValue: 0 },
-      }),
-    });
-    // Summed in SQL over this report's rows, after they're written, not reduced from the DTO in JS.
-    expect(mockTx.$queryRaw.mock.calls[0]).toContain('draft-1');
-    expect(mockCopyReportRowsIn.mock.invocationCallOrder[0]).toBeLessThan(mockTx.$queryRaw.mock.invocationCallOrder[0]);
-    expect(mockDeleteReportRows).toHaveBeenCalledWith('draft-1');
-    expect(mockCopyReportRowsIn).toHaveBeenCalledWith(
-      'draft-1',
-      expect.arrayContaining([expect.objectContaining({ ref: 'REF1' })]),
-      expect.objectContaining({ onProgress: undefined }),
-    );
-    expect(mockLogAuditSafely).toHaveBeenCalledWith(USER_ID, {
-      action: 'report.create',
-      entityType: 'report',
-      entityId: 'draft-1',
-      ip: undefined,
-      userAgent: undefined,
-      metadata: { filePair: 'a.csv vs b.csv', matchRate: '50.00%', subject: { name: 'Untitled Reconciliation' } },
-    });
-  });
-
-  it('falls back to the draft\'s existing name when the completing DTO omits one', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
-    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
-
-    await completeDraft(USER_ID, 'draft-1', { ...dto, name: undefined });
-
-    expect(mockTx.report.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ name: 'Old name' }) }),
-    );
-  });
-
-  it("throws NotFoundError when there's no such draft owned by the caller", async () => {
-    mockPrisma.report.findFirst.mockResolvedValue(null);
-
-    await expect(completeDraft(USER_ID, 'missing', dto)).rejects.toBeInstanceOf(NotFoundError);
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
-  });
-
+describe('sequence numbers on completion', () => {
   it('assigns a sequence number on first completion (no prior sequence on the draft)', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
     mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: null });
     mockTx.reportSequence.upsert.mockResolvedValue({ year: CURRENT_YEAR, lastValue: 7 });
-    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1', totalRows: 2, matchedCount: 1 });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     expect(mockTx.report.findUnique).toHaveBeenCalledWith({ where: { id: 'draft-1' }, select: { sequenceNumber: true, sourceReportId: true } });
     expect(mockTx.report.update).toHaveBeenCalledWith(
@@ -1478,13 +1223,12 @@ describe('completeDraft', () => {
   // — every organization shared one counter, so one org's completions
   // inflated the "Run #" every other org's next run started from. The
   // upsert must be scoped by (year, organizationId), not year alone.
-  it("scopes the sequence-number upsert to the draft's own organization, not a global year-only counter", async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID, organizationId: 'org-7' });
+  it("scopes the sequence-number upsert to the run's own organization, not a global year-only counter", async () => {
     mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: null });
     mockTx.reportSequence.upsert.mockResolvedValue({ year: CURRENT_YEAR, lastValue: 1 });
-    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1', totalRows: 2, matchedCount: 1 });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun('org-7');
 
     expect(mockTx.reportSequence.upsert).toHaveBeenCalledWith({
       where: { year_organizationId: { year: CURRENT_YEAR, organizationId: 'org-7' } },
@@ -1494,11 +1238,10 @@ describe('completeDraft', () => {
   });
 
   it('does not reassign a sequence number on a retry that already has one', async () => {
-    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Old name', userId: USER_ID });
     mockTx.report.findUnique.mockResolvedValue({ sequenceNumber: 42 });
-    mockTx.report.update.mockResolvedValue({ id: 'draft-1' });
+    mockTx.report.update.mockResolvedValue({ id: 'draft-1', totalRows: 2, matchedCount: 1 });
 
-    await completeDraft(USER_ID, 'draft-1', dto);
+    await completeRun();
 
     expect(mockTx.reportSequence.upsert).not.toHaveBeenCalled();
     const updateData = mockTx.report.update.mock.calls[0][0].data;
@@ -1506,14 +1249,6 @@ describe('completeDraft', () => {
     expect(updateData).not.toHaveProperty('sequenceNumber');
   });
 });
-
-const runDto = {
-  columnMapping: {
-    fileA: { referenceNumber: 'Transaction_ID', amount: 'Debit Amount', transactionDate: 'Posting Date' },
-    fileB: { referenceNumber: 'Ref_No', amount: 'Amount', transactionDate: 'Value Date' },
-  },
-  config: { amountTolerance: 0.5, dateToleranceDays: 1 },
-};
 
 describe('enqueueReconciliationRun', () => {
   const draft = {
@@ -2623,176 +2358,6 @@ describe('getFilePairTrend', () => {
   });
 });
 
-describe('getHistoryStats', () => {
-  beforeEach(() => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('returns all-time cumulative totals with a rolling 30-vs-previous-30-day delta', async () => {
-    mockPrisma.report.findMany
-      .mockResolvedValueOnce([
-        { totalRows: 100, matchedCount: 90, unmatchedCount: 8, mismatchedCount: 2, duplicateCount: 0, totalBreakValue: 500, fileAName: 'a.csv', fileBName: 'b.csv', runDate: new Date() },
-        { totalRows: 100, matchedCount: 100, unmatchedCount: 0, mismatchedCount: 0, duplicateCount: 0, totalBreakValue: 0, fileAName: 'a.csv', fileBName: 'b.csv', runDate: new Date() },
-        { totalRows: 100, matchedCount: 50, unmatchedCount: 50, mismatchedCount: 0, duplicateCount: 0, totalBreakValue: 1000, fileAName: 'a.csv', fileBName: 'b.csv', runDate: new Date() },
-      ])
-      .mockResolvedValueOnce([
-        { runDate: new Date('2026-07-10T00:00:00Z'), totalRows: 50, matchedCount: 45, unmatchedCount: 5, mismatchedCount: 0, totalBreakValue: 20 },
-        { runDate: new Date('2026-05-20T00:00:00Z'), totalRows: 50, matchedCount: 25, unmatchedCount: 25, mismatchedCount: 0, totalBreakValue: 80 },
-      ]);
-
-    const stats = await getHistoryStats(USER_ID);
-
-    expect(mockPrisma.report.findMany).toHaveBeenNthCalledWith(2, {
-      where: {
-        organizationId: ORG_ID,
-        status: 'completed',
-        supersededById: null,
-        runDate: { gte: new Date('2026-05-16T12:00:00.000Z'), lt: new Date('2026-07-15T12:00:00.000Z') },
-      },
-      select: {
-        runDate: true,
-        totalRows: true,
-        matchedCount: true,
-        unmatchedCount: true,
-        mismatchedCount: true,
-        totalBreakValue: true,
-      },
-    });
-
-    expect(stats.totalReconciliations).toEqual({ value: 3, deltaPercent: 0 });
-    expect(stats.avgMatchRate).toEqual({ value: 80, deltaPercent: 80 });
-    expect(stats.totalBreakValue).toEqual({ value: 1500, deltaPercent: -75 });
-    expect(stats.totalTransactions).toEqual({ value: 300, deltaPercent: 0 });
-  });
-});
-
-describe('getWeeklyDigestStats', () => {
-  beforeEach(() => {
-    jest.useFakeTimers().setSystemTime(new Date('2026-08-03T08:00:00Z'));
-  });
-
-  afterEach(() => {
-    jest.useRealTimers();
-  });
-
-  it('takes organizationId directly (no getUserMembership call) and splits one query into current vs prior 7-day windows', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      // this week
-      { runDate: new Date('2026-08-01T00:00:00Z'), totalRows: 100, matchedCount: 95, unmatchedCount: 5, mismatchedCount: 0, totalBreakValue: 50 },
-      // prior week
-      { runDate: new Date('2026-07-26T00:00:00Z'), totalRows: 100, matchedCount: 80, unmatchedCount: 20, mismatchedCount: 0, totalBreakValue: 200 },
-    ]);
-
-    const stats = await getWeeklyDigestStats(ORG_ID);
-
-    expect(mockPrisma.member.findFirst).not.toHaveBeenCalled();
-    expect(mockPrisma.report.findMany).toHaveBeenCalledWith({
-      where: {
-        organizationId: ORG_ID,
-        status: 'completed',
-        supersededById: null,
-        runDate: { gte: new Date('2026-07-20T08:00:00.000Z'), lt: new Date('2026-08-03T08:00:00.000Z') },
-      },
-      select: {
-        runDate: true,
-        totalRows: true,
-        matchedCount: true,
-        unmatchedCount: true,
-        mismatchedCount: true,
-        totalBreakValue: true,
-      },
-    });
-
-    expect(stats.current).toEqual({ count: 1, totalTransactions: 100, avgMatchRate: 95, unmatchedTransactions: 5, totalBreakValue: 50 });
-    expect(stats.prior).toEqual({ count: 1, totalTransactions: 100, avgMatchRate: 80, unmatchedTransactions: 20, totalBreakValue: 200 });
-  });
-
-  it('returns a zero-count current period when there were no completed reports this week', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([]);
-
-    const stats = await getWeeklyDigestStats(ORG_ID);
-
-    expect(stats.current).toEqual({ count: 0, totalTransactions: 0, avgMatchRate: 0, unmatchedTransactions: 0, totalBreakValue: 0 });
-    expect(stats.prior).toEqual({ count: 0, totalTransactions: 0, avgMatchRate: 0, unmatchedTransactions: 0, totalBreakValue: 0 });
-  });
-});
-
-describe('getMatchRateDistribution', () => {
-  it('buckets all-time completed reports by their own match rate, plus a Failed bucket counting failed runs', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      { totalRows: 100, matchedCount: 99 },
-      { totalRows: 100, matchedCount: 100 },
-      { totalRows: 100, matchedCount: 96 },
-      { totalRows: 100, matchedCount: 92 },
-      { totalRows: 100, matchedCount: 80 },
-    ]);
-    mockPrisma.report.count.mockResolvedValue(5);
-
-    const distribution = await getMatchRateDistribution(USER_ID);
-
-    expect(mockPrisma.report.count).toHaveBeenCalledWith({
-      where: { organizationId: ORG_ID, status: 'failed' },
-    });
-    expect(distribution).toEqual([
-      { label: '≥ 99%', value: 2, percent: '20.0%' },
-      { label: '95% - 98.99%', value: 1, percent: '10.0%' },
-      { label: '90% - 94.99%', value: 1, percent: '10.0%' },
-      { label: '< 90%', value: 1, percent: '10.0%' },
-      { label: 'Failed', value: 5, percent: '50.0%' },
-    ]);
-  });
-
-  it('returns all-zero buckets with 0.0% when there are no completed or failed reports', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([]);
-    mockPrisma.report.count.mockResolvedValue(0);
-
-    const distribution = await getMatchRateDistribution(USER_ID);
-
-    expect(distribution.every((b) => b.value === 0 && b.percent === '0.0%')).toBe(true);
-  });
-});
-
-describe('getTopFilePairs', () => {
-  it('groups by file pair case-insensitively, sorted by count, with an "Other" bucket for the remainder', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      { fileAName: 'Internal Ledger.csv', fileBName: 'Bank Statement.csv' },
-      { fileAName: 'internal ledger.csv', fileBName: 'bank statement.csv' },
-      { fileAName: 'AP Ledger.csv', fileBName: 'Supplier Statement.csv' },
-      { fileAName: 'GL Ledger.csv', fileBName: 'Bank Statement.csv' },
-      { fileAName: 'Payroll.csv', fileBName: 'Bank Statement.csv' },
-      { fileAName: 'Other X.csv', fileBName: 'Other Y.csv' },
-    ]);
-
-    const pairs = await getTopFilePairs(USER_ID, { limit: 4 });
-
-    expect(pairs).toEqual([
-      { label: 'Internal Ledger.csv vs Bank Statement.csv', count: 2 },
-      { label: 'AP Ledger.csv vs Supplier Statement.csv', count: 1 },
-      { label: 'GL Ledger.csv vs Bank Statement.csv', count: 1 },
-      { label: 'Payroll.csv vs Bank Statement.csv', count: 1 },
-      { label: 'Other File Pairs', count: 1 },
-    ]);
-  });
-
-  it('omits the "Other" bucket when there are no more than `limit` groups', async () => {
-    mockPrisma.report.findMany.mockResolvedValue([
-      { fileAName: 'a.csv', fileBName: 'b.csv' },
-      { fileAName: 'c.csv', fileBName: 'd.csv' },
-    ]);
-
-    const pairs = await getTopFilePairs(USER_ID, { limit: 4 });
-
-    expect(pairs).toEqual([
-      { label: 'a.csv vs b.csv', count: 1 },
-      { label: 'c.csv vs d.csv', count: 1 },
-    ]);
-  });
-});
-
 describe('updateReportTag', () => {
   it('updates the tag on a completed report in the org', async () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
@@ -3426,3 +2991,208 @@ describe('corrections', () => {
     });
   });
 });
+
+describe('dashboard aggregates', () => {
+  // The SQL each call ran, so a test can check which runs it counts and which windows it sums.
+  const sqlOf = (call) => Prisma.sql(call[0], ...call.slice(1));
+  const raw = () => mockPrisma.$queryRaw.mock.calls.map(sqlOf);
+  // One row of aggregateCompletedWindows' result, as Postgres returns it (COUNT/SUM as bigint, money as Decimal).
+  const windowRow = (windows) =>
+    Object.fromEntries(
+      Object.entries(windows).flatMap(([name, w]) => [
+        [`${name}.count`, BigInt(w.count)],
+        [`${name}.totalRows`, BigInt(w.totalRows)],
+        [`${name}.matched`, BigInt(w.matched)],
+        [`${name}.unmatchedTransactions`, BigInt(w.unmatchedTransactions)],
+        [`${name}.totalBreakValue`, new Prisma.Decimal(w.totalBreakValue)],
+      ]),
+    );
+  const EMPTY = { count: 0, totalRows: 0, matched: 0, unmatchedTransactions: 0, totalBreakValue: 0 };
+
+  beforeEach(() => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-07-15T12:00:00Z'));
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('counts only the org\'s current completed runs, in every dashboard query', async () => {
+    mockPrisma.$queryRaw.mockResolvedValue([windowRow({ allTime: EMPTY, currentMonth: EMPTY, previousMonth: EMPTY })]);
+    await getReportsSummary(USER_ID);
+    mockPrisma.$queryRaw.mockResolvedValue([{ matched: 0n, mismatched: 0n, unmatched: 0n, duplicates: 0n }]);
+    await getReportsTrend(USER_ID);
+    mockPrisma.$queryRaw.mockResolvedValue([{ b0: 0, b1: 0, b2: 0, b3: 0 }]);
+    await getMatchRateDistribution(USER_ID);
+    mockPrisma.$queryRaw.mockResolvedValue([]);
+    await getTopFilePairs(USER_ID);
+
+    expect(raw()).toHaveLength(5);
+    for (const sql of raw()) {
+      expect(sql.sql).toContain("organization_id = ? AND status = 'completed' AND superseded_by_id IS NULL");
+      expect(sql.values).toContain(ORG_ID);
+    }
+  });
+
+  describe('getReportsSummary', () => {
+    it('reports all-time totals with a current vs previous calendar month delta, from one query', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([
+        windowRow({
+          allTime: { count: 3, totalRows: 300, matched: 240, unmatchedTransactions: 60, totalBreakValue: '1500.0000' },
+          currentMonth: { count: 2, totalRows: 200, matched: 190, unmatchedTransactions: 10, totalBreakValue: '500.0000' },
+          previousMonth: { count: 1, totalRows: 100, matched: 50, unmatchedTransactions: 50, totalBreakValue: '1000.0000' },
+        }),
+      ]);
+
+      const summary = await getReportsSummary(USER_ID);
+
+      // All time is unfiltered; this month and last month are each a [start, end) runDate range.
+      const [sql] = raw();
+      expect(sql.sql).toMatch(/COUNT\(\*\)\s+AS "allTime.count"/);
+      expect(new Set(sql.values.map(String))).toEqual(
+        new Set([
+          String(new Date('2026-06-01T00:00:00Z')),
+          String(new Date('2026-07-01T00:00:00Z')),
+          String(new Date('2026-08-01T00:00:00Z')),
+          ORG_ID,
+        ]),
+      );
+      expect(summary.totalReconciliations).toEqual({ current: 3, previous: 1, deltaPercent: 100 });
+      expect(summary.avgMatchRate.current).toBeCloseTo(80);
+      expect(summary.avgMatchRate.previous).toBeCloseTo(50);
+      expect(summary.avgMatchRate.deltaPercent).toBeCloseTo(90);
+      expect(summary.unmatchedTransactions).toEqual({ current: 60, previous: 50, deltaPercent: -80 });
+      expect(summary.totalBreakValue).toEqual({ current: 1500, previous: 1000, deltaPercent: -50 });
+      expect(summary.totalTransactions).toBe(300);
+    });
+
+    it('suppresses deltaPercent when the current month has no completed reports yet', async () => {
+      const june = { count: 1, totalRows: 100, matched: 50, unmatchedTransactions: 50, totalBreakValue: '1000' };
+      mockPrisma.$queryRaw.mockResolvedValueOnce([windowRow({ allTime: june, currentMonth: EMPTY, previousMonth: june })]);
+
+      const summary = await getReportsSummary(USER_ID);
+
+      expect(summary.totalReconciliations).toEqual({ current: 1, previous: 1, deltaPercent: null });
+      expect(summary.avgMatchRate).toEqual({ current: 50, previous: 50, deltaPercent: null });
+      expect(summary.totalBreakValue).toEqual({ current: 1000, previous: 1000, deltaPercent: null });
+    });
+  });
+
+  describe('getReportsTrend', () => {
+    it('fills every month in the window, keyed by UTC month, with the all-time category breakdown', async () => {
+      mockPrisma.$queryRaw
+        .mockResolvedValueOnce([{ month: '2026-07', count: 1, totalRows: 50n, matched: 40n }])
+        .mockResolvedValueOnce([{ matched: 120n, mismatched: 8n, unmatched: 20n, duplicates: 2n }]);
+
+      const trend = await getReportsTrend(USER_ID, { months: 2 });
+
+      expect(raw()[0].values).toEqual([ORG_ID, new Date('2026-06-01T00:00:00Z')]);
+      expect(trend.matchRateSeries).toEqual([
+        { month: '2026-06', value: 0 },
+        { month: '2026-07', value: 80 },
+      ]);
+      expect(trend.volumeSeries).toEqual([
+        { month: '2026-06', value: 0 },
+        { month: '2026-07', value: 1 },
+      ]);
+      expect(trend.categoryBreakdown).toEqual({ matched: 120, mismatched: 8, unmatched: 20, duplicates: 2 });
+    });
+
+    it('defaults to 6 months', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([]).mockResolvedValueOnce([{ matched: 0n, mismatched: 0n, unmatched: 0n, duplicates: 0n }]);
+
+      const trend = await getReportsTrend(USER_ID);
+
+      expect(trend.matchRateSeries.map((p) => p.month)).toEqual(['2026-02', '2026-03', '2026-04', '2026-05', '2026-06', '2026-07']);
+    });
+  });
+
+  describe('getHistoryStats', () => {
+    it('returns all-time totals with a rolling 30-vs-previous-30-day delta', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([
+        windowRow({
+          allTime: { count: 3, totalRows: 300, matched: 240, unmatchedTransactions: 60, totalBreakValue: '1500' },
+          current: { count: 1, totalRows: 100, matched: 90, unmatchedTransactions: 10, totalBreakValue: '250' },
+          previous: { count: 1, totalRows: 100, matched: 50, unmatchedTransactions: 50, totalBreakValue: '1000' },
+        }),
+      ]);
+
+      const stats = await getHistoryStats(USER_ID);
+
+      expect(stats.totalReconciliations).toEqual({ value: 3, deltaPercent: 0 });
+      expect(stats.avgMatchRate).toEqual({ value: 80, deltaPercent: 80 });
+      expect(stats.totalBreakValue).toEqual({ value: 1500, deltaPercent: -75 });
+      expect(stats.totalTransactions).toEqual({ value: 300, deltaPercent: 0 });
+    });
+  });
+
+  describe('getWeeklyDigestStats', () => {
+    it('takes organizationId directly and sums the current and prior 7-day windows in one query', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([
+        windowRow({
+          current: { count: 1, totalRows: 100, matched: 95, unmatchedTransactions: 5, totalBreakValue: '50' },
+          prior: EMPTY,
+        }),
+      ]);
+
+      const stats = await getWeeklyDigestStats(ORG_ID);
+
+      expect(mockPrisma.member.findFirst).not.toHaveBeenCalled();
+      expect(raw()).toHaveLength(1);
+      expect(stats.current).toEqual({ count: 1, totalTransactions: 100, avgMatchRate: 95, unmatchedTransactions: 5, totalBreakValue: 50 });
+      expect(stats.prior).toEqual({ count: 0, totalTransactions: 0, avgMatchRate: 0, unmatchedTransactions: 0, totalBreakValue: 0 });
+    });
+  });
+
+  describe('getMatchRateDistribution', () => {
+    it('maps the bucket counts in order and adds a Failed bucket, with percents of every non-draft run', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([{ b0: 1, b1: 1, b2: 0, b3: 1 }]);
+      mockPrisma.report.count.mockResolvedValueOnce(1);
+
+      const distribution = await getMatchRateDistribution(USER_ID);
+
+      expect(mockPrisma.report.count).toHaveBeenCalledWith({ where: { organizationId: ORG_ID, status: 'failed' } });
+      expect(distribution).toEqual([
+        { label: '≥ 99%', value: 1, percent: '25.0%' },
+        { label: '95% - 98.99%', value: 1, percent: '25.0%' },
+        { label: '90% - 94.99%', value: 0, percent: '0.0%' },
+        { label: '< 90%', value: 1, percent: '25.0%' },
+        { label: 'Failed', value: 1, percent: '25.0%' },
+      ]);
+    });
+
+    it('returns all-zero buckets with 0.0% when there are no runs', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([{ b0: 0, b1: 0, b2: 0, b3: 0 }]);
+      mockPrisma.report.count.mockResolvedValueOnce(0);
+
+      const distribution = await getMatchRateDistribution(USER_ID);
+
+      expect(distribution.every((b) => b.value === 0 && b.percent === '0.0%')).toBe(true);
+    });
+  });
+
+  describe('getTopFilePairs', () => {
+    it('labels the top groups and folds the rest into "Other File Pairs"', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([
+        { fileA: 'a.csv', fileB: 'b.csv', count: 3, groupCount: 4, runCount: 7 },
+        { fileA: 'c.csv', fileB: null, count: 2, groupCount: 4, runCount: 7 },
+      ]);
+
+      const pairs = await getTopFilePairs(USER_ID, { limit: 2 });
+
+      expect(raw()[0].values).toEqual([ORG_ID, 2]);
+      expect(pairs).toEqual([
+        { label: 'a.csv vs b.csv', count: 3 },
+        { label: 'c.csv vs ', count: 2 },
+        { label: 'Other File Pairs', count: 2 },
+      ]);
+    });
+
+    it('omits "Other File Pairs" when every group is shown', async () => {
+      mockPrisma.$queryRaw.mockResolvedValueOnce([{ fileA: 'a.csv', fileB: 'b.csv', count: 3, groupCount: 1, runCount: 3 }]);
+
+      expect(await getTopFilePairs(USER_ID)).toEqual([{ label: 'a.csv vs b.csv', count: 3 }]);
+    });
+  });
+});
+

@@ -38,13 +38,3 @@
  * @property {number} totalBreakValue - sum of |amountDiff| on mismatched rows
  * @property {number} durationMs
  */
-
-/**
- * POST /reports — request body
- * @typedef {Object} SaveReportDto
- * @property {string} fileAName
- * @property {string} fileBName
- * @property {ReconSummary} summary
- * @property {ReconRow[]} rows - stored in report_rows table
- * @property {ReconConfig} config - tolerances used
- */

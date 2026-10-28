@@ -19,7 +19,6 @@ jest.unstable_mockModule('../../services/organizationService.js', () => ({
 
 const mockReportService = {
   listReports: jest.fn(),
-  saveReport: jest.fn(),
   getReport: jest.fn(),
   deleteReport: jest.fn(),
   getReportsSummary: jest.fn(),
@@ -27,7 +26,6 @@ const mockReportService = {
   saveDraft: jest.fn(),
   updateDraft: jest.fn(),
   listDrafts: jest.fn(),
-  completeDraft: jest.fn(),
   getHistoryStats: jest.fn(),
   getMatchRateDistribution: jest.fn(),
   getTopFilePairs: jest.fn(),
@@ -111,12 +109,12 @@ beforeEach(() => {
 
 describe('GET /api/reports', () => {
   it("returns the caller's reports, unbounded by default", async () => {
-    mockReportService.listReports.mockResolvedValue([{ id: 'r1' }]);
+    mockReportService.listReports.mockResolvedValue([{ id: '11111111-1111-4111-8111-111111111111' }]);
 
     const res = await request(app).get('/api/reports');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 'r1' }]);
+    expect(res.body).toEqual([{ id: '11111111-1111-4111-8111-111111111111' }]);
     expect(mockReportService.listReports).toHaveBeenCalledWith(USER_ID, {
       limit: undefined,
       offset: undefined,
@@ -273,26 +271,26 @@ describe('POST /api/reports/bulk-delete', () => {
 
 describe('PATCH /api/reports/:id/tag', () => {
   it('updates the tag and returns the report', async () => {
-    mockReportService.updateReportTag.mockResolvedValue({ id: 'r1', tag: 'bank' });
+    mockReportService.updateReportTag.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', tag: 'bank' });
 
-    const res = await request(app).patch('/api/reports/r1/tag').send({ tag: 'bank' });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/tag').send({ tag: 'bank' });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'r1', tag: 'bank' });
-    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', 'bank', { ip: expect.any(String), userAgent: null });
+    expect(res.body).toEqual({ id: '11111111-1111-4111-8111-111111111111', tag: 'bank' });
+    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', 'bank', { ip: expect.any(String), userAgent: null });
   });
 
   it('accepts null to clear a tag', async () => {
-    mockReportService.updateReportTag.mockResolvedValue({ id: 'r1', tag: null });
+    mockReportService.updateReportTag.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', tag: null });
 
-    const res = await request(app).patch('/api/reports/r1/tag').send({ tag: null });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/tag').send({ tag: null });
 
     expect(res.status).toBe(200);
-    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, 'r1', null, { ip: expect.any(String), userAgent: null });
+    expect(mockReportService.updateReportTag).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', null, { ip: expect.any(String), userAgent: null });
   });
 
   it('rejects an invalid tag value with a 422', async () => {
-    const res = await request(app).patch('/api/reports/r1/tag').send({ tag: 'not-a-real-tag' });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/tag').send({ tag: 'not-a-real-tag' });
 
     expect(res.status).toBe(422);
     expect(mockReportService.updateReportTag).not.toHaveBeenCalled();
@@ -301,7 +299,7 @@ describe('PATCH /api/reports/:id/tag', () => {
   it('returns an RFC 7807 404 when the report does not exist or is not completed', async () => {
     mockReportService.updateReportTag.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).patch('/api/reports/missing/tag').send({ tag: 'bank' });
+    const res = await request(app).patch('/api/reports/33333333-3333-4333-8333-333333333333/tag').send({ tag: 'bank' });
 
     expect(res.status).toBe(404);
   });
@@ -309,24 +307,24 @@ describe('PATCH /api/reports/:id/tag', () => {
 
 describe('PATCH /api/reports/:id/name', () => {
   it('renames the report and returns it', async () => {
-    mockReportService.updateReportName.mockResolvedValue({ id: 'r1', name: 'July Bank Reconciliation' });
+    mockReportService.updateReportName.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', name: 'July Bank Reconciliation' });
 
-    const res = await request(app).patch('/api/reports/r1/name').send({ name: 'July Bank Reconciliation' });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/name').send({ name: 'July Bank Reconciliation' });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'r1', name: 'July Bank Reconciliation' });
-    expect(mockReportService.updateReportName).toHaveBeenCalledWith(USER_ID, 'r1', 'July Bank Reconciliation', { ip: expect.any(String), userAgent: null });
+    expect(res.body).toEqual({ id: '11111111-1111-4111-8111-111111111111', name: 'July Bank Reconciliation' });
+    expect(mockReportService.updateReportName).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', 'July Bank Reconciliation', { ip: expect.any(String), userAgent: null });
   });
 
   it('rejects an empty name with a 422', async () => {
-    const res = await request(app).patch('/api/reports/r1/name').send({ name: '' });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/name').send({ name: '' });
 
     expect(res.status).toBe(422);
     expect(mockReportService.updateReportName).not.toHaveBeenCalled();
   });
 
   it('rejects a missing name with a 422', async () => {
-    const res = await request(app).patch('/api/reports/r1/name').send({});
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/name').send({});
 
     expect(res.status).toBe(422);
     expect(mockReportService.updateReportName).not.toHaveBeenCalled();
@@ -335,7 +333,7 @@ describe('PATCH /api/reports/:id/name', () => {
   it('returns an RFC 7807 404 when the report does not exist or is not completed', async () => {
     mockReportService.updateReportName.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).patch('/api/reports/missing/name').send({ name: 'New Name' });
+    const res = await request(app).patch('/api/reports/33333333-3333-4333-8333-333333333333/name').send({ name: 'New Name' });
 
     expect(res.status).toBe(404);
   });
@@ -345,16 +343,16 @@ describe('PUT/DELETE /api/reports/:id/favorite', () => {
   it('PUT adds a favorite and returns 204', async () => {
     mockReportService.addFavorite.mockResolvedValue(undefined);
 
-    const res = await request(app).put('/api/reports/r1/favorite');
+    const res = await request(app).put('/api/reports/11111111-1111-4111-8111-111111111111/favorite');
 
     expect(res.status).toBe(204);
-    expect(mockReportService.addFavorite).toHaveBeenCalledWith(USER_ID, 'r1');
+    expect(mockReportService.addFavorite).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111');
   });
 
   it('PUT returns an RFC 7807 404 when the report is inaccessible', async () => {
     mockReportService.addFavorite.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).put('/api/reports/missing/favorite');
+    const res = await request(app).put('/api/reports/33333333-3333-4333-8333-333333333333/favorite');
 
     expect(res.status).toBe(404);
   });
@@ -362,17 +360,17 @@ describe('PUT/DELETE /api/reports/:id/favorite', () => {
   it('DELETE removes a favorite and returns 204', async () => {
     mockReportService.removeFavorite.mockResolvedValue(undefined);
 
-    const res = await request(app).delete('/api/reports/r1/favorite');
+    const res = await request(app).delete('/api/reports/11111111-1111-4111-8111-111111111111/favorite');
 
     expect(res.status).toBe(204);
-    expect(mockReportService.removeFavorite).toHaveBeenCalledWith(USER_ID, 'r1');
+    expect(mockReportService.removeFavorite).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111');
   });
 
   it('is allowed for a viewer (report:read is granted to all three roles)', async () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
     mockReportService.addFavorite.mockResolvedValue(undefined);
 
-    const res = await request(app).put('/api/reports/r1/favorite');
+    const res = await request(app).put('/api/reports/11111111-1111-4111-8111-111111111111/favorite');
 
     expect(res.status).toBe(204);
   });
@@ -381,15 +379,15 @@ describe('PUT/DELETE /api/reports/:id/favorite', () => {
 describe('GET /api/reports/:id/transactions', () => {
   it('returns the transaction list for a viewer (report:read)', async () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
-    mockReportService.getTransactions.mockResolvedValue({ rows: [{ id: 'row-1' }], total: 1 });
+    mockReportService.getTransactions.mockResolvedValue({ rows: [{ id: '44444444-4444-4444-8444-444444444444' }], total: 1 });
 
-    const res = await request(app).get('/api/reports/r1/transactions?status=matched&limit=10');
+    const res = await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/transactions?status=matched&limit=10');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ rows: [{ id: 'row-1' }], total: 1 });
+    expect(res.body).toEqual({ rows: [{ id: '44444444-4444-4444-8444-444444444444' }], total: 1 });
     expect(mockReportService.getTransactions).toHaveBeenCalledWith(
       USER_ID,
-      'r1',
+      '11111111-1111-4111-8111-111111111111',
       expect.objectContaining({ status: 'matched', limit: 10 }),
     );
   });
@@ -397,20 +395,20 @@ describe('GET /api/reports/:id/transactions', () => {
 
 describe('GET /api/reports/:id/transactions/:rowId', () => {
   it('returns a single transaction detail', async () => {
-    const transaction = { id: 'row-1', matchAnalysis: [], recommendedAction: 'x' };
+    const transaction = { id: '44444444-4444-4444-8444-444444444444', matchAnalysis: [], recommendedAction: 'x' };
     mockReportService.getTransaction.mockResolvedValue(transaction);
 
-    const res = await request(app).get('/api/reports/r1/transactions/row-1');
+    const res = await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/transactions/44444444-4444-4444-8444-444444444444');
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(transaction);
-    expect(mockReportService.getTransaction).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1');
+    expect(mockReportService.getTransaction).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', '44444444-4444-4444-8444-444444444444');
   });
 
   it('returns an RFC 7807 404 when the row is not found', async () => {
     mockReportService.getTransaction.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).get('/api/reports/r1/transactions/missing');
+    const res = await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/transactions/33333333-3333-4333-8333-333333333333');
 
     expect(res.status).toBe(404);
   });
@@ -418,31 +416,31 @@ describe('GET /api/reports/:id/transactions/:rowId', () => {
 
 describe('PATCH /api/reports/:id/transactions/:rowId/review', () => {
   it('marks a row reviewed for an admin', async () => {
-    mockReportService.markRowReviewed.mockResolvedValue({ id: 'row-1', reviewed: true });
+    mockReportService.markRowReviewed.mockResolvedValue({ id: '44444444-4444-4444-8444-444444444444', reviewed: true });
 
-    const res = await request(app).patch('/api/reports/r1/transactions/row-1/review').send({ reviewed: true });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/transactions/44444444-4444-4444-8444-444444444444/review').send({ reviewed: true });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'row-1', reviewed: true });
-    expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1', true, {
+    expect(res.body).toEqual({ id: '44444444-4444-4444-8444-444444444444', reviewed: true });
+    expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', '44444444-4444-4444-8444-444444444444', true, {
       ip: expect.any(String),
       userAgent: null,
     });
   });
 
   it('defaults reviewed to true when the body is empty', async () => {
-    mockReportService.markRowReviewed.mockResolvedValue({ id: 'row-1', reviewed: true });
+    mockReportService.markRowReviewed.mockResolvedValue({ id: '44444444-4444-4444-8444-444444444444', reviewed: true });
 
-    const res = await request(app).patch('/api/reports/r1/transactions/row-1/review').send({});
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/transactions/44444444-4444-4444-8444-444444444444/review').send({});
 
     expect(res.status).toBe(200);
-    expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, 'r1', 'row-1', true, expect.anything());
+    expect(mockReportService.markRowReviewed).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', '44444444-4444-4444-8444-444444444444', true, expect.anything());
   });
 
   it('rejects a viewer with a 403 RFC 7807 error', async () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
 
-    const res = await request(app).patch('/api/reports/r1/transactions/row-1/review').send({ reviewed: false });
+    const res = await request(app).patch('/api/reports/11111111-1111-4111-8111-111111111111/transactions/44444444-4444-4444-8444-444444444444/review').send({ reviewed: false });
 
     expect(res.status).toBe(403);
     expect(mockReportService.markRowReviewed).not.toHaveBeenCalled();
@@ -659,7 +657,7 @@ describe('GET /api/reports/:id/break-breakdown', () => {
     const breakdown = [{ category: 'Amount Mismatch', amount: 100, percent: 50 }];
     mockReportService.getBreakBreakdown.mockResolvedValue(breakdown);
 
-    const res = await request(app).get('/api/reports/r1/break-breakdown');
+    const res = await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/break-breakdown');
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(breakdown);
@@ -671,43 +669,43 @@ describe('GET /api/reports/:id/trend', () => {
     const trend = { matchRateTrend: { current: [], prior: [] }, breakValueTrend: { current: [], prior: [] } };
     mockReportService.getFilePairTrend.mockResolvedValue(trend);
 
-    const res = await request(app).get('/api/reports/r1/trend');
+    const res = await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/trend');
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(trend);
-    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair' });
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', { scope: 'filePair' });
   });
 
   it('passes scope=overall through when given', async () => {
     mockReportService.getFilePairTrend.mockResolvedValue({});
 
-    await request(app).get('/api/reports/r1/trend?scope=overall');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/trend?scope=overall');
 
-    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'overall' });
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', { scope: 'overall' });
   });
 
   it('ignores an unrecognized scope value, falling back to "filePair"', async () => {
     mockReportService.getFilePairTrend.mockResolvedValue({});
 
-    await request(app).get('/api/reports/r1/trend?scope=bogus');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/trend?scope=bogus');
 
-    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair' });
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', { scope: 'filePair' });
   });
 
   it('passes a valid ?limit= through, capped at 7', async () => {
     mockReportService.getFilePairTrend.mockResolvedValue({});
 
-    await request(app).get('/api/reports/r1/trend?limit=5');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/trend?limit=5');
 
-    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair', limit: 5 });
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', { scope: 'filePair', limit: 5 });
   });
 
   it('passes limit: undefined when not given, leaving the default (7) to the service layer', async () => {
     mockReportService.getFilePairTrend.mockResolvedValue({});
 
-    await request(app).get('/api/reports/r1/trend');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111/trend');
 
-    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, 'r1', { scope: 'filePair', limit: undefined });
+    expect(mockReportService.getFilePairTrend).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', { scope: 'filePair', limit: undefined });
   });
 });
 
@@ -754,12 +752,12 @@ describe('GET /api/reports/trend', () => {
 
 describe('GET /api/reports/exports', () => {
   it("returns the org's export history, unbounded by default", async () => {
-    mockReportExportService.listExports.mockResolvedValue([{ id: 'exp-1' }]);
+    mockReportExportService.listExports.mockResolvedValue([{ id: '55555555-5555-4555-8555-555555555555' }]);
 
     const res = await request(app).get('/api/reports/exports');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 'exp-1' }]);
+    expect(res.body).toEqual([{ id: '55555555-5555-4555-8555-555555555555' }]);
     expect(mockReportExportService.listExports).toHaveBeenCalledWith(USER_ID, {
       limit: undefined,
       offset: undefined,
@@ -790,75 +788,31 @@ describe('GET /api/reports/exports', () => {
   });
 });
 
-describe('POST /api/reports', () => {
-  it('saves a valid report and returns 201 with the new id', async () => {
-    mockReportService.saveReport.mockResolvedValue('new-report-id');
-
-    const res = await request(app).post('/api/reports').send(validDto);
-
-    expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: 'new-report-id' });
-    expect(mockReportService.saveReport).toHaveBeenCalledWith(
-      USER_ID,
-      expect.objectContaining({ fileAName: 'a.csv', fileBName: 'b.csv' }),
-      { ip: expect.any(String), userAgent: null },
-    );
-  });
-
-  it('rejects a body missing required fields with an RFC 7807 422', async () => {
-    const res = await request(app).post('/api/reports').send({ fileAName: 'a.csv' });
-
-    expect(res.status).toBe(422);
-    expect(res.body.type).toBe('https://recon.app/errors/validation-error');
-    expect(res.body.errors.length).toBeGreaterThan(0);
-    expect(mockReportService.saveReport).not.toHaveBeenCalled();
-  });
-
-  it('rejects a negative amountTolerance', async () => {
-    const res = await request(app)
-      .post('/api/reports')
-      .send({ ...validDto, config: { amountTolerance: -1 } });
-
-    expect(res.status).toBe(422);
-    expect(res.body.errors.some((e) => /non-negative/.test(e.message))).toBe(true);
-  });
-
-  it('rejects a viewer with a 403 RFC 7807 error', async () => {
-    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
-
-    const res = await request(app).post('/api/reports').send(validDto);
-
-    expect(res.status).toBe(403);
-    expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');
-    expect(mockReportService.saveReport).not.toHaveBeenCalled();
-  });
-});
-
 describe('GET /api/reports/drafts', () => {
   it("returns the caller's drafts", async () => {
-    mockReportService.listDrafts.mockResolvedValue([{ id: 'draft-1' }]);
+    mockReportService.listDrafts.mockResolvedValue([{ id: '22222222-2222-4222-8222-222222222222' }]);
 
     const res = await request(app).get('/api/reports/drafts');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 'draft-1' }]);
+    expect(res.body).toEqual([{ id: '22222222-2222-4222-8222-222222222222' }]);
     expect(mockReportService.listDrafts).toHaveBeenCalledWith(USER_ID);
   });
 });
 
 describe('POST /api/reports/draft', () => {
   it('saves a draft with all-optional fields and returns 201', async () => {
-    mockReportService.saveDraft.mockResolvedValue({ id: 'draft-1', status: 'draft' });
+    mockReportService.saveDraft.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', status: 'draft' });
 
     const res = await request(app).post('/api/reports/draft').send({ name: 'Q3 Vendor Reconciliation' });
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: 'draft-1', status: 'draft' });
+    expect(res.body).toEqual({ id: '22222222-2222-4222-8222-222222222222', status: 'draft' });
     expect(mockReportService.saveDraft).toHaveBeenCalledWith(USER_ID, { name: 'Q3 Vendor Reconciliation' });
   });
 
   it('accepts an entirely empty body', async () => {
-    mockReportService.saveDraft.mockResolvedValue({ id: 'draft-1' });
+    mockReportService.saveDraft.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222' });
 
     const res = await request(app).post('/api/reports/draft').send({});
 
@@ -877,13 +831,13 @@ describe('POST /api/reports/draft', () => {
 
 describe('PATCH /api/reports/draft/:id', () => {
   it('updates a draft and returns it', async () => {
-    mockReportService.updateDraft.mockResolvedValue({ id: 'draft-1', name: 'Updated' });
+    mockReportService.updateDraft.mockResolvedValue({ id: '22222222-2222-4222-8222-222222222222', name: 'Updated' });
 
-    const res = await request(app).patch('/api/reports/draft/draft-1').send({ name: 'Updated' });
+    const res = await request(app).patch('/api/reports/draft/22222222-2222-4222-8222-222222222222').send({ name: 'Updated' });
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'draft-1', name: 'Updated' });
-    expect(mockReportService.updateDraft).toHaveBeenCalledWith(USER_ID, 'draft-1', { name: 'Updated' }, {
+    expect(res.body).toEqual({ id: '22222222-2222-4222-8222-222222222222', name: 'Updated' });
+    expect(mockReportService.updateDraft).toHaveBeenCalledWith(USER_ID, '22222222-2222-4222-8222-222222222222', { name: 'Updated' }, {
       ip: expect.any(String),
       userAgent: null,
     });
@@ -892,39 +846,7 @@ describe('PATCH /api/reports/draft/:id', () => {
   it('returns an RFC 7807 404 when not found or not owned', async () => {
     mockReportService.updateDraft.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).patch('/api/reports/draft/missing').send({ name: 'x' });
-
-    expect(res.status).toBe(404);
-  });
-});
-
-describe('POST /api/reports/draft/:id/complete', () => {
-  it('completes a draft with the full report DTO and returns the id', async () => {
-    mockReportService.completeDraft.mockResolvedValue('draft-1');
-
-    const res = await request(app).post('/api/reports/draft/draft-1/complete').send(validDto);
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'draft-1' });
-    expect(mockReportService.completeDraft).toHaveBeenCalledWith(
-      USER_ID,
-      'draft-1',
-      expect.objectContaining({ fileAName: 'a.csv' }),
-      { ip: expect.any(String), userAgent: null },
-    );
-  });
-
-  it('rejects a body missing required fields with a 422, same validation as a fresh save', async () => {
-    const res = await request(app).post('/api/reports/draft/draft-1/complete').send({ fileAName: 'a.csv' });
-
-    expect(res.status).toBe(422);
-    expect(mockReportService.completeDraft).not.toHaveBeenCalled();
-  });
-
-  it('returns an RFC 7807 404 when the draft does not exist or is not owned', async () => {
-    mockReportService.completeDraft.mockRejectedValue(new NotFoundError());
-
-    const res = await request(app).post('/api/reports/draft/missing/complete').send(validDto);
+    const res = await request(app).patch('/api/reports/draft/33333333-3333-4333-8333-333333333333').send({ name: 'x' });
 
     expect(res.status).toBe(404);
   });
@@ -935,17 +857,17 @@ describe('POST /api/reports/:id/mapping-preview', () => {
     const preview = { fileA: { filename: 'a.csv' }, fileB: { filename: 'b.csv' } };
     mockReportService.getMappingPreview.mockResolvedValue(preview);
 
-    const res = await request(app).post('/api/reports/draft-1/mapping-preview').send();
+    const res = await request(app).post('/api/reports/22222222-2222-4222-8222-222222222222/mapping-preview').send();
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(preview);
-    expect(mockReportService.getMappingPreview).toHaveBeenCalledWith(USER_ID, 'draft-1');
+    expect(mockReportService.getMappingPreview).toHaveBeenCalledWith(USER_ID, '22222222-2222-4222-8222-222222222222');
   });
 
   it('rejects a viewer with a 403 RFC 7807 error', async () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
 
-    const res = await request(app).post('/api/reports/draft-1/mapping-preview').send();
+    const res = await request(app).post('/api/reports/22222222-2222-4222-8222-222222222222/mapping-preview').send();
 
     expect(res.status).toBe(403);
     expect(mockReportService.getMappingPreview).not.toHaveBeenCalled();
@@ -963,20 +885,20 @@ describe('POST /api/reports/:id/rule-preview', () => {
     mockReportService.getRulePreview.mockResolvedValue(preview);
 
     const res = await request(app)
-      .post('/api/reports/draft-1/rule-preview')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/rule-preview')
       .send({ columnMapping, config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual(preview);
     expect(mockReportService.getRulePreview).toHaveBeenCalledWith(
       USER_ID,
-      'draft-1',
+      '22222222-2222-4222-8222-222222222222',
       expect.objectContaining({ columnMapping }),
     );
   });
 
   it('rejects a body missing config with a 422', async () => {
-    const res = await request(app).post('/api/reports/draft-1/rule-preview').send({});
+    const res = await request(app).post('/api/reports/22222222-2222-4222-8222-222222222222/rule-preview').send({});
 
     expect(res.status).toBe(422);
     expect(mockReportService.getRulePreview).not.toHaveBeenCalled();
@@ -986,7 +908,7 @@ describe('POST /api/reports/:id/rule-preview', () => {
     mockReportService.getRulePreview.mockRejectedValue(new ConflictError('Call mapping-preview first'));
 
     const res = await request(app)
-      .post('/api/reports/draft-1/rule-preview')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/rule-preview')
       .send({ config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(409);
@@ -997,7 +919,7 @@ describe('POST /api/reports/:id/rule-preview', () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
 
     const res = await request(app)
-      .post('/api/reports/draft-1/rule-preview')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/rule-preview')
       .send({ columnMapping, config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(403);
@@ -1010,14 +932,14 @@ describe('POST /api/reports/:id/run', () => {
     mockReportService.enqueueReconciliationRun.mockResolvedValue('report-1');
 
     const res = await request(app)
-      .post('/api/reports/draft-1/run')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/run')
       .send({ columnMapping, config: { amountTolerance: 0.5, dateToleranceDays: 1 } });
 
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ id: 'report-1', status: 'processing' });
     expect(mockReportService.enqueueReconciliationRun).toHaveBeenCalledWith(
       USER_ID,
-      'draft-1',
+      '22222222-2222-4222-8222-222222222222',
       expect.objectContaining({ columnMapping }),
       { ip: expect.any(String), userAgent: null },
     );
@@ -1025,7 +947,7 @@ describe('POST /api/reports/:id/run', () => {
 
   it('rejects a body missing columnMapping with a 422', async () => {
     const res = await request(app)
-      .post('/api/reports/draft-1/run')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/run')
       .send({ config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(422);
@@ -1036,7 +958,7 @@ describe('POST /api/reports/:id/run', () => {
     mockReportService.enqueueReconciliationRun.mockRejectedValue(new ValidationError('Both files must be uploaded'));
 
     const res = await request(app)
-      .post('/api/reports/draft-1/run')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/run')
       .send({ columnMapping, config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(422);
@@ -1046,7 +968,7 @@ describe('POST /api/reports/:id/run', () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
 
     const res = await request(app)
-      .post('/api/reports/draft-1/run')
+      .post('/api/reports/22222222-2222-4222-8222-222222222222/run')
       .send({ columnMapping, config: { amountTolerance: 0.5 } });
 
     expect(res.status).toBe(403);
@@ -1055,21 +977,40 @@ describe('POST /api/reports/:id/run', () => {
 });
 
 describe('GET /api/reports/:id', () => {
-  it('returns the report when found', async () => {
-    mockReportService.getReport.mockResolvedValue({ id: 'r1', rows: [] });
+  // Prisma rejects a non-UUID with P2007, which surfaced as a 500 before validateParams covered these routes.
+  it.each([
+    ['get', '/api/reports/not-a-uuid'],
+    ['delete', '/api/reports/not-a-uuid'],
+    ['get', '/api/reports/not-a-uuid/transactions'],
+    ['get', '/api/reports/11111111-1111-4111-8111-111111111111/transactions/not-a-uuid'],
+    ['delete', '/api/reports/exports/not-a-uuid'],
+  ])('404s on a malformed id (%s %s) before reaching the service', async (method, url) => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'admin' });
 
-    const res = await request(app).get('/api/reports/r1');
+    const res = await request(app)[method](url);
+
+    expect(res.status).toBe(404);
+    expect(mockReportService.getReport).not.toHaveBeenCalled();
+    expect(mockReportService.deleteReport).not.toHaveBeenCalled();
+    expect(mockReportService.getTransactions).not.toHaveBeenCalled();
+    expect(mockReportService.getTransaction).not.toHaveBeenCalled();
+  });
+
+  it('returns the report when found', async () => {
+    mockReportService.getReport.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', rows: [] });
+
+    const res = await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: 'r1', rows: [] });
+    expect(res.body).toEqual({ id: '11111111-1111-4111-8111-111111111111', rows: [] });
   });
 
   it('logs report.results.viewed (deduped) for a completed report, with the report name as metadata', async () => {
-    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'completed', name: 'Bank Reconciliation Q2', rows: [] });
+    mockReportService.getReport.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', status: 'completed', name: 'Bank Reconciliation Q2', rows: [] });
 
-    await request(app).get('/api/reports/r1');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111');
 
-    expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(USER_ID, 'r1', {
+    expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(USER_ID, '11111111-1111-4111-8111-111111111111', {
       status: 'info',
       ip: expect.any(String),
       userAgent: null,
@@ -1078,21 +1019,21 @@ describe('GET /api/reports/:id', () => {
   });
 
   it('falls back to a placeholder name when the report has none', async () => {
-    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'completed', name: null, rows: [] });
+    mockReportService.getReport.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', status: 'completed', name: null, rows: [] });
 
-    await request(app).get('/api/reports/r1');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111');
 
     expect(mockLogResultsViewedOnce).toHaveBeenCalledWith(
       USER_ID,
-      'r1',
+      '11111111-1111-4111-8111-111111111111',
       expect.objectContaining({ metadata: { subject: { name: 'Untitled Reconciliation' } } }),
     );
   });
 
   it('does not log report.results.viewed for a draft', async () => {
-    mockReportService.getReport.mockResolvedValue({ id: 'r1', status: 'draft', rows: [] });
+    mockReportService.getReport.mockResolvedValue({ id: '11111111-1111-4111-8111-111111111111', status: 'draft', rows: [] });
 
-    await request(app).get('/api/reports/r1');
+    await request(app).get('/api/reports/11111111-1111-4111-8111-111111111111');
 
     expect(mockLogResultsViewedOnce).not.toHaveBeenCalled();
   });
@@ -1100,7 +1041,7 @@ describe('GET /api/reports/:id', () => {
   it('returns an RFC 7807 404 when not found or not owned', async () => {
     mockReportService.getReport.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).get('/api/reports/missing');
+    const res = await request(app).get('/api/reports/33333333-3333-4333-8333-333333333333');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
@@ -1111,7 +1052,7 @@ describe('DELETE /api/reports/:id', () => {
   it('returns 204 on success', async () => {
     mockReportService.deleteReport.mockResolvedValue(undefined);
 
-    const res = await request(app).delete('/api/reports/r1');
+    const res = await request(app).delete('/api/reports/11111111-1111-4111-8111-111111111111');
 
     expect(res.status).toBe(204);
   });
@@ -1119,7 +1060,7 @@ describe('DELETE /api/reports/:id', () => {
   it('returns an RFC 7807 404 when not found or not owned', async () => {
     mockReportService.deleteReport.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).delete('/api/reports/missing');
+    const res = await request(app).delete('/api/reports/33333333-3333-4333-8333-333333333333');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
@@ -1128,7 +1069,7 @@ describe('DELETE /api/reports/:id', () => {
   it('rejects a viewer with a 403 RFC 7807 error', async () => {
     mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'viewer' });
 
-    const res = await request(app).delete('/api/reports/r1');
+    const res = await request(app).delete('/api/reports/11111111-1111-4111-8111-111111111111');
 
     expect(res.status).toBe(403);
     expect(res.body.type).toBe('https://recon.app/errors/authorisation-error');

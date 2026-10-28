@@ -8,7 +8,10 @@ import * as reportsController from '../controllers/reports.controller.js';
 
 export const reportsRouter = Router();
 
-const RECON_STATUSES = ['matched', 'mismatched', 'unmatched_a', 'unmatched_b', 'duplicate'];
+// Every id here is a UUID; a malformed one is a 404 (validateParams), never a Prisma 500.
+const idParams = z.object({ id: z.string().uuid() });
+const rowParams = z.object({ id: z.string().uuid(), rowId: z.string().uuid() });
+const exportParams = z.object({ exportId: z.string().uuid() });
 
 // Full reconciliation rule config (MatchingRulesSidebar) — amountTolerance/
 // dateToleranceDays double as the Report columns of the same name, the rest
@@ -40,50 +43,11 @@ const fileColumnMappingSchema = z.object({
 
 const columnMappingSchema = z.object({ fileA: fileColumnMappingSchema, fileB: fileColumnMappingSchema });
 
-const saveReportSchema = z.object({
-  name: z.string().max(255).optional(),
-  fileAName: z.string(),
-  fileBName: z.string(),
-  summary: z.object({
-    total: z.number(),
-    matched: z.number(),
-    mismatched: z.number(),
-    unmatchedA: z.number(),
-    unmatchedB: z.number(),
-    duplicates: z.number(),
-    matchRate: z.number(),
-    totalBreakValue: z.number(),
-    durationMs: z.number(),
-  }),
-  rows: z.array(
-    z.object({
-      ref: z.string(),
-      status: z.enum(RECON_STATUSES),
-      amountA: z.number().nullable(),
-      amountB: z.number().nullable(),
-      amountDiff: z.number().nullable(),
-      dateA: z.string().nullable().optional(),
-      dateB: z.string().nullable().optional(),
-      rawA: z.record(z.string()).nullable().optional(),
-      rawB: z.record(z.string()).nullable().optional(),
-    }),
-  ),
-  config: matchRuleConfigSchema,
-});
-
 reportsRouter.get(
   '/',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
   catchAsync(reportsController.listReports),
-);
-
-reportsRouter.post(
-  '/',
-  authenticate,
-  catchAsync(requirePermission('report', 'create')),
-  validate(saveReportSchema),
-  catchAsync(reportsController.saveReport),
 );
 
 const sectionsSchema = z
@@ -150,6 +114,7 @@ reportsRouter.get(
   '/exports/:exportId/download',
   authenticate,
   catchAsync(requirePermission('report', 'export')),
+  validateParams(exportParams),
   catchAsync(reportsController.downloadExport),
 );
 
@@ -157,6 +122,7 @@ reportsRouter.delete(
   '/exports/:exportId',
   authenticate,
   catchAsync(requirePermission('report', 'delete')),
+  validateParams(exportParams),
   catchAsync(reportsController.deleteExport),
 );
 
@@ -235,16 +201,9 @@ reportsRouter.patch(
   '/draft/:id',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   validate(draftSchema),
   catchAsync(reportsController.updateDraft),
-);
-
-reportsRouter.post(
-  '/draft/:id/complete',
-  authenticate,
-  catchAsync(requirePermission('report', 'create')),
-  validate(saveReportSchema),
-  catchAsync(reportsController.completeDraft),
 );
 
 // Downloads+parses the draft's uploaded files fresh from R2, returns
@@ -254,6 +213,7 @@ reportsRouter.post(
   '/:id/mapping-preview',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   catchAsync(reportsController.getMappingPreview),
 );
 
@@ -269,6 +229,7 @@ reportsRouter.post(
   '/:id/rule-preview',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   validate(rulePreviewSchema),
   catchAsync(reportsController.getRulePreview),
 );
@@ -280,14 +241,13 @@ const runReconciliationSchema = z.object({
 });
 
 // The actual matching engine: re-downloads+re-parses the full files (not
-// the cached sample), computes real results, and persists them exactly like
-// completeDraft does.
+// the cached sample), computes real results, and persists them.
 // Creates a new draft from a completed report's files, mapping and rules; the source is left as it is.
 reportsRouter.post(
   '/:id/rerun',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
-  validateParams(z.object({ id: z.string().uuid() })),
+  validateParams(idParams),
   catchAsync(reportsController.rerunReport),
 );
 
@@ -295,6 +255,7 @@ reportsRouter.post(
   '/:id/run',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   validate(runReconciliationSchema),
   catchAsync(reportsController.runReconciliation),
 );
@@ -303,6 +264,7 @@ reportsRouter.get(
   '/:id',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(idParams),
   catchAsync(reportsController.getReport),
 );
 
@@ -310,6 +272,7 @@ reportsRouter.delete(
   '/:id',
   authenticate,
   catchAsync(requirePermission('report', 'delete')),
+  validateParams(idParams),
   catchAsync(reportsController.deleteReport),
 );
 
@@ -319,6 +282,7 @@ reportsRouter.patch(
   '/:id/tag',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   validate(updateTagSchema),
   catchAsync(reportsController.updateReportTag),
 );
@@ -329,6 +293,7 @@ reportsRouter.patch(
   '/:id/name',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(idParams),
   validate(updateNameSchema),
   catchAsync(reportsController.updateReportName),
 );
@@ -337,6 +302,7 @@ reportsRouter.put(
   '/:id/favorite',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(idParams),
   catchAsync(reportsController.addFavorite),
 );
 
@@ -344,6 +310,7 @@ reportsRouter.delete(
   '/:id/favorite',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(idParams),
   catchAsync(reportsController.removeFavorite),
 );
 
@@ -353,6 +320,7 @@ reportsRouter.get(
   '/:id/transactions',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(idParams),
   catchAsync(reportsController.getTransactions),
 );
 
@@ -360,6 +328,7 @@ reportsRouter.get(
   '/:id/transactions/:rowId',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(rowParams),
   catchAsync(reportsController.getTransaction),
 );
 
@@ -369,6 +338,7 @@ reportsRouter.patch(
   '/:id/transactions/:rowId/review',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
+  validateParams(rowParams),
   validate(markReviewedSchema),
   catchAsync(reportsController.markRowReviewed),
 );
@@ -394,7 +364,7 @@ reportsRouter.post(
   '/:id/resolutions',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
-  validateParams(z.object({ id: z.string().uuid() })),
+  validateParams(idParams),
   validate(resolveRowsSchema),
   catchAsync(reportsController.resolveRows),
 );
@@ -420,7 +390,7 @@ reportsRouter.get(
   '/:id/corrections',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
-  validateParams(z.object({ id: z.string().uuid() })),
+  validateParams(idParams),
   catchAsync(reportsController.listCorrections),
 );
 
@@ -428,7 +398,7 @@ reportsRouter.post(
   '/:id/corrections',
   authenticate,
   catchAsync(requirePermission('report', 'create')),
-  validateParams(z.object({ id: z.string().uuid() })),
+  validateParams(idParams),
   validate(createCorrectionSchema),
   catchAsync(reportsController.createCorrection),
 );
@@ -445,6 +415,7 @@ reportsRouter.get(
   '/:id/break-breakdown',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(idParams),
   catchAsync(reportsController.getBreakBreakdown),
 );
 
@@ -452,6 +423,7 @@ reportsRouter.get(
   '/:id/trend',
   authenticate,
   catchAsync(requirePermission('report', 'read')),
+  validateParams(idParams),
   catchAsync(reportsController.getFilePairTrend),
 );
 
@@ -470,6 +442,7 @@ reportsRouter.post(
   '/:id/export',
   authenticate,
   catchAsync(requirePermission('report', 'export')),
+  validateParams(idParams),
   validate(exportSchema),
   catchAsync(reportsController.exportReport),
 );
@@ -480,6 +453,7 @@ reportsRouter.post(
   '/:id/email',
   authenticate,
   catchAsync(requirePermission('report', 'email')),
+  validateParams(idParams),
   validate(emailSchema),
   catchAsync(reportsController.emailReport),
 );

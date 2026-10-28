@@ -44,24 +44,24 @@ beforeEach(() => {
 
 describe('GET /api/report-templates', () => {
   it('lists visible templates', async () => {
-    mockReportTemplateService.listTemplates.mockResolvedValue([{ id: 't1' }]);
+    mockReportTemplateService.listTemplates.mockResolvedValue([{ id: '66666666-6666-4666-8666-666666666666' }]);
 
     const res = await request(app).get('/api/report-templates');
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual([{ id: 't1' }]);
+    expect(res.body).toEqual([{ id: '66666666-6666-4666-8666-666666666666' }]);
     expect(mockReportTemplateService.listTemplates).toHaveBeenCalledWith(USER_ID);
   });
 });
 
 describe('POST /api/report-templates', () => {
   it('creates a custom template and returns 201', async () => {
-    mockReportTemplateService.createTemplate.mockResolvedValue({ id: 't1', name: 'Custom' });
+    mockReportTemplateService.createTemplate.mockResolvedValue({ id: '66666666-6666-4666-8666-666666666666', name: 'Custom' });
 
     const res = await request(app).post('/api/report-templates').send({ name: 'Custom' });
 
     expect(res.status).toBe(201);
-    expect(res.body).toEqual({ id: 't1', name: 'Custom' });
+    expect(res.body).toEqual({ id: '66666666-6666-4666-8666-666666666666', name: 'Custom' });
     expect(mockReportTemplateService.createTemplate).toHaveBeenCalledWith(USER_ID, { name: 'Custom' }, { ip: expect.any(String), userAgent: null });
   });
 
@@ -86,16 +86,16 @@ describe('DELETE /api/report-templates/:id', () => {
   it('deletes the template and returns 204', async () => {
     mockReportTemplateService.deleteTemplate.mockResolvedValue(undefined);
 
-    const res = await request(app).delete('/api/report-templates/t1');
+    const res = await request(app).delete('/api/report-templates/66666666-6666-4666-8666-666666666666');
 
     expect(res.status).toBe(204);
-    expect(mockReportTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, 't1', { ip: expect.any(String), userAgent: null });
+    expect(mockReportTemplateService.deleteTemplate).toHaveBeenCalledWith(USER_ID, '66666666-6666-4666-8666-666666666666', { ip: expect.any(String), userAgent: null });
   });
 
   it('returns a 404 RFC 7807 error for a system template or anything not owned', async () => {
     mockReportTemplateService.deleteTemplate.mockRejectedValue(new NotFoundError());
 
-    const res = await request(app).delete('/api/report-templates/system-template');
+    const res = await request(app).delete('/api/report-templates/77777777-7777-4777-8777-777777777777');
 
     expect(res.status).toBe(404);
     expect(res.body.type).toBe('https://recon.app/errors/not-found');
