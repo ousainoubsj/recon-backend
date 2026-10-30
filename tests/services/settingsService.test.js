@@ -1,7 +1,7 @@
 import { jest } from '@jest/globals';
 
 const mockPrisma = {
-  organization: { findFirst: jest.fn(), update: jest.fn() },
+  organization: { findFirst: jest.fn(), update: jest.fn(), findUnique: jest.fn() },
   user: { findFirst: jest.fn(), update: jest.fn() },
   member: { findFirst: jest.fn() },
   matchRuleTemplate: { findFirst: jest.fn() },
@@ -14,7 +14,15 @@ jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditSafely: mockLogAuditSafely,
 }));
 
+const mockPurgeCompany = jest.fn();
+const mockRecordPlatformAudit = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/platformService.js', () => ({
+  purgeCompany: mockPurgeCompany,
+  recordPlatformAudit: mockRecordPlatformAudit,
+}));
+
 const {
+  deleteOrganization,
   getOrganizationInfo,
   updateOrganizationInfo,
   getReconciliationDefaults,
@@ -263,5 +271,45 @@ describe('updateNotificationPreferences', () => {
     await updateNotificationPreferences(USER_ID, { emailNotificationsEnabled: false });
 
     expect(mockLogAuditSafely).not.toHaveBeenCalled();
+  });
+});
+
+describe('deleteOrganization', () => {
+  beforeEach(() => {
+    mockPrisma.organization.findUnique.mockResolvedValue({ name: 'Datafin Ltd', slug: 'org-x' });
+    mockPurgeCompany.mockResolvedValue({ memberIds: [USER_ID, 'user-2'], reportCount: 4 });
+  });
+
+  it("purges the caller's own company, resolved from their membership", async () => {
+    await deleteOrganization({ id: USER_ID, email: 'admin@datafin.gm' }, { ip: '1.2.3.4', userAgent: 'UA' });
+
+    expect(mockPrisma.member.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { userId: USER_ID } }));
+    expect(mockPurgeCompany).toHaveBeenCalledWith(ORG_ID);
+  });
+
+  it('audits with no user when the actor was a member (their account is gone) and records who did it', async () => {
+    await deleteOrganization({ id: USER_ID, email: 'admin@datafin.gm' });
+
+    expect(mockRecordPlatformAudit).toHaveBeenCalledWith(null, {
+      action: 'organization.delete',
+      entityType: 'organization',
+      entityId: ORG_ID,
+      metadata: { name: 'Datafin Ltd', slug: 'org-x', deletedUsers: 2, deletedReports: 4, deletedBy: 'admin@datafin.gm' },
+      ip: undefined,
+      userAgent: undefined,
+    });
+  });
+
+  it('keeps the user id for a platform admin acting as the company, who survives', async () => {
+    await deleteOrganization({ id: 'staff-1', email: 'awa@recon-cil.com' });
+
+    expect(mockRecordPlatformAudit.mock.calls[0][0]).toBe('staff-1');
+  });
+
+  it('does not audit when the purge refuses (e.g. a running reconciliation)', async () => {
+    mockPurgeCompany.mockRejectedValue(new Error('A reconciliation is running in this company.'));
+
+    await expect(deleteOrganization({ id: USER_ID, email: 'a@b.co' })).rejects.toThrow('running');
+    expect(mockRecordPlatformAudit).not.toHaveBeenCalled();
   });
 });

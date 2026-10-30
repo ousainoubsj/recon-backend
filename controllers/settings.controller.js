@@ -120,3 +120,8 @@ export const createAvatarPresignedUpload = async (req, res) => {
     metadata: { filename, contentType },
   });
 };
+
+export const deleteOrganization = async (req, res) => {
+  await settingsService.deleteOrganization(req.session.user, auditContext(req));
+  res.status(204).end();
+};

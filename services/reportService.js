@@ -416,6 +416,7 @@ export async function listReports(
       valueBreakdown: true,
       favorites: { where: { userId }, select: { id: true } },
       supersededBy: { select: SUPERSEDED_BY_SELECT },
+      user: { select: { name: true, image: true } },
     },
     orderBy: { runDate: 'desc' },
     ...(offset ? { skip: offset } : {}),
@@ -2116,7 +2117,7 @@ export async function getRulePreview(userId, reportId, dto) {
  * if it sits under an org member's prefix and no surviving report still points at it (a rerun shares its
  * source's files), so a stored key pointing anywhere else is never deleted.
  */
-async function reportFileKeys(reports, organizationId) {
+export async function reportFileKeys(reports, organizationId) {
   if (reports.length === 0) return [];
   const reportIds = reports.map((r) => r.id);
   const exports = await prisma.reportExport.findMany({

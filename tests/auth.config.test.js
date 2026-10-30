@@ -48,4 +48,17 @@ describe('auth.js config', () => {
       expect(mockPrisma.member.findFirst).not.toHaveBeenCalled();
     },
   );
+
+  it('refuses /organization/delete so deleting always goes through Settings (accounts, audit rows and files go too)', async () => {
+    const res = await auth.handler(
+      new Request('http://localhost:4000/api/auth/organization/delete', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', origin: 'http://localhost:4000' },
+        body: JSON.stringify({ organizationId: 'org-1' }),
+      }),
+    );
+
+    expect(res.status).toBe(403);
+    expect((await res.json()).message).toBe('Delete the organization from Settings');
+  });
 });

@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import { generateId } from 'better-auth';
 import { prisma } from '../config/prisma.config.js';
-import { ConflictError, NotFoundError, ValidationError } from '../errors.js';
+import { AuthorisationError, ConflictError, NotFoundError, ValidationError } from '../errors.js';
 import { sendOrgInvitationEmail } from './emailService.js';
+import { deleteR2Objects, deleteR2Prefix } from '../utils/r2Client.js';
 
 // Platform owner/admins acting across companies (docs/SUPER_ADMIN_PLAN.md). `actor` is the session user, whose
 // platformRole the route has already checked.
@@ -13,6 +14,7 @@ const COMPANY_SELECT = {
   id: true,
   name: true,
   slug: true,
+  logo: true,
   status: true,
   createdAt: true,
   suspendedAt: true,
@@ -33,8 +35,8 @@ async function findAccessibleCompany(actor, id, select = COMPANY_SELECT) {
 }
 
 // Written directly: createAuditLog resolves the org through getUserMembership, and a platform admin outside a
-// company has none. Company actions land in that company's log; admin management has no org.
-async function recordPlatformAudit(actorId, { organizationId = null, action, entityType, entityId, metadata, ip, userAgent }) {
+// company has none. Company actions land in that company's log; admin management and deletes have no org.
+export async function recordPlatformAudit(actorId, { organizationId = null, action, entityType, entityId, metadata, ip, userAgent }) {
   try {
     await prisma.auditLog.create({
       data: { userId: actorId, organizationId, action, entityType, entityId, metadata, ip: ip ?? null, userAgent: userAgent ?? null },
@@ -215,6 +217,67 @@ export async function inviteCompanyUser(actor, id, { email: rawEmail, role }, { 
   });
 }
 
+/**
+ * Removes a company with no way back: the company, every member account whose only company it is, its audit
+ * trail and its R2 files. Platform admins inside it keep their accounts. Shared by the owner's delete and an org
+ * admin's Settings delete; callers check who may do it and write the audit row.
+ * @returns {Promise<{ memberIds: string[], reportCount: number }>}
+ */
+export async function purgeCompany(id) {
+  const running = await prisma.report.count({ where: { organizationId: id, status: 'processing' } });
+  if (running > 0) throw new ConflictError('A reconciliation is running in this company. Delete it once the run finishes.');
+
+  // Read before the transaction: the cascade removes the rows that hold these keys.
+  const members = await prisma.user.findMany({
+    where: {
+      members: { some: { organizationId: id, isSupport: false } },
+      NOT: { members: { some: { organizationId: { not: id }, isSupport: false } } },
+    },
+    select: { id: true },
+  });
+  const memberIds = members.map((m) => m.id);
+  const reports = await prisma.report.findMany({ where: { organizationId: id }, select: { id: true, fileAKey: true, fileBKey: true } });
+  // Imported here: reportService pulls in the BullMQ queues, which auth.js (an importer of this module) must not.
+  const { reportFileKeys } = await import('./reportService.js');
+  const reportKeys = await reportFileKeys(reports, id);
+  const prefixes = [...memberIds.map((userId) => `uploads/${userId}/`), `exports/${id}/`, `org-logos/${id}/`];
+
+  await prisma.$transaction(async (tx) => {
+    await tx.auditLog.deleteMany({ where: { organizationId: id } });
+    await tx.session.updateMany({ where: { activeOrganizationId: id }, data: { activeOrganizationId: null } });
+    await tx.organization.delete({ where: { id } });
+    await tx.user.deleteMany({ where: { id: { in: memberIds } } });
+  });
+
+  // After commit, best-effort like report deletes: a failure leaves orphaned files (logged), never half a company.
+  try {
+    await deleteR2Objects(reportKeys);
+    for (const prefix of prefixes) await deleteR2Prefix(prefix);
+  } catch (err) {
+    console.error('Failed to delete company files from R2', id, err);
+  }
+
+  return { memberIds, reportCount: reports.length };
+}
+
+/** Owner only, suspended companies only. Recorded as a platform audit row. */
+export async function deleteCompany(actor, id, { ip, userAgent } = {}) {
+  // The route allows only the owner too; irreversible, so the service doesn't rely on that alone.
+  if (actor.platformRole !== 'owner') throw new AuthorisationError('Only the platform owner can delete a company');
+  const company = await findAccessibleCompany(actor, id, { id: true, name: true, slug: true, status: true });
+  if (company.status !== 'suspended') throw new ConflictError('Suspend the company before deleting it');
+
+  const { memberIds, reportCount } = await purgeCompany(id);
+  await recordPlatformAudit(actor.id, {
+    action: 'platform.company.delete',
+    entityType: 'organization',
+    entityId: id,
+    metadata: { name: company.name, slug: company.slug, deletedUsers: memberIds.length, deletedReports: reportCount },
+    ip,
+    userAgent,
+  });
+}
+
 // --- Entering a company ---
 
 /**
@@ -266,6 +329,7 @@ export async function listPlatformAdmins({ q, offset = 0, limit = 20 }) {
         id: true,
         name: true,
         email: true,
+        image: true,
         platformRole: true,
         platformStatus: true,
         createdAt: true,
@@ -293,7 +357,8 @@ export async function invitePlatformAdmin(actor, { name, email: rawEmail }, { ip
   // Imported here: auth.js imports this module. The reset flow creates the credential account on first use, and
   // auth.js's sendResetPassword sends the onboarding email while the admin has no login yet.
   const { auth } = await import('../auth.js');
-  await auth.api.requestPasswordReset({ body: { email, redirectTo: `${process.env.FRONTEND_URL}/` } });
+  // setup=1 makes the frontend word the reset form as first-time setup.
+  await auth.api.requestPasswordReset({ body: { email, redirectTo: `${process.env.FRONTEND_URL}/?setup=1` } });
 
   await recordPlatformAudit(actor.id, {
     action: 'platform.admin.invite',

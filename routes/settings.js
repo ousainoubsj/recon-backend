@@ -126,3 +126,12 @@ settingsRouter.post(
   validate(avatarPresignSchema),
   catchAsync(settingsController.createAvatarPresignedUpload),
 );
+
+// The only way to delete an organization: auth.js blocks Better Auth's own /organization/delete, which would skip
+// the member accounts, audit trail and R2 files.
+settingsRouter.delete(
+  '/organization',
+  authenticate,
+  catchAsync(requirePermission('organization', 'delete')),
+  catchAsync(settingsController.deleteOrganization),
+);

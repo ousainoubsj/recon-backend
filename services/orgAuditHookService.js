@@ -13,7 +13,6 @@ const AUDIT_ACTIONS = {
   '/organization/accept-invitation': 'organization.invitation.accept',
   '/organization/cancel-invitation': 'organization.invitation.cancel',
   '/organization/update': 'organization.update',
-  '/organization/delete': 'organization.delete',
   '/sign-in/email': 'auth.login',
   '/callback/google': 'auth.login',
   '/callback/apple': 'auth.login',
@@ -38,12 +37,12 @@ function isFailedResponse(returned) {
 
 // Read-only/non-mutating-to-org-state actions are 'info'; actions that
 // already trigger a notification to an affected *other* user elsewhere in
-// this codebase (role changed, member removed, org deleted) are 'warning' —
+// this codebase (role changed, member removed) are 'warning' —
 // everything else defaults to 'success'. See reportService.js's
 // bulkDeleteReports for the equivalent report-side rule.
+// organization.delete is no longer recorded here: Better Auth's path is blocked, and settingsService writes it.
 const STATUS_BY_ACTION = {
   'auth.login': 'info',
-  'organization.delete': 'warning',
 };
 
 // Best-effort IP extraction for the Better-Auth-hook-driven entries — unlike
@@ -70,8 +69,6 @@ function describeOrgAction(ctx) {
       return withSubject({ role: returned.role }, { name: returned.email });
     case '/organization/update':
       return ctx.body?.data ?? null;
-    case '/organization/delete':
-      return withSubject({}, { name: returned?.name });
     default:
       return { method: LOGIN_METHOD_BY_PATH[ctx.path] };
   }

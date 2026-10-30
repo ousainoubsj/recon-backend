@@ -35,6 +35,8 @@ const roles = Object.fromEntries(
 // /organization/leave has no UI and would remove a membership with neither an audit row nor our locked
 // last-admin check.
 const OWNED_MEMBER_PATHS = new Set(['/organization/update-member-role', '/organization/remove-member', '/organization/leave']);
+// Deleting goes through DELETE /api/settings/organization, which also removes member accounts, audit rows and files.
+const OWNED_DELETE_PATH = '/organization/delete';
 
 export const auth = betterAuth({
   database: prismaAdapter(prisma, { provider: 'postgresql' }),
@@ -144,6 +146,9 @@ export const auth = betterAuth({
       if (!ctx.path.startsWith('/organization')) return;
       if (OWNED_MEMBER_PATHS.has(ctx.path)) {
         throw new APIError('FORBIDDEN', { message: 'Membership changes go through /api/team/members' });
+      }
+      if (ctx.path === OWNED_DELETE_PATH) {
+        throw new APIError('FORBIDDEN', { message: 'Delete the organization from Settings' });
       }
       const session = await auth.api.getSession({ headers: ctx.headers }).catch(() => null);
       await repairActiveOrganization(session?.session ?? null, { prisma });

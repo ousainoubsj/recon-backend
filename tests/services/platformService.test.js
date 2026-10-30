@@ -1,12 +1,13 @@
 import { jest } from '@jest/globals';
 
 const mockTx = {
-  organization: { create: jest.fn(), update: jest.fn() },
+  organization: { create: jest.fn(), update: jest.fn(), delete: jest.fn() },
   invitation: { findFirst: jest.fn(), create: jest.fn(), update: jest.fn() },
+  auditLog: { deleteMany: jest.fn() },
   platformAdminCompany: { create: jest.fn(), createMany: jest.fn(), deleteMany: jest.fn() },
   member: { create: jest.fn(), deleteMany: jest.fn() },
   session: { updateMany: jest.fn(), deleteMany: jest.fn() },
-  user: { update: jest.fn() },
+  user: { update: jest.fn(), deleteMany: jest.fn() },
 };
 const mockPrisma = {
   organization: { findFirst: jest.fn(), findMany: jest.fn(), count: jest.fn(), update: jest.fn() },
@@ -15,6 +16,7 @@ const mockPrisma = {
   session: { updateMany: jest.fn() },
   account: { count: jest.fn() },
   platformAdminCompany: { findMany: jest.fn() },
+  report: { count: jest.fn(), findMany: jest.fn() },
   auditLog: { create: jest.fn().mockResolvedValue({}) },
   $transaction: jest.fn((arg) => (typeof arg === 'function' ? arg(mockTx) : Promise.all(arg))),
 };
@@ -23,11 +25,18 @@ jest.unstable_mockModule('../../config/prisma.config.js', () => ({ prisma: mockP
 const mockSendOrgInvitationEmail = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/emailService.js', () => ({ sendOrgInvitationEmail: mockSendOrgInvitationEmail }));
 
+const mockReportFileKeys = jest.fn().mockResolvedValue([]);
+jest.unstable_mockModule('../../services/reportService.js', () => ({ reportFileKeys: mockReportFileKeys }));
+
+const mockDeleteR2Objects = jest.fn().mockResolvedValue(undefined);
+const mockDeleteR2Prefix = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../utils/r2Client.js', () => ({ deleteR2Objects: mockDeleteR2Objects, deleteR2Prefix: mockDeleteR2Prefix }));
+
 const mockRequestPasswordReset = jest.fn().mockResolvedValue({});
 jest.unstable_mockModule('../../auth.js', () => ({ auth: { api: { requestPasswordReset: mockRequestPasswordReset } } }));
 
 const platform = await import('../../services/platformService.js');
-const { ConflictError, NotFoundError, ValidationError } = await import('../../errors.js');
+const { AuthorisationError, ConflictError, NotFoundError, ValidationError } = await import('../../errors.js');
 
 const OWNER = { id: 'owner-1', platformRole: 'owner', name: 'Owner', email: 'owner@recon-cil.com' };
 const ADMIN = { id: 'admin-1', platformRole: 'admin', name: 'Awa', email: 'awa@recon-cil.com' };
@@ -290,5 +299,86 @@ describe('signInBlockReason', () => {
 
     await expect(platform.signInBlockReason('u1')).resolves.toBe(expected);
     expect(mockPrisma.user.findUnique.mock.calls[0][0].select.members.where).toEqual({ isSupport: false });
+  });
+});
+
+describe('deleteCompany', () => {
+  const suspended = { id: 'org-a', name: 'Atlantic', slug: 'co-1', status: 'suspended' };
+
+  beforeEach(() => {
+    mockPrisma.organization.findFirst.mockResolvedValue(suspended);
+    mockPrisma.report.count.mockResolvedValue(0);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: 'member-1' }, { id: 'member-2' }]);
+    mockPrisma.report.findMany.mockResolvedValue([{ id: 'r1', fileAKey: 'uploads/member-1/a.csv', fileBKey: 'uploads/member-1/b.csv' }]);
+    mockReportFileKeys.mockResolvedValue(['uploads/member-1/a.csv', 'uploads/staff-1/b.csv']);
+  });
+
+  it('refuses an admin even when the company is assigned to them', async () => {
+    await expect(platform.deleteCompany(ADMIN, 'org-a')).rejects.toBeInstanceOf(AuthorisationError);
+    expect(mockPrisma.organization.findFirst).not.toHaveBeenCalled();
+    expect(mockTx.organization.delete).not.toHaveBeenCalled();
+  });
+
+  it('409s a company that is not suspended, before reading or deleting anything', async () => {
+    mockPrisma.organization.findFirst.mockResolvedValue({ ...suspended, status: 'active' });
+
+    await expect(platform.deleteCompany(OWNER, 'org-a')).rejects.toThrow('Suspend the company before deleting it');
+    expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
+    expect(mockTx.organization.delete).not.toHaveBeenCalled();
+  });
+
+  it('409s while a reconciliation is running', async () => {
+    mockPrisma.report.count.mockResolvedValue(1);
+
+    await expect(platform.deleteCompany(OWNER, 'org-a')).rejects.toBeInstanceOf(ConflictError);
+    expect(mockPrisma.report.count).toHaveBeenCalledWith({ where: { organizationId: 'org-a', status: 'processing' } });
+    expect(mockTx.organization.delete).not.toHaveBeenCalled();
+  });
+
+  it('selects only users whose sole non-support membership is this company (platform admins are never deleted)', async () => {
+    await platform.deleteCompany(OWNER, 'org-a');
+
+    expect(mockPrisma.user.findMany).toHaveBeenCalledWith({
+      where: {
+        members: { some: { organizationId: 'org-a', isSupport: false } },
+        NOT: { members: { some: { organizationId: { not: 'org-a' }, isSupport: false } } },
+      },
+      select: { id: true },
+    });
+    expect(mockTx.user.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['member-1', 'member-2'] } } });
+  });
+
+  it('deletes audit rows, clears sessions inside it and deletes the company in one transaction, files after commit', async () => {
+    const order = [];
+    mockReportFileKeys.mockImplementation(async () => {
+      order.push('read keys');
+      return ['uploads/staff-1/b.csv'];
+    });
+    mockTx.organization.delete.mockImplementation(async () => order.push('delete company'));
+    mockDeleteR2Objects.mockImplementation(async () => order.push('delete files'));
+
+    await platform.deleteCompany(OWNER, 'org-a');
+
+    expect(order).toEqual(['read keys', 'delete company', 'delete files']);
+    expect(mockTx.auditLog.deleteMany).toHaveBeenCalledWith({ where: { organizationId: 'org-a' } });
+    expect(mockTx.session.updateMany).toHaveBeenCalledWith({ where: { activeOrganizationId: 'org-a' }, data: { activeOrganizationId: null } });
+    expect(mockTx.organization.delete).toHaveBeenCalledWith({ where: { id: 'org-a' } });
+    expect(mockDeleteR2Prefix.mock.calls.map((c) => c[0])).toEqual(['uploads/member-1/', 'uploads/member-2/', 'exports/org-a/', 'org-logos/org-a/']);
+  });
+
+  it('still completes and audits when R2 cleanup fails', async () => {
+    mockDeleteR2Objects.mockRejectedValueOnce(new Error('r2 down'));
+    const consoleError = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await expect(platform.deleteCompany(OWNER, 'org-a')).resolves.toBeUndefined();
+    expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        organizationId: null,
+        action: 'platform.company.delete',
+        entityId: 'org-a',
+        metadata: { name: 'Atlantic', slug: 'co-1', deletedUsers: 2, deletedReports: 1 },
+      }),
+    });
+    consoleError.mockRestore();
   });
 });

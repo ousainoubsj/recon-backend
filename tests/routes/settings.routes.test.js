@@ -34,6 +34,7 @@ const mockSettingsService = {
   updateReconciliationDefaults: jest.fn(),
   getNotificationPreferences: jest.fn(),
   updateNotificationPreferences: jest.fn(),
+  deleteOrganization: jest.fn(),
 };
 jest.unstable_mockModule('../../services/settingsService.js', () => mockSettingsService);
 
@@ -262,5 +263,23 @@ describe('POST /api/settings/organization-logo/presign', () => {
 
     expect(res.status).toBe(403);
     expect(mockGetSignedUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('DELETE /api/settings/organization', () => {
+  it("deletes the admin's organization: 204", async () => {
+    const res = await request(app).delete('/api/settings/organization');
+
+    expect(res.status).toBe(204);
+    expect(mockSettingsService.deleteOrganization).toHaveBeenCalledWith({ id: USER_ID }, expect.any(Object));
+  });
+
+  it('rejects a non-admin with a 403 without reaching the service', async () => {
+    mockGetUserMembership.mockResolvedValue({ organizationId: 'org-1', role: 'analyst' });
+
+    const res = await request(app).delete('/api/settings/organization');
+
+    expect(res.status).toBe(403);
+    expect(mockSettingsService.deleteOrganization).not.toHaveBeenCalled();
   });
 });

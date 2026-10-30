@@ -45,7 +45,7 @@ try {
     console.log(`Created platform owner ${email}.`)
   }
 
-  await auth.api.requestPasswordReset({ body: { email, redirectTo: `${process.env.FRONTEND_URL}/` } })
+  await auth.api.requestPasswordReset({ body: { email, redirectTo: `${process.env.FRONTEND_URL}/?setup=1` } })
   console.log('Set-password email sent.')
 } catch (err) {
   console.error(err.message)

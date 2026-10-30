@@ -17,6 +17,7 @@ const mockPlatform = {
   updateCompany: jest.fn(),
   setCompanyStatus: jest.fn().mockResolvedValue({ id: 'org-a' }),
   inviteCompanyUser: jest.fn(),
+  deleteCompany: jest.fn(),
   enterCompany: jest.fn().mockResolvedValue({ organizationId: 'org-a', name: 'Atlantic' }),
   exitCompany: jest.fn(),
   listPlatformAdmins: jest.fn().mockResolvedValue({ items: [], total: 0 }),
@@ -52,6 +53,7 @@ const COMPANY_ROUTES = [
   ['post', '/api/super-admin/exit'],
 ];
 const OWNER_ROUTES = [
+  ['delete', `/api/super-admin/companies/${ORG_ID}`],
   ['get', '/api/super-admin/admins'],
   ['post', '/api/super-admin/admins'],
   ['post', '/api/super-admin/admins/admin-2/suspend'],
@@ -155,5 +157,17 @@ describe('platform admins (owner)', () => {
 
     expect(ok.status).toBe(200);
     expect(bad.status).toBe(422);
+  });
+});
+
+describe('delete company (owner)', () => {
+  it('204s for the owner and 404s a malformed id before the service', async () => {
+    const deleted = await request(app).delete(`/api/super-admin/companies/${ORG_ID}`);
+    const malformed = await request(app).delete('/api/super-admin/companies/bad%20id!');
+
+    expect(deleted.status).toBe(204);
+    expect(malformed.status).toBe(404);
+    expect(mockPlatform.deleteCompany).toHaveBeenCalledTimes(1);
+    expect(mockPlatform.deleteCompany).toHaveBeenCalledWith(OWNER, ORG_ID, expect.any(Object));
   });
 });

@@ -29,6 +29,11 @@ export const activateCompany = async (req, res) => {
   res.json(await platformService.setCompanyStatus(req.session.user, req.params.id, 'active', auditContext(req)));
 };
 
+export const deleteCompany = async (req, res) => {
+  await platformService.deleteCompany(req.session.user, req.params.id, auditContext(req));
+  res.status(204).end();
+};
+
 export const inviteCompanyUser = async (req, res) => {
   await platformService.inviteCompanyUser(req.session.user, req.params.id, req.body, auditContext(req));
   res.status(201).end();

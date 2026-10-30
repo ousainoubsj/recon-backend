@@ -1,4 +1,4 @@
-import { DeleteObjectsCommand, S3Client } from '@aws-sdk/client-s3';
+import { DeleteObjectsCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 
 export const r2 = new S3Client({
   region: 'auto',
@@ -23,4 +23,16 @@ export async function deleteR2Objects(keys) {
       }),
     );
   }
+}
+
+// Everything under a prefix, page by page (ListObjectsV2 returns up to 1000 keys per page). Best-effort too.
+export async function deleteR2Prefix(prefix) {
+  let continuationToken = null;
+  do {
+    const page = await r2.send(
+      new ListObjectsV2Command({ Bucket: process.env.R2_BUCKET_NAME, Prefix: prefix, ContinuationToken: continuationToken ?? undefined }),
+    );
+    await deleteR2Objects((page.Contents ?? []).map((object) => object.Key));
+    continuationToken = page.IsTruncated ? page.NextContinuationToken : null;
+  } while (continuationToken);
 }

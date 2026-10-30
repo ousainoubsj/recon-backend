@@ -41,7 +41,6 @@ describe('auditOrgAction', () => {
     ['/organization/accept-invitation', { invitation: { role: 'viewer' }, member: {} }, 'organization.invitation.accept', 'success', { role: 'viewer' }],
     ['/organization/cancel-invitation', { email: 'invitee@example.com', role: 'analyst' }, 'organization.invitation.cancel', 'success', { role: 'analyst', subject: { name: 'invitee@example.com' } }],
     ['/organization/update', {}, 'organization.update', 'success', { name: 'Datafin Ltd' }],
-    ['/organization/delete', { name: 'Datafin Ltd' }, 'organization.delete', 'warning', { subject: { name: 'Datafin Ltd' } }],
   ])('maps %s to its action, status and explicit metadata', async (path, returned, expectedAction, expectedStatus, expectedMetadata) => {
     const deps = makeDeps();
     const body = { memberId: 'member-2', role: 'admin', data: { name: 'Datafin Ltd' }, organizationId: 'org-1' };

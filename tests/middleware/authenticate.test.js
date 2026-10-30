@@ -47,4 +47,14 @@ describe('authenticate middleware', () => {
     expect(next).toHaveBeenCalledWith(expect.any(AccessBlockedError));
     expect(mockTouchLastActive).not.toHaveBeenCalled();
   });
+
+  it('passes a failed session lookup to next() instead of leaving it unhandled', async () => {
+    const dbError = new Error('Failed to get session');
+    mockAuth.api.getSession.mockRejectedValue(dbError);
+    const next = jest.fn();
+
+    await authenticate({ headers: {} }, {}, next);
+
+    expect(next).toHaveBeenCalledWith(dbError);
+  });
 });

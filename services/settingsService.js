@@ -1,6 +1,7 @@
 import { prisma } from '../config/prisma.config.js';
 import { getUserMembership } from './organizationService.js';
 import { logAuditSafely } from './auditLogService.js';
+import { purgeCompany, recordPlatformAudit } from './platformService.js';
 import { AuthorisationError, ValidationError } from '../errors.js';
 
 const ORG_INFO_FIELDS = ['orgType', 'country', 'timezone', 'dateFormat', 'currency'];
@@ -201,4 +202,24 @@ export async function filterEmailNotificationOptedIn(emails) {
   });
   const optedOut = new Set(users.filter((u) => !u.emailNotificationsEnabled).map((u) => u.email.toLowerCase()));
   return emails.filter((e) => !optedOut.has(e.toLowerCase()));
+}
+
+/**
+ * An org admin deleting their own company: the same purge as the platform owner's delete, so every member account
+ * (theirs included), the audit trail and the files go with it. Recorded with no org, since none is left.
+ */
+export async function deleteOrganization(user, { ip, userAgent } = {}) {
+  const { organizationId } = await getUserMembership(user.id);
+  const company = await prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true, slug: true } });
+
+  const { memberIds, reportCount } = await purgeCompany(organizationId);
+  // A real member's account is gone by now, so the row can't reference it; a platform admin acting as the company remains.
+  await recordPlatformAudit(memberIds.includes(user.id) ? null : user.id, {
+    action: 'organization.delete',
+    entityType: 'organization',
+    entityId: organizationId,
+    metadata: { name: company.name, slug: company.slug, deletedUsers: memberIds.length, deletedReports: reportCount, deletedBy: user.email },
+    ip,
+    userAgent,
+  });
 }

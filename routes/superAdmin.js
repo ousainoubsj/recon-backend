@@ -39,6 +39,8 @@ superAdminRouter.patch(
   validate(z.object({ name: z.string().trim().min(1).max(120) })),
   catchAsync(superAdminController.updateCompany),
 );
+// Irreversible: owner only, and the service requires the company to be suspended first.
+superAdminRouter.delete('/companies/:id', ...ownerOnly, companyParams, catchAsync(superAdminController.deleteCompany));
 superAdminRouter.post('/companies/:id/suspend', ...anyPlatformAdmin, companyParams, catchAsync(superAdminController.suspendCompany));
 superAdminRouter.post('/companies/:id/activate', ...anyPlatformAdmin, companyParams, catchAsync(superAdminController.activateCompany));
 superAdminRouter.post(

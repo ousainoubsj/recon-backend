@@ -258,6 +258,7 @@ describe('listReports', () => {
     valueBreakdown: true,
     favorites: { where: { userId: USER_ID }, select: { id: true } },
     supersededBy: { select: { id: true, sequenceYear: true, sequenceNumber: true } },
+    user: { select: { name: true, image: true } },
   };
   const DEFAULT_STATUS = { in: ['completed', 'failed'] };
 

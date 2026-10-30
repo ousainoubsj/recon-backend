@@ -26,6 +26,9 @@ export const pgPool = new pg.Pool({
   max: Number(process.env.PG_POOL_MAX) || undefined,
 });
 
+// Neon drops idle connections when its compute suspends; without a listener that error crashes the process.
+pgPool.on('error', (err) => console.error('Idle Postgres connection dropped', err.message));
+
 const adapter = new PrismaPg(pgPool);
 
 export const prisma = new PrismaClient({
