@@ -207,14 +207,16 @@ export async function filterEmailNotificationOptedIn(emails) {
 /**
  * An org admin deleting their own company: the same purge as the platform owner's delete, so every member account
  * (theirs included), the audit trail and the files go with it. Recorded with no org, since none is left.
+ * Platform staff acting as the company are refused: their delete is the owner-only, suspend-first one on the platform.
  */
 export async function deleteOrganization(user, { ip, userAgent } = {}) {
-  const { organizationId } = await getUserMembership(user.id);
+  const { organizationId, isSupport } = await getUserMembership(user.id);
+  if (isSupport) throw new AuthorisationError('Companies are deleted from the platform view by the platform owner');
   const company = await prisma.organization.findUnique({ where: { id: organizationId }, select: { name: true, slug: true } });
 
   const { memberIds, reportCount } = await purgeCompany(organizationId);
-  // A real member's account is gone by now, so the row can't reference it; a platform admin acting as the company remains.
-  await recordPlatformAudit(memberIds.includes(user.id) ? null : user.id, {
+  // The actor's account went with the purge, so the row can't reference it; deletedBy records who it was.
+  await recordPlatformAudit(null, {
     action: 'organization.delete',
     entityType: 'organization',
     entityId: organizationId,

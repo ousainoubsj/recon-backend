@@ -30,7 +30,7 @@ const {
   getNotificationPreferences,
   updateNotificationPreferences,
 } = await import('../../services/settingsService.js');
-const { ValidationError } = await import('../../errors.js');
+const { AuthorisationError, ValidationError } = await import('../../errors.js');
 
 const USER_ID = 'user-1';
 const ORG_ID = 'org-1';
@@ -300,10 +300,12 @@ describe('deleteOrganization', () => {
     });
   });
 
-  it('keeps the user id for a platform admin acting as the company, who survives', async () => {
-    await deleteOrganization({ id: 'staff-1', email: 'awa@recon-cil.com' });
+  it('refuses a platform admin acting as the company, before purging anything', async () => {
+    mockPrisma.member.findFirst.mockResolvedValueOnce({ organizationId: ORG_ID, role: 'admin', isSupport: true });
 
-    expect(mockRecordPlatformAudit.mock.calls[0][0]).toBe('staff-1');
+    await expect(deleteOrganization({ id: 'staff-1', email: 'awa@recon-cil.com' })).rejects.toThrow(AuthorisationError);
+    expect(mockPurgeCompany).not.toHaveBeenCalled();
+    expect(mockRecordPlatformAudit).not.toHaveBeenCalled();
   });
 
   it('does not audit when the purge refuses (e.g. a running reconciliation)', async () => {

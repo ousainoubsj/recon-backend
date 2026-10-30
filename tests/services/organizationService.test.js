@@ -87,7 +87,7 @@ describe('getUserMembership — platform rules', () => {
       organizationId: 'org-1', role: 'admin', status: 'active', isSupport: true, organization: { status: 'suspended' },
     });
 
-    await expect(getUserMembership('admin-1')).resolves.toEqual({ organizationId: 'org-1', role: 'admin', status: 'active' });
+    await expect(getUserMembership('admin-1')).resolves.toEqual({ organizationId: 'org-1', role: 'admin', status: 'active', isSupport: true });
   });
 
   it('never creates a personal org for a platform admin outside any company', async () => {

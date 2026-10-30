@@ -7,7 +7,7 @@ import { createPersonalOrganizationIfUninvited } from './signupHookService.js';
  * up for an invitation that later expired or was cancelled, and a failed signup-time creation. Platform admins
  * never get one: outside a company they have no membership (docs/SUPER_ADMIN_PLAN.md).
  * @param {string} userId
- * @returns {Promise<{organizationId: string, role: string, status: 'active'|'inactive'}>}
+ * @returns {Promise<{organizationId: string, role: string, status: 'active'|'inactive', isSupport: boolean}>}
  * @throws {NotFoundError} if the user has no organization membership and none could be created
  * @throws {AccessBlockedError} if the user's company is suspended (support members are exempt)
  */
@@ -21,7 +21,7 @@ export async function getUserMembership(userId) {
     if (member.organization?.status === 'suspended' && !member.isSupport) {
       throw new AccessBlockedError("Your company's account has been suspended", 'organization-suspended');
     }
-    return { organizationId: member.organizationId, role: member.role, status: member.status };
+    return { organizationId: member.organizationId, role: member.role, status: member.status, isSupport: member.isSupport };
   };
 
   const member = await findMembership();
