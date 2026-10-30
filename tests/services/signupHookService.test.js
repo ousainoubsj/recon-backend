@@ -23,6 +23,16 @@ describe('handleUserCreated', () => {
     expect(createOrganization).not.toHaveBeenCalled();
   });
 
+  it('never creates an organization for a platform admin', async () => {
+    const createOrganization = jest.fn();
+    const deps = makeDeps({ createOrganization });
+
+    await handleUserCreated({ ...user, platformRole: 'admin' }, deps);
+
+    expect(deps.prisma.invitation.findFirst).not.toHaveBeenCalled();
+    expect(createOrganization).not.toHaveBeenCalled();
+  });
+
   it('creates an organization for the new user when there is no pending invitation', async () => {
     const createOrganization = jest.fn().mockResolvedValue({});
     const deps = makeDeps({ pendingInvite: null, createOrganization });
@@ -80,6 +90,13 @@ describe('releaseEmptyPersonalOrganization', () => {
       auditLog: { create: jest.fn().mockResolvedValue({}) },
     };
   }
+
+  it('refuses a platform admin without touching their memberships', async () => {
+    const prisma = makePrisma();
+
+    await expect(releaseEmptyPersonalOrganization({ id: 'admin-1', platformRole: 'admin' }, invitation, { prisma })).resolves.toBe(false);
+    expect(prisma.member.findMany).not.toHaveBeenCalled();
+  });
 
   it('lets a user with no org join without deleting anything', async () => {
     const prisma = makePrisma();

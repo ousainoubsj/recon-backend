@@ -52,6 +52,7 @@ describe('search', () => {
     expect(mockPrisma.member.findMany).toHaveBeenCalledWith({
       where: {
         organizationId: ORG_ID,
+        isSupport: false,
         user: { OR: [{ name: { contains: 'amie', mode: 'insensitive' } }, { email: { contains: 'amie', mode: 'insensitive' } }] },
       },
       select: { id: true, role: true, user: { select: { id: true, name: true, email: true } } },

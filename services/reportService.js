@@ -2129,10 +2129,14 @@ async function reportFileKeys(reports, organizationId) {
   const candidateUploadKeys = [...new Set(reports.flatMap((r) => [r.fileAKey, r.fileBKey]).filter((key) => key?.startsWith('uploads/')))];
   if (candidateUploadKeys.length === 0) return exportKeys;
 
-  // Only an org member's uploads are ours to delete; a stray key pointing elsewhere never is.
+  // Only uploads by an org member, or by platform staff who uploaded while inside the company, are ours to
+  // delete; a stray key pointing elsewhere never is.
   const uploaderIds = [...new Set(candidateUploadKeys.map((key) => key.split('/')[1]))];
-  const members = await prisma.member.findMany({ where: { organizationId, userId: { in: uploaderIds } }, select: { userId: true } });
-  const memberIds = new Set(members.map((m) => m.userId));
+  const uploaders = await prisma.user.findMany({
+    where: { id: { in: uploaderIds }, OR: [{ members: { some: { organizationId } } }, { platformRole: { not: null } }] },
+    select: { id: true },
+  });
+  const memberIds = new Set(uploaders.map((u) => u.id));
 
   // Not org-scoped on purpose: any surviving report anywhere that points at a key keeps the file alive.
   const survivors = await prisma.report.findMany({

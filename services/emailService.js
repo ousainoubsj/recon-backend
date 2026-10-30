@@ -190,6 +190,26 @@ export async function sendPasswordResetEmail(user, url) {
 }
 
 /**
+ * The first "password reset" a platform admin gets: auth.js sends this instead while they have no login yet.
+ * @param {{email: string, name: string}} user
+ * @param {string} url
+ */
+export async function sendPlatformAdminInviteEmail(user, url) {
+  const html = await renderEmailTemplate('email-platform-admin-invite', {
+    name: escapeHtmlForEmail(user.name),
+    url,
+    expiresInMinutes: 60, // the reset token's lifetime, as for sendPasswordResetEmail
+  });
+
+  await sendEmail({
+    to: user.email,
+    subject: "You've been added as a Reconcil platform admin",
+    html,
+    text: htmlToText(html),
+  });
+}
+
+/**
  * Wired into the `emailOTP` plugin's `sendVerificationOTP` option.
  * @param {{email: string, otp: string, type: 'sign-in' | 'email-verification' | 'forget-password' | 'change-email'}} data
  */

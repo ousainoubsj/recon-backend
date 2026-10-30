@@ -53,3 +53,11 @@ export class ConflictError extends AppError {
     super(message, 409, 'https://recon.app/errors/conflict');
   }
 }
+
+// A signed-in user whose access has been cut off: a suspended or removed platform admin, or a member of a
+// suspended company. `reason` becomes the type slug the frontend keys off.
+export class AccessBlockedError extends AppError {
+  constructor(message, reason) {
+    super(message, 403, `https://recon.app/errors/${reason}`);
+  }
+}

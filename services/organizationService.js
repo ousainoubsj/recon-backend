@@ -1,26 +1,35 @@
 import { prisma } from '../config/prisma.config.js';
-import { NotFoundError } from '../errors.js';
+import { AccessBlockedError, NotFoundError } from '../errors.js';
 import { createPersonalOrganizationIfUninvited } from './signupHookService.js';
 
 /**
  * A user with no org gets their own here, unless a usable invitation is waiting for them. That covers signing
- * up for an invitation that later expired or was cancelled, and a failed signup-time creation.
+ * up for an invitation that later expired or was cancelled, and a failed signup-time creation. Platform admins
+ * never get one: outside a company they have no membership (docs/SUPER_ADMIN_PLAN.md).
  * @param {string} userId
  * @returns {Promise<{organizationId: string, role: string, status: 'active'|'inactive'}>}
  * @throws {NotFoundError} if the user has no organization membership and none could be created
+ * @throws {AccessBlockedError} if the user's company is suspended (support members are exempt)
  */
 export async function getUserMembership(userId) {
-  const findMembership = () =>
-    prisma.member.findFirst({
+  const findMembership = async () => {
+    const member = await prisma.member.findFirst({
       where: { userId },
-      select: { organizationId: true, role: true, status: true },
+      select: { organizationId: true, role: true, status: true, isSupport: true, organization: { select: { status: true } } },
     });
+    if (!member) return null;
+    if (member.organization?.status === 'suspended' && !member.isSupport) {
+      throw new AccessBlockedError("Your company's account has been suspended", 'organization-suspended');
+    }
+    return { organizationId: member.organizationId, role: member.role, status: member.status };
+  };
 
   const member = await findMembership();
   if (member) return member;
 
-  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true } });
+  const user = await prisma.user.findUnique({ where: { id: userId }, select: { id: true, email: true, platformRole: true } });
   if (!user) throw new NotFoundError('User does not belong to an organization');
+  if (user.platformRole) throw new NotFoundError('Select a company to act on');
 
   // Imported here: auth.js imports services that import this module.
   const { auth } = await import('../auth.js');

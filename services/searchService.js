@@ -34,6 +34,7 @@ export async function search(userId, query) {
     prisma.member.findMany({
       where: {
         organizationId,
+        isSupport: false,
         user: { OR: [{ name: { contains: q, mode: 'insensitive' } }, { email: { contains: q, mode: 'insensitive' } }] },
       },
       select: { id: true, role: true, user: { select: { id: true, name: true, email: true } } },

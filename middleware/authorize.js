@@ -29,3 +29,12 @@ export function requirePermission(resource, action) {
     next();
   };
 }
+
+// Gate for /api/super-admin. Platform roles live on the user, not on any membership.
+export function requirePlatformRole(...roles) {
+  return (req, res, next) => {
+    const { platformRole, platformStatus } = req.session.user;
+    if (!roles.includes(platformRole) || platformStatus !== 'active') return next(new AuthorisationError());
+    next();
+  };
+}

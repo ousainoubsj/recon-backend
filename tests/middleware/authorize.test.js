@@ -10,7 +10,7 @@ jest.unstable_mockModule('../../services/auditLogService.js', () => ({
   logAuditOnce: mockLogAuditOnce,
 }));
 
-const { requirePermission } = await import('../../middleware/authorize.js');
+const { requirePermission, requirePlatformRole } = await import('../../middleware/authorize.js');
 const { AuthorisationError } = await import('../../errors.js');
 
 beforeEach(() => jest.clearAllMocks());
@@ -89,5 +89,25 @@ describe('requirePermission', () => {
     const next = jest.fn();
     await requirePermission('auditLog', 'readOwn')(req, {}, next);
     expect(next).toHaveBeenCalledWith(expect.any(AuthorisationError));
+  });
+});
+
+describe('requirePlatformRole', () => {
+  const run = (user, roles) => {
+    const next = jest.fn();
+    requirePlatformRole(...roles)({ session: { user } }, {}, next);
+    return next.mock.calls[0][0];
+  };
+
+  it('lets an active platform user with an allowed role through', () => {
+    expect(run({ platformRole: 'admin', platformStatus: 'active' }, ['owner', 'admin'])).toBeUndefined();
+  });
+
+  it.each([
+    [{ platformRole: null, platformStatus: null }, ['owner', 'admin']],
+    [{ platformRole: 'admin', platformStatus: 'active' }, ['owner']],
+    [{ platformRole: 'owner', platformStatus: 'suspended' }, ['owner']],
+  ])('refuses %o for %o', (user, roles) => {
+    expect(run(user, roles)).toBeInstanceOf(AuthorisationError);
   });
 });

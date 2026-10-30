@@ -14,6 +14,7 @@ export async function listMembers(userId, { q, role, status, department, offset,
   return prisma.member.findMany({
     where: {
       organizationId,
+      isSupport: false, // a platform admin inside the company is never listed to it
       ...(query
         ? {
             user: {
@@ -40,12 +41,12 @@ export async function getTeamStats(userId) {
   const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 
   const [totalUsers, activeUsers, administrators, pendingInvites, newThisMonth, deactivatedThisMonth] = await Promise.all([
-    prisma.member.count({ where: { organizationId } }),
-    prisma.member.count({ where: { organizationId, status: 'active' } }),
-    prisma.member.count({ where: { organizationId, role: 'admin' } }),
+    prisma.member.count({ where: { organizationId, isSupport: false } }),
+    prisma.member.count({ where: { organizationId, isSupport: false, status: 'active' } }),
+    prisma.member.count({ where: { organizationId, isSupport: false, role: 'admin' } }),
     // Better Auth never flips an expired invitation's status, so expiry is checked here.
     prisma.invitation.count({ where: { organizationId, status: 'pending', expiresAt: { gt: new Date() } } }),
-    prisma.member.count({ where: { organizationId, createdAt: { gte: startOfMonth } } }),
+    prisma.member.count({ where: { organizationId, isSupport: false, createdAt: { gte: startOfMonth } } }),
     // Member has no deactivatedAt timestamp — the only record of *when* a
     // deactivation happened is updateMember's own 'member.update' audit log
     // entry, whose metadata carries the new status.
@@ -78,7 +79,8 @@ async function lockOrganization(tx, organizationId) {
 
 async function assertNotLastActiveAdmin(tx, organizationId, member) {
   if (member.role !== 'admin' || member.status !== 'active') return;
-  const activeAdmins = await tx.member.count({ where: { organizationId, role: 'admin', status: 'active' } });
+  // A support member must not keep an org's admin count alive.
+  const activeAdmins = await tx.member.count({ where: { organizationId, isSupport: false, role: 'admin', status: 'active' } });
   if (activeAdmins <= 1) throw new ConflictError('The organization needs at least one active administrator');
 }
 
@@ -92,7 +94,7 @@ export async function updateMember(userId, memberId, { department, status }, { i
   const member = await prisma.$transaction(async (tx) => {
     if (status === 'inactive') await lockOrganization(tx, organizationId);
     const before = await tx.member.findFirst({
-      where: { id: memberId, organizationId },
+      where: { id: memberId, organizationId, isSupport: false },
       select: { department: true, status: true, role: true },
     });
     if (!before) throw new NotFoundError();
@@ -153,7 +155,7 @@ export async function updateMemberRole(userId, memberId, role, { ip, userAgent }
   const result = await prisma.$transaction(async (tx) => {
     await lockOrganization(tx, organizationId);
     const member = await tx.member.findFirst({
-      where: { id: memberId, organizationId },
+      where: { id: memberId, organizationId, isSupport: false },
       include: { user: { select: { name: true, email: true, image: true } } },
     });
     if (!member) throw new NotFoundError();
@@ -197,7 +199,7 @@ export async function removeMember(userId, memberId, { ip, userAgent } = {}) {
   await prisma.$transaction(async (tx) => {
     await lockOrganization(tx, organizationId);
     const member = await tx.member.findFirst({
-      where: { id: memberId, organizationId },
+      where: { id: memberId, organizationId, isSupport: false },
       include: { user: { select: { name: true, email: true } } },
     });
     if (!member) throw new NotFoundError();

@@ -21,7 +21,7 @@ export async function sendWeeklyDigests() {
     if (stats.current.count === 0) continue;
 
     const admins = await prisma.member.findMany({
-      where: { organizationId: org.id, role: 'admin', status: 'active' },
+      where: { organizationId: org.id, isSupport: false, role: 'admin', status: 'active' },
       select: { user: { select: { id: true, email: true, name: true } } },
     });
 

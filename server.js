@@ -13,6 +13,7 @@ import { notificationsRouter } from './routes/notifications.js';
 import { searchRouter } from './routes/search.js';
 import { supportRouter } from './routes/support.js';
 import { teamRouter } from './routes/team.js';
+import { superAdminRouter } from './routes/superAdmin.js';
 import { settingsRouter } from './routes/settings.js';
 import { authRateLimiter, apiRateLimiter } from './middleware/rateLimit.js';
 import { errorHandler } from './middleware/errorHandler.js';
@@ -95,6 +96,7 @@ app.use('/api/notifications', notificationsRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/support', supportRouter);
 app.use('/api/team', teamRouter);
+app.use('/api/super-admin', superAdminRouter);
 app.use('/api/settings', settingsRouter);
 
 app.use(errorHandler);

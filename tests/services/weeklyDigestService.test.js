@@ -58,7 +58,7 @@ describe('sendWeeklyDigests', () => {
       select: { id: true, name: true },
     });
     expect(mockPrisma.member.findMany).toHaveBeenCalledWith({
-      where: { organizationId: 'org-1', role: 'admin', status: 'active' },
+      where: { organizationId: 'org-1', isSupport: false, role: 'admin', status: 'active' },
       select: { user: { select: { id: true, email: true, name: true } } },
     });
     expect(mockSendWeeklyDigestEmail).toHaveBeenCalledTimes(2);

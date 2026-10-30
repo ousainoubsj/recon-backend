@@ -47,6 +47,8 @@ const mockPrisma = {
     upsert: jest.fn(),
     deleteMany: jest.fn(),
   },
+  // reportFileKeys: uploaders whose files the org may delete.
+  user: { findMany: jest.fn().mockResolvedValue([]) },
   member: {
     findFirst: jest.fn(),
     findMany: jest.fn(),
@@ -886,7 +888,7 @@ describe('updateDraft — replacing a file', () => {
   beforeEach(() => {
     mockPrisma.report.findFirst.mockResolvedValue(before);
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.member.findMany.mockResolvedValue([{ userId: USER_ID }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: USER_ID }]);
     mockPrisma.report.findMany.mockResolvedValue([]);
   });
 
@@ -1695,7 +1697,7 @@ describe('queuing a mapping preview', () => {
     const fileAKey = `uploads/${USER_ID}/a.csv`;
     mockPrisma.report.findFirst.mockResolvedValue({ columnMapping: null, config: null, name: null, fileAKey, fileBKey: `uploads/${USER_ID}/old-b.csv` });
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.member.findMany.mockResolvedValue([{ userId: USER_ID }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: USER_ID }]);
     mockPrisma.report.findMany.mockResolvedValue([]);
 
     await updateDraft(USER_ID, 'draft-1', { fileBKey: `uploads/${USER_ID}/new-b.csv` });
@@ -2616,7 +2618,7 @@ describe('addFavorite / removeFavorite', () => {
 describe('report file cleanup in R2', () => {
   beforeEach(() => {
     // Both test users are org members; no other report shares these files unless a test says so.
-    mockPrisma.member.findMany.mockResolvedValue([{ userId: USER_ID }, { userId: OTHER_USER_ID }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: USER_ID }, { id: OTHER_USER_ID }]);
     mockPrisma.report.findMany.mockResolvedValue([]);
   });
 

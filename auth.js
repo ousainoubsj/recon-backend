@@ -10,7 +10,8 @@ import { repairActiveOrganization } from './services/sessionHookService.js';
 import { auditOrgAction } from './services/orgAuditHookService.js';
 import { logAuditSafely } from './services/auditLogService.js';
 import { createNotification } from './services/notificationService.js';
-import { sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail } from './services/emailService.js';
+import { sendOrgInvitationEmail, sendPasswordResetEmail, sendOtpEmail, sendPlatformAdminInviteEmail } from './services/emailService.js';
+import { exitCompany, isAwaitingFirstPassword, signInBlockReason } from './services/platformService.js';
 
 // Statement lists every resource:action our access-control roles can grant.
 // Includes Better Auth's own org-management resources (organization, member,
@@ -43,7 +44,11 @@ export const auth = betterAuth({
     // Social sign-in is unaffected: Google/Apple mark emailVerified from the
     // provider's own claim, not via this flag (see oauth2/link-account.mjs).
     requireEmailVerification: true,
-    sendResetPassword: async ({ user, url }) => sendPasswordResetEmail(user, url),
+    // A platform admin the owner just invited has no login yet: their first reset link is the onboarding email.
+    sendResetPassword: async ({ user, url }) =>
+      user.platformRole && (await isAwaitingFirstPassword(user.id))
+        ? sendPlatformAdminInviteEmail(user, url)
+        : sendPasswordResetEmail(user, url),
   },
   socialProviders: {
     google: {
@@ -85,9 +90,25 @@ export const auth = betterAuth({
     // activeOrganizationId snapshot from before that repair ran.
     cookieCache: { enabled: false },
   },
+  // Platform operator fields (docs/SUPER_ADMIN_PLAN.md), exposed on the session user; never settable by clients.
+  user: {
+    additionalFields: {
+      platformRole: { type: 'string', required: false, input: false },
+      platformStatus: { type: 'string', required: false, input: false },
+    },
+  },
   // Role now lives per-organization on Member.role (see the organization
   // plugin below), not globally on User.
   databaseHooks: {
+    session: {
+      create: {
+        // Suspended/removed platform admins and members of a suspended company get no new session.
+        before: async (session) => {
+          const reason = await signInBlockReason(session.userId);
+          if (reason) throw new APIError('FORBIDDEN', { message: reason });
+        },
+      },
+    },
     user: {
       create: {
         // A Google sign-up started from an invite link carries the invitation id through the OAuth state.
@@ -114,6 +135,12 @@ export const auth = betterAuth({
     // Repairing it here, on every request to an org endpoint, self-heals
     // regardless of that race.
     before: createAuthMiddleware(async (ctx) => {
+      // A platform admin signing out leaves the company they were inside. Read now: after sign-out the session is gone.
+      if (ctx.path === '/sign-out') {
+        const session = await auth.api.getSession({ headers: ctx.headers }).catch(() => null);
+        if (session?.user.platformRole) await exitCompany(session.user.id);
+        return;
+      }
       if (!ctx.path.startsWith('/organization')) return;
       if (OWNED_MEMBER_PATHS.has(ctx.path)) {
         throw new APIError('FORBIDDEN', { message: 'Membership changes go through /api/team/members' });
@@ -132,6 +159,10 @@ export const auth = betterAuth({
       creatorRole: 'admin',
       organizationLimit: 1, // each user belongs to exactly one organization
       sendInvitationEmail: sendOrgInvitationEmail,
+      // isSupport marks a platform admin's hidden membership; exposed so useActiveMember can show the support banner.
+      schema: {
+        member: { additionalFields: { isSupport: { type: 'boolean', required: false, input: false, defaultValue: false } } },
+      },
       organizationHooks: {
         // organizationLimit only limits creating orgs; without this an existing user could join a second
         // one, and getUserMembership would then pick either org at random. An empty auto-created org is given up.

@@ -53,7 +53,7 @@ describe('listMembers', () => {
 
     expect(result).toBe(members);
     expect(mockPrisma.member.findMany).toHaveBeenCalledWith({
-      where: { organizationId: ORG_ID },
+      where: { organizationId: ORG_ID, isSupport: false },
       include: USER_INCLUDE,
       orderBy: { createdAt: 'desc' },
     });
@@ -78,6 +78,7 @@ describe('listMembers', () => {
       expect.objectContaining({
         where: {
           organizationId: ORG_ID,
+          isSupport: false,
           user: {
             OR: [
               { name: { contains: 'ousainou', mode: 'insensitive' } },
@@ -96,7 +97,7 @@ describe('listMembers', () => {
 
     expect(mockPrisma.member.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { organizationId: ORG_ID, role: 'admin', status: 'active', department: 'IT' },
+        where: { organizationId: ORG_ID, isSupport: false, role: 'admin', status: 'active', department: 'IT' },
       }),
     );
   });
@@ -107,7 +108,7 @@ describe('listMembers', () => {
     await listMembers(USER_ID, { status: 'not-a-real-status' });
 
     expect(mockPrisma.member.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { organizationId: ORG_ID } }),
+      expect.objectContaining({ where: { organizationId: ORG_ID, isSupport: false } }),
     );
   });
 });
@@ -133,9 +134,9 @@ describe('getTeamStats', () => {
       newThisMonth: 4,
       deactivatedThisMonth: 1,
     });
-    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(1, { where: { organizationId: ORG_ID } });
-    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(2, { where: { organizationId: ORG_ID, status: 'active' } });
-    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(3, { where: { organizationId: ORG_ID, role: 'admin' } });
+    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(1, { where: { organizationId: ORG_ID, isSupport: false } });
+    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(2, { where: { organizationId: ORG_ID, isSupport: false, status: 'active' } });
+    expect(mockPrisma.member.count).toHaveBeenNthCalledWith(3, { where: { organizationId: ORG_ID, isSupport: false, role: 'admin' } });
     expect(mockPrisma.member.count).toHaveBeenNthCalledWith(
       4,
       expect.objectContaining({ where: expect.objectContaining({ organizationId: ORG_ID, createdAt: expect.any(Object) }) }),
@@ -369,7 +370,7 @@ describe('updateMemberRole', () => {
     mockPrisma.member.count.mockResolvedValueOnce(1);
 
     await expect(updateMemberRole(USER_ID, 'm2', 'viewer')).rejects.toBeInstanceOf(ConflictError);
-    expect(mockPrisma.member.count).toHaveBeenCalledWith({ where: { organizationId: ORG_ID, role: 'admin', status: 'active' } });
+    expect(mockPrisma.member.count).toHaveBeenCalledWith({ where: { organizationId: ORG_ID, isSupport: false, role: 'admin', status: 'active' } });
     expect(mockPrisma.member.updateMany).not.toHaveBeenCalled();
   });
 
@@ -377,7 +378,9 @@ describe('updateMemberRole', () => {
     mockPrisma.member.findFirst.mockResolvedValueOnce(null);
 
     await expect(updateMemberRole(USER_ID, 'other-org', 'admin')).rejects.toBeInstanceOf(NotFoundError);
-    expect(mockPrisma.member.findFirst).toHaveBeenCalledWith(expect.objectContaining({ where: { id: 'other-org', organizationId: ORG_ID } }));
+    expect(mockPrisma.member.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'other-org', organizationId: ORG_ID, isSupport: false } }),
+    );
   });
 
   it('notifies no one when the audit row fails, because the change rolls back with it', async () => {

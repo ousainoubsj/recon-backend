@@ -16,7 +16,7 @@ const mockCreateOrganization = jest.fn();
 jest.unstable_mockModule('../../auth.js', () => ({ auth: { api: { createOrganization: mockCreateOrganization } } }));
 
 const { getUserMembership, touchLastActive } = await import('../../services/organizationService.js');
-const { NotFoundError } = await import('../../errors.js');
+const { AccessBlockedError, NotFoundError } = await import('../../errors.js');
 
 beforeEach(() => jest.clearAllMocks());
 
@@ -29,7 +29,7 @@ describe('getUserMembership', () => {
     expect(result).toEqual({ organizationId: 'org-1', role: 'admin', status: 'active' });
     expect(mockPrisma.member.findFirst).toHaveBeenCalledWith({
       where: { userId: 'user-1' },
-      select: { organizationId: true, role: true, status: true },
+      select: { organizationId: true, role: true, status: true, isSupport: true, organization: { select: { status: true } } },
     });
   });
 
@@ -69,6 +69,32 @@ describe('getUserMembership', () => {
     mockPrisma.user.findUnique.mockResolvedValue(null);
 
     await expect(getUserMembership('user-1')).rejects.toBeInstanceOf(NotFoundError);
+    expect(mockCreatePersonalOrganization).not.toHaveBeenCalled();
+  });
+});
+
+describe('getUserMembership — platform rules', () => {
+  it("refuses a member of a suspended company", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({
+      organizationId: 'org-1', role: 'admin', status: 'active', isSupport: false, organization: { status: 'suspended' },
+    });
+
+    await expect(getUserMembership('user-1')).rejects.toBeInstanceOf(AccessBlockedError);
+  });
+
+  it('lets a support member into a suspended company', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({
+      organizationId: 'org-1', role: 'admin', status: 'active', isSupport: true, organization: { status: 'suspended' },
+    });
+
+    await expect(getUserMembership('admin-1')).resolves.toEqual({ organizationId: 'org-1', role: 'admin', status: 'active' });
+  });
+
+  it('never creates a personal org for a platform admin outside any company', async () => {
+    mockPrisma.member.findFirst.mockResolvedValue(null);
+    mockPrisma.user.findUnique.mockResolvedValue({ id: 'admin-1', email: 'a@recon-cil.com', platformRole: 'admin' });
+
+    await expect(getUserMembership('admin-1')).rejects.toThrow('Select a company to act on');
     expect(mockCreatePersonalOrganization).not.toHaveBeenCalled();
   });
 });

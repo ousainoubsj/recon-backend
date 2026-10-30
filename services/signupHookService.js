@@ -1,10 +1,11 @@
 /**
  * Creates the user's own org unless a usable invitation means they'll join the inviter's org instead.
  * Shared by signup and the lazy fallback in getUserMembership.
- * @param {{id: string, email: string}} user
+ * @param {{id: string, email: string, platformRole?: string|null}} user
  * @param {{prisma: import('@prisma/client').PrismaClient, createOrganization: Function}} deps
  */
 export async function createPersonalOrganizationIfUninvited(user, { prisma, createOrganization }) {
+  if (user.platformRole) return; // platform admins act inside companies through support memberships only
   // Better Auth never flips an expired invitation's status, so expiry is checked here.
   const pendingInvite = await prisma.invitation.findFirst({
     where: { email: user.email, status: 'pending', expiresAt: { gt: new Date() } },
@@ -50,12 +51,13 @@ export async function usableInvitationEmail(invitationId, { prisma }) {
  * Called before a user joins an org by invitation: one org per user. An existing org is given up only when it is
  * the personal one created for them (slug `org-<userId>`) and holds nothing: no other members, reports, templates,
  * exports or pending invitations. Those conditions sit in the delete itself, so work created meanwhile blocks it.
- * @param {{id: string}} user
+ * @param {{id: string, platformRole?: string|null}} user
  * @param {{organizationId: string}} invitation
  * @param {{prisma: import('@prisma/client').PrismaClient}} deps
  * @returns {Promise<boolean>} whether the user may join
  */
 export async function releaseEmptyPersonalOrganization(user, invitation, { prisma }) {
+  if (user.platformRole) return false; // platform staff never join a company as a member
   const memberships = await prisma.member.findMany({
     where: { userId: user.id },
     select: { organization: { select: { id: true, name: true, slug: true } } },

@@ -50,6 +50,22 @@ enum AuditLogStatus {
   failed
 }
 
+enum PlatformRole {
+  owner
+  admin
+}
+
+enum PlatformAdminStatus {
+  active
+  suspended
+  removed
+}
+
+enum OrganizationStatus {
+  active
+  suspended
+}
+
 enum MemberStatus {
   active
   inactive
@@ -103,6 +119,13 @@ model User {
   // recipients are unaffected. Weekly Digest moved to Organization (below,
   // org-level/admin-only), not a per-user preference.
   emailNotificationsEnabled Boolean @default(true) @map("email_notifications_enabled")
+
+  // Platform operator (docs/SUPER_ADMIN_PLAN.md): null for every customer user. platformStatus is set iff
+  // platformRole is; a removed admin keeps their row because their reports and invitations cascade with it.
+  platformRole       PlatformRole?          @map("platform_role")
+  platformStatus     PlatformAdminStatus?   @map("platform_status")
+  companyAssignments PlatformAdminCompany[] @relation("PlatformAdminCompanyUser")
+  assignmentsMade    PlatformAdminCompany[] @relation("PlatformAdminCompanyAssigner")
 
   @@map("users")
 }
@@ -501,7 +524,7 @@ model Verification {
 }
 
 model Organization {
-  id                          String              @id
+  id                          String                 @id
   name                        String
   slug                        String
   logo                        String?
@@ -512,29 +535,29 @@ model Organization {
   // §6 (no schema.organization.additionalFields config needed). No option
   // list is enforced: the frontend mock has no canonical list for any of
   // these, so inventing one here would be presumptuous.
-  orgType                     String?             @map("org_type") @db.VarChar(100)
-  country                     String?             @db.VarChar(100)
-  timezone                    String?             @db.VarChar(100)
-  dateFormat                  String?             @map("date_format") @db.VarChar(50)
-  currency                    String?             @db.VarChar(10)
-  defaultAmountTolerance      Decimal?            @map("default_amount_tolerance") @db.Decimal(10, 4)
-  defaultDateToleranceDays    Int?                @map("default_date_tolerance_days")
+  orgType                     String?                @map("org_type") @db.VarChar(100)
+  country                     String?                @db.VarChar(100)
+  timezone                    String?                @db.VarChar(100)
+  dateFormat                  String?                @map("date_format") @db.VarChar(50)
+  currency                    String?                @db.VarChar(10)
+  defaultAmountTolerance      Decimal?               @map("default_amount_tolerance") @db.Decimal(10, 4)
+  defaultDateToleranceDays    Int?                   @map("default_date_tolerance_days")
   // Admin-designated MatchRuleTemplate that non-admin members are locked to
   // (matchRuleTemplateService.js enforces this at both the template-listing
   // and the actual run/complete-draft steps) — null means no enforcement,
   // members use the org's plain tolerance defaults above and can edit freely.
   // SetNull so deleting the enforced template un-enforces cleanly rather
   // than leaving a dangling reference.
-  enforcedMatchRuleTemplateId String?             @map("enforced_match_rule_template_id") @db.Uuid
-  enforcedMatchRuleTemplate   MatchRuleTemplate?  @relation("EnforcedMatchRuleTemplate", fields: [enforcedMatchRuleTemplateId], references: [id], onDelete: SetNull)
+  enforcedMatchRuleTemplateId String?                @map("enforced_match_rule_template_id") @db.Uuid
+  enforcedMatchRuleTemplate   MatchRuleTemplate?     @relation("EnforcedMatchRuleTemplate", fields: [enforcedMatchRuleTemplateId], references: [id], onDelete: SetNull)
   // Org-wide, admin-only (not a per-user preference) — when on, every active
   // admin member gets a weekly email + in-app notification summarizing the
   // org's reconciliation activity. See services/weeklyDigestService.js.
-  weeklyDigestEnabled         Boolean             @default(false) @map("weekly_digest_enabled")
+  weeklyDigestEnabled         Boolean                @default(false) @map("weekly_digest_enabled")
   // Canonical list of department names admins can assign to members via
   // Member.department (still a plain freeform string, not a FK — this list
   // is a soft steer for the UI, not an enforced constraint on that column).
-  departments                 String[]            @default([])
+  departments                 String[]               @default([])
   members                     Member[]
   invitations                 Invitation[]
   reports                     Report[]
@@ -544,6 +567,9 @@ model Organization {
   reportExports               ReportExport[]
   matchRuleTemplates          MatchRuleTemplate[]
   reportSequences             ReportSequence[]
+  status                      OrganizationStatus     @default(active)
+  suspendedAt                 DateTime?              @map("suspended_at") @db.Timestamptz
+  platformAdmins              PlatformAdminCompany[]
 
   @@unique([slug])
   @@map("organization")
@@ -562,10 +588,29 @@ model Member {
   department     String?      @db.VarChar(100)
   lastActiveAt   DateTime?    @map("last_active_at")
   createdAt      DateTime
+  // Hidden membership a platform admin holds while inside a company; never listed to the company.
+  isSupport      Boolean      @default(false) @map("is_support")
 
   @@index([organizationId])
   @@index([userId])
+  @@index([organizationId, isSupport])
   @@map("member")
+}
+
+// Companies a platform admin may see and enter. Zero rows means no access; the owner needs none.
+model PlatformAdminCompany {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId         String       @map("user_id")
+  user           User         @relation("PlatformAdminCompanyUser", fields: [userId], references: [id], onDelete: Cascade)
+  organizationId String       @map("organization_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  assignedBy     String?      @map("assigned_by")
+  assignedByUser User?        @relation("PlatformAdminCompanyAssigner", fields: [assignedBy], references: [id], onDelete: SetNull)
+  assignedAt     DateTime     @default(now()) @map("assigned_at") @db.Timestamptz
+
+  @@unique([userId, organizationId])
+  @@index([organizationId])
+  @@map("platform_admin_companies")
 }
 
 model Invitation {
