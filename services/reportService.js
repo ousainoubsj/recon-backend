@@ -712,8 +712,20 @@ const APPLIED_CORRECTIONS = {
   },
 };
 
+// Drafts are private to their creator, unlike a completed report which is shared org-wide. Platform support staff
+// acting as the company see and work on every draft in it.
+function canSeeReport(report, userId, isSupport) {
+  return report.status !== 'draft' || isSupport || report.userId === userId;
+}
+
+// Writes to a draft or failed run: the creator's own, or any in the company for support staff.
+function privateRunScope(userId, { organizationId, isSupport }) {
+  if (isSupport) return { organizationId };
+  return { organizationId, userId };
+}
+
 export async function getReport(userId, reportId, { includeRows = false } = {}) {
-  const { organizationId } = await getUserMembership(userId);
+  const { organizationId, isSupport } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({
     where: { id: reportId, organizationId },
     // Polled every second during a run; the stored mapping preview is served by its own endpoint.
@@ -723,9 +735,7 @@ export async function getReport(userId, reportId, { includeRows = false } = {}) 
       : { supersededBy: { select: SUPERSEDED_BY_SELECT } },
   });
   if (!report) throw new NotFoundError();
-  // Drafts are private to their creator — org membership alone isn't enough,
-  // unlike a completed report which is shared org-wide.
-  if (report.status === 'draft' && report.userId !== userId) throw new NotFoundError();
+  if (!canSeeReport(report, userId, isSupport)) throw new NotFoundError();
 
   // "vs last run" compares a rerun against the report it was rerun from. Any other run compares against
   // the most recent completed run in the org overall, matching the "All Reconciliations" default used
@@ -805,10 +815,10 @@ async function getResolutionSummary(reportId) {
 // by the Transaction Explorer endpoints below, which query ReportRow
 // directly instead of loading every row through the Report relation.
 async function assertReportAccess(userId, reportId) {
-  const { organizationId } = await getUserMembership(userId);
+  const { organizationId, isSupport } = await getUserMembership(userId);
   const report = await prisma.report.findFirst({ where: { id: reportId, organizationId } });
   if (!report) throw new NotFoundError();
-  if (report.status === 'draft' && report.userId !== userId) throw new NotFoundError();
+  if (!canSeeReport(report, userId, isSupport)) throw new NotFoundError();
   return report;
 }
 
@@ -1435,11 +1445,12 @@ function assertOwnUploadKey(userId, key) {
 export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {}) {
   assertOwnUploadKey(userId, dto.fileAKey);
   assertOwnUploadKey(userId, dto.fileBKey);
+  const membership = await getUserMembership(userId);
   const setsFileKey = dto.fileAKey !== undefined || dto.fileBKey !== undefined;
   const needsBefore = dto.columnMapping !== undefined || dto.config !== undefined || setsFileKey;
   const before = needsBefore
     ? await prisma.report.findFirst({
-        where: { id: reportId, userId },
+        where: { id: reportId, ...privateRunScope(userId, membership) },
         select: {
           columnMapping: true,
           config: true,
@@ -1465,7 +1476,7 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
   }
 
   const { count } = await prisma.report.updateMany({
-    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    where: { id: reportId, ...privateRunScope(userId, membership), status: { in: ['draft', 'failed'] } },
     data: {
       ...(dto.name !== undefined ? { name: dto.name } : {}),
       ...(dto.fileAName !== undefined ? { fileAName: dto.fileAName } : {}),
@@ -1493,8 +1504,7 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
     const replacedSides = [replacedKeyA ? 'A' : null, replacedKeyB ? 'B' : null].filter(Boolean);
     await prisma.reportCorrection.deleteMany({ where: { reportId, side: { in: replacedSides } } });
     // The old upload is deleted only if nothing else points at it: a rerun's inherited file stays with its source.
-    const { organizationId } = await getUserMembership(userId);
-    await deleteReportFiles(await reportFileKeys([{ id: reportId, fileAKey: replacedKeyA, fileBKey: replacedKeyB }], organizationId));
+    await deleteReportFiles(await reportFileKeys([{ id: reportId, fileAKey: replacedKeyA, fileBKey: replacedKeyB }], membership.organizationId));
   }
 
   if (dto.columnMapping !== undefined) {
@@ -1524,13 +1534,13 @@ export async function updateDraft(userId, reportId, dto, { ip, userAgent } = {})
     }
   }
 
-  return prisma.report.findFirst({ where: { id: reportId, userId } });
+  return prisma.report.findFirst({ where: { id: reportId, ...privateRunScope(userId, membership) } });
 }
 
 // Abandoned drafts accumulate per user, so the list is paged; `total` feeds the launcher's draft count.
 export async function listDrafts(userId, { limit = 20, offset = 0 } = {}) {
-  const { organizationId } = await getUserMembership(userId);
-  const where = { userId, organizationId, status: 'draft' };
+  const membership = await getUserMembership(userId);
+  const where = { ...privateRunScope(userId, membership), status: 'draft' };
   const [drafts, total] = await Promise.all([
     prisma.report.findMany({
       where,
@@ -1545,6 +1555,8 @@ export async function listDrafts(userId, { limit = 20, offset = 0 } = {}) {
       // list pays that multi-MB cost, which is what made this endpoint take
       // up to a minute for a user with several large-file-pair drafts.
       omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
+      // Support staff see everyone's drafts, so each says whose it is.
+      include: { user: { select: { name: true } } },
     }),
     prisma.report.count({ where }),
   ]);
@@ -1670,9 +1682,9 @@ export async function rerunReport(userId, sourceReportId, { ip, userAgent } = {}
   return { id: draft.id };
 }
 
-function findDraftOrFailedRun(userId, reportId) {
+function findDraftOrFailedRun(userId, membership, reportId) {
   return prisma.report.findFirst({
-    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    where: { id: reportId, ...privateRunScope(userId, membership), status: { in: ['draft', 'failed'] } },
     omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
   });
 }
@@ -1684,13 +1696,14 @@ function findDraftOrFailedRun(userId, reportId) {
 // the report to `processing` synchronously so the caller/poller sees that
 // state immediately, without waiting on the worker to even pick the job up.
 export async function enqueueReconciliationRun(userId, reportId, dto, { ip, userAgent } = {}) {
-  const draft = await findDraftOrFailedRun(userId, reportId);
+  const membership = await getUserMembership(userId);
+  const { organizationId, role } = membership;
+  const draft = await findDraftOrFailedRun(userId, membership, reportId);
   if (!draft) throw new NotFoundError();
   if (!draft.fileAKey || !draft.fileBKey) {
     throw new ValidationError('Both files must be uploaded before running reconciliation');
   }
 
-  const { organizationId, role } = await getUserMembership(userId);
   const config = await resolveRunConfig(organizationId, role, dto.config);
 
   await prisma.report.update({
@@ -1924,8 +1937,9 @@ export async function markRunCrashed({ reportId, userId, reason }) {
 // The mapping step's preview. The files are parsed by the file-previews worker (buildMappingPreview, below), so
 // this only reads what it stored. A draft from before that existed has no status yet and is queued here.
 export async function getMappingPreview(userId, reportId) {
+  const membership = await getUserMembership(userId);
   const draft = await prisma.report.findFirst({
-    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    where: { id: reportId, ...privateRunScope(userId, membership), status: { in: ['draft', 'failed'] } },
     select: { fileAKey: true, fileBKey: true, previewStatus: true, mappingPreview: true, previewError: true },
   });
   if (!draft) throw new NotFoundError();
@@ -2061,8 +2075,9 @@ export async function getRulePreview(userId, reportId, dto) {
   // Queries directly rather than via findDraftOrFailedRun — this is the one
   // caller that actually needs fileASampleRows/fileBSampleRows, which that
   // helper omits (see its comment).
+  const membership = await getUserMembership(userId);
   const draft = await prisma.report.findFirst({
-    where: { id: reportId, userId, status: { in: ['draft', 'failed'] } },
+    where: { id: reportId, ...privateRunScope(userId, membership), status: { in: ['draft', 'failed'] } },
     omit: { mappingPreview: true },
   });
   if (!draft) throw new NotFoundError();
@@ -2157,6 +2172,27 @@ async function deleteReportFiles(keys) {
   } catch (err) {
     console.error('Failed to delete report files from R2', keys.length, err);
   }
+}
+
+// Called when platform staff leave a company. Drafts they started there would be stranded: no company member can see
+// them. A platform user creates reports only through support memberships, so every draft they own is one of these.
+export async function discardSupportDrafts(userId) {
+  const drafts = await prisma.report.findMany({
+    where: { userId, status: 'draft' },
+    select: { id: true, organizationId: true, fileAKey: true, fileBKey: true },
+  });
+  if (drafts.length === 0) return;
+
+  // Normally one company; more only if an earlier session ended without leaving.
+  const organizationIds = [...new Set(drafts.map((draft) => draft.organizationId))];
+  const fileKeys = [];
+  for (const organizationId of organizationIds) {
+    const orgDrafts = drafts.filter((draft) => draft.organizationId === organizationId);
+    fileKeys.push(...(await reportFileKeys(orgDrafts, organizationId)));
+  }
+
+  await prisma.report.deleteMany({ where: { id: { in: drafts.map((draft) => draft.id) }, userId, status: 'draft' } });
+  await deleteReportFiles(fileKeys);
 }
 
 // Org admins can delete any report in the org; everyone else may only
@@ -2355,7 +2391,7 @@ export async function bulkDeleteReports(userId, ids, { ip, userAgent } = {}) {
 // Fetches several reports with getReport's org-scoping and draft-privacy rule, without rows. Throws
 // NotFoundError if any id doesn't resolve: all-or-nothing, so a combined report never silently drops a run.
 export async function getReportsByIds(userId, ids, { requireCompleted = false } = {}) {
-  const { organizationId } = await getUserMembership(userId);
+  const { organizationId, isSupport } = await getUserMembership(userId);
   const reports = await prisma.report.findMany({
     where: { id: { in: ids }, organizationId, ...(requireCompleted ? { status: 'completed' } : {}) },
     omit: { mappingPreview: true },
@@ -2364,7 +2400,7 @@ export async function getReportsByIds(userId, ids, { requireCompleted = false } 
   const byId = new Map(reports.map((r) => [r.id, r]));
   const visible = ids
     .map((id) => byId.get(id))
-    .filter((report) => report && (report.status !== 'draft' || report.userId === userId));
+    .filter((report) => report && canSeeReport(report, userId, isSupport));
 
   if (visible.length !== ids.length) throw new NotFoundError();
   return visible;

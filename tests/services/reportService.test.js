@@ -161,6 +161,7 @@ const {
   saveDraft,
   updateDraft,
   listDrafts,
+  discardSupportDrafts,
   enqueueReconciliationRun,
   executeReconciliationRun,
   getMappingPreview,
@@ -525,6 +526,13 @@ describe('getReport', () => {
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', status: 'draft', userId: OTHER_USER_ID, rows: [] });
 
     await expect(getReport(USER_ID, 'r1')).rejects.toBeInstanceOf(NotFoundError);
+  });
+
+  it("shows platform support staff acting as the company another user's draft", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin', isSupport: true });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'r1', status: 'draft', userId: OTHER_USER_ID, rows: [] });
+
+    await expect(getReport(USER_ID, 'r1')).resolves.toMatchObject({ id: 'r1', userId: OTHER_USER_ID });
   });
 
   it("returns the caller's own draft with a null priorRun, without even attempting the priorRun lookup since the report isn't completed", async () => {
@@ -946,6 +954,19 @@ describe('updateDraft — replacing a file', () => {
 });
 
 describe('updateDraft', () => {
+  it("lets platform support staff edit another user's draft, still scoped to the company", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin', isSupport: true });
+    mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', userId: OTHER_USER_ID });
+
+    await updateDraft(USER_ID, 'draft-1', { name: 'Fixed by support' });
+
+    expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
+      where: { id: 'draft-1', organizationId: ORG_ID, status: { in: ['draft', 'failed'] } },
+      data: { name: 'Fixed by support' },
+    });
+  });
+
   it('updates only the fields provided, scoped to the caller and status draft-or-failed', async () => {
     mockPrisma.report.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.report.findFirst.mockResolvedValue({ id: 'draft-1', name: 'Updated name' });
@@ -954,7 +975,7 @@ describe('updateDraft', () => {
 
     expect(result).toEqual({ id: 'draft-1', name: 'Updated name' });
     expect(mockPrisma.report.updateMany).toHaveBeenCalledWith({
-      where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } },
+      where: { id: 'draft-1', organizationId: ORG_ID, userId: USER_ID, status: { in: ['draft', 'failed'] } },
       data: { name: 'Updated name' },
     });
   });
@@ -1053,6 +1074,16 @@ describe('updateDraft', () => {
 });
 
 describe('listDrafts', () => {
+  it("lists every draft in the company for platform support staff, not just their own", async () => {
+    mockPrisma.member.findFirst.mockResolvedValue({ organizationId: ORG_ID, role: 'admin', isSupport: true });
+    mockPrisma.report.findMany.mockResolvedValue([]);
+    mockPrisma.report.count.mockResolvedValue(0);
+
+    await listDrafts(USER_ID);
+
+    expect(mockPrisma.report.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { organizationId: ORG_ID, status: 'draft' } }));
+  });
+
   it("lists only the caller's own drafts, most recently updated first, with derived progress", async () => {
     const drafts = [
       { id: 'draft-1', status: 'draft', fileAKey: null, fileBKey: null, columnMapping: null, config: null },
@@ -1076,6 +1107,7 @@ describe('listDrafts', () => {
       take: 2,
       skip: 4,
       omit: { fileASampleRows: true, fileBSampleRows: true, mappingPreview: true },
+      include: { user: { select: { name: true } } },
     });
     expect(mockPrisma.report.count).toHaveBeenCalledWith({ where: { userId: USER_ID, organizationId: ORG_ID, status: 'draft' } });
   });
@@ -1341,7 +1373,7 @@ describe('enqueueReconciliationRun', () => {
     await enqueueReconciliationRun(USER_ID, 'draft-1', runDto);
 
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
+      expect.objectContaining({ where: { id: 'draft-1', organizationId: ORG_ID, userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
     );
   });
 });
@@ -1555,7 +1587,7 @@ describe('getMappingPreview', () => {
 
     await expect(getMappingPreview(USER_ID, 'draft-1')).rejects.toBeInstanceOf(NotFoundError);
     expect(mockPrisma.report.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'draft-1', userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
+      expect.objectContaining({ where: { id: 'draft-1', organizationId: ORG_ID, userId: USER_ID, status: { in: ['draft', 'failed'] } } }),
     );
   });
 
@@ -3340,5 +3372,24 @@ describe('markPreviewCrashed', () => {
       where: { id: 'r1', fileAKey: 'uploads/u/a.csv', fileBKey: 'uploads/u/b.csv', previewStatus: 'pending' },
       data: { previewStatus: 'failed', previewError: expect.stringContaining('too large to preview') },
     });
+  });
+});
+
+describe('discardSupportDrafts', () => {
+  it("deletes only the leaving user's own drafts", async () => {
+    mockPrisma.report.findMany.mockResolvedValueOnce([{ id: 'd1', organizationId: ORG_ID, fileAKey: null, fileBKey: null }]);
+    mockPrisma.reportExport.findMany.mockResolvedValue([]);
+
+    await discardSupportDrafts(USER_ID);
+
+    expect(mockPrisma.report.deleteMany).toHaveBeenCalledWith({ where: { id: { in: ['d1'] }, userId: USER_ID, status: 'draft' } });
+  });
+
+  it('does nothing when they left no drafts', async () => {
+    mockPrisma.report.findMany.mockResolvedValueOnce([]);
+
+    await discardSupportDrafts(USER_ID);
+
+    expect(mockPrisma.report.deleteMany).not.toHaveBeenCalled();
   });
 });

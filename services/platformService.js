@@ -286,6 +286,9 @@ export async function deleteCompany(actor, id, { ip, userAgent } = {}) {
  */
 export async function enterCompany(actor, id) {
   const company = await findAccessibleCompany(actor, id, { id: true, name: true });
+  // Switching companies leaves the previous one, so its stranded drafts go the same way as on exit.
+  const { discardSupportDrafts } = await import('./reportService.js');
+  await discardSupportDrafts(actor.id);
   await prisma.$transaction(async (tx) => {
     await tx.member.deleteMany({ where: { userId: actor.id, isSupport: true } });
     await tx.member.create({
@@ -298,6 +301,8 @@ export async function enterCompany(actor, id) {
 
 /** Also called on sign-out. */
 export async function exitCompany(userId) {
+  const { discardSupportDrafts } = await import('./reportService.js');
+  await discardSupportDrafts(userId);
   await prisma.$transaction([
     prisma.member.deleteMany({ where: { userId, isSupport: true } }),
     prisma.session.updateMany({ where: { userId }, data: { activeOrganizationId: null } }),

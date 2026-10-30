@@ -26,7 +26,8 @@ const mockSendOrgInvitationEmail = jest.fn().mockResolvedValue(undefined);
 jest.unstable_mockModule('../../services/emailService.js', () => ({ sendOrgInvitationEmail: mockSendOrgInvitationEmail }));
 
 const mockReportFileKeys = jest.fn().mockResolvedValue([]);
-jest.unstable_mockModule('../../services/reportService.js', () => ({ reportFileKeys: mockReportFileKeys }));
+const mockDiscardSupportDrafts = jest.fn().mockResolvedValue(undefined);
+jest.unstable_mockModule('../../services/reportService.js', () => ({ reportFileKeys: mockReportFileKeys, discardSupportDrafts: mockDiscardSupportDrafts }));
 
 const mockDeleteR2Objects = jest.fn().mockResolvedValue(undefined);
 const mockDeleteR2Prefix = jest.fn().mockResolvedValue(undefined);
@@ -202,6 +203,7 @@ describe('enterCompany / exitCompany', () => {
       data: expect.objectContaining({ organizationId: 'org-a', userId: ADMIN.id, role: 'admin', status: 'active', isSupport: true }),
     });
     expect(mockTx.session.updateMany).toHaveBeenCalledWith({ where: { userId: ADMIN.id }, data: { activeOrganizationId: 'org-a' } });
+    expect(mockDiscardSupportDrafts).toHaveBeenCalledWith(ADMIN.id);
   });
 
   it('exit removes only support memberships', async () => {
@@ -209,6 +211,7 @@ describe('enterCompany / exitCompany', () => {
 
     expect(mockPrisma.member.deleteMany).toHaveBeenCalledWith({ where: { userId: ADMIN.id, isSupport: true } });
     expect(mockPrisma.session.updateMany).toHaveBeenCalledWith({ where: { userId: ADMIN.id }, data: { activeOrganizationId: null } });
+    expect(mockDiscardSupportDrafts).toHaveBeenCalledWith(ADMIN.id);
   });
 });
 
