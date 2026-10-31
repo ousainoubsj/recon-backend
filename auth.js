@@ -52,6 +52,11 @@ export const auth = betterAuth({
         ? sendPlatformAdminInviteEmail(user, url)
         : sendPasswordResetEmail(user, url),
   },
+  // /email-otp/verify-email signs the user in — needed since requireEmailVerification made sign-up skip it.
+  // Must be top-level: the emailOTP plugin reads this, not an option of its own (better-auth 1.6).
+  emailVerification: {
+    autoSignInAfterVerification: true,
+  },
   socialProviders: {
     google: {
       clientId: process.env.GOOGLE_CLIENT_ID,
@@ -185,9 +190,6 @@ export const auth = betterAuth({
       // (triggered by requireEmailVerification above) to our OTP sender,
       // instead of the classic link-based verification email.
       overrideDefaultEmailVerification: true,
-      // /email-otp/verify-email returns a session token on success — needed
-      // since requireEmailVerification made sign-up skip auto-sign-in.
-      autoSignInAfterVerification: true,
       sendVerificationOTP: async ({ email, otp, type }) => sendOtpEmail({ email, otp, type }),
     }),
   ],

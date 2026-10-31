@@ -26,6 +26,11 @@ describe('auth.js config', () => {
     expect(auth.options.emailAndPassword.sendResetPassword).toBeInstanceOf(Function);
   });
 
+  // The email-otp verify route reads only this top-level flag; the plugin's own option of the same name is ignored.
+  it('signs the user in after OTP verification via the top-level emailVerification option', () => {
+    expect(auth.options.emailVerification?.autoSignInAfterVerification).toBe(true);
+  });
+
   it('installs the email-otp plugin', () => {
     const emailOtpPlugin = auth.options.plugins.find((plugin) => plugin.id === 'email-otp');
 
